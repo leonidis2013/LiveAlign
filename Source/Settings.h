@@ -1,0 +1,130 @@
+#pragma once
+// Everything the user sets, shared between the audio thread, the analysis thread and the UI.
+// Plain atomics: the audio thread only reads them. Saved with the plug-in / app state.
+#include <atomic>
+#include <cmath>
+#include <juce_core/juce_core.h>
+
+namespace la
+{
+enum class View { Rta = 0, Transfer = 1, Impulse = 2 };
+
+struct Settings
+{
+    // Routing. Channels are 0-based input/output indices of the app / plug-in.
+    std::atomic<int> micChannel { 0 };
+    std::atomic<int> refSource { 3 };        // 0 = off, 1 = generator (internal copy), 2.. = input (refSource - 2); default input 2
+    std::atomic<int> genOutput { 0 };        // 0 = all outputs, 1.. = output (genOutput - 1)
+
+    // Signal generator
+    std::atomic<bool> genOn { false };
+    std::atomic<int> genType { 0 };          // la::GenType
+    std::atomic<float> genLevelDb { -20.0f };
+    std::atomic<float> genFreq { 1000.0f };
+    std::atomic<float> genSweepSec { 3.0f };
+
+    // Transfer function
+    std::atomic<int> fftSize { 32768 };
+    std::atomic<int> averages { 8 };
+    std::atomic<int> smoothing { 24 };       // 1/N octave
+    std::atomic<float> delayMs { 0.0f };     // reference delay compensation
+    std::atomic<float> coherenceBlank { 0.4f };   // hide transfer points below this coherence (0 = off)
+    std::atomic<float> magRange { 20.0f };   // +/- dB shown
+
+    // RTA
+    std::atomic<int> rtaBands { 3 };         // 1/N octave
+    std::atomic<int> rtaSpeed { 1 };         // 0 fast, 1 medium, 2 slow
+    std::atomic<bool> rtaShowRef { false };
+    std::atomic<bool> rtaPeakHold { false };
+
+    // Mic level calibration: dB SPL = dBFS + splOffset
+    std::atomic<bool> splCalibrated { false };
+    std::atomic<float> splOffset { 120.0f };
+
+    // Display
+    std::atomic<bool> running { true };
+    std::atomic<int> view { (int) View::Transfer };
+    std::atomic<int> theme { 0 };            // 0 dark, 1 light
+    std::atomic<float> temperatureC { 20.0f };
+    std::atomic<int> distanceUnit { 0 };     // 0 feet, 1 metres
+    std::atomic<int> irMode { 0 };           // 0 linear, 1 log (ETC)
+    std::atomic<int> irRange { 1 };          // 0 = 20 ms, 1 = 100 ms, 2 = 500 ms
+
+    // One-shot requests from the UI to the analysis thread
+    std::atomic<bool> requestResetAverages { false };
+    std::atomic<bool> requestFindDelay { false };
+    std::atomic<bool> requestResetLeq { false };
+    std::atomic<bool> requestClearPeak { false };
+
+    double speedOfSound() const { return 331.3 * std::sqrt (1.0 + temperatureC.load() / 273.15); }
+
+    juce::String distanceText (double ms) const
+    {
+        const double metres = ms * 0.001 * speedOfSound();
+        if (distanceUnit.load() == 1) return juce::String (metres, 2) + " m";
+        return juce::String (metres * 3.28084, 1) + " ft";
+    }
+
+    void save (juce::XmlElement& x) const
+    {
+        x.setAttribute ("micChannel", micChannel.load());
+        x.setAttribute ("refSource", refSource.load());
+        x.setAttribute ("genOutput", genOutput.load());
+        x.setAttribute ("genType", genType.load());
+        x.setAttribute ("genLevelDb", genLevelDb.load());
+        x.setAttribute ("genFreq", genFreq.load());
+        x.setAttribute ("genSweepSec", genSweepSec.load());
+        x.setAttribute ("fftSize", fftSize.load());
+        x.setAttribute ("averages", averages.load());
+        x.setAttribute ("smoothing", smoothing.load());
+        x.setAttribute ("delayMs", delayMs.load());
+        x.setAttribute ("coherenceBlank", coherenceBlank.load());
+        x.setAttribute ("magRange", magRange.load());
+        x.setAttribute ("rtaBands", rtaBands.load());
+        x.setAttribute ("rtaSpeed", rtaSpeed.load());
+        x.setAttribute ("rtaShowRef", rtaShowRef.load());
+        x.setAttribute ("rtaPeakHold", rtaPeakHold.load());
+        x.setAttribute ("splCalibrated", splCalibrated.load());
+        x.setAttribute ("splOffset", splOffset.load());
+        x.setAttribute ("view", view.load());
+        x.setAttribute ("theme", theme.load());
+        x.setAttribute ("temperatureC", temperatureC.load());
+        x.setAttribute ("distanceUnit", distanceUnit.load());
+        x.setAttribute ("irMode", irMode.load());
+        x.setAttribute ("irRange", irRange.load());
+        // The generator is never saved as "on": the app always starts silent.
+    }
+
+    void load (const juce::XmlElement& x)
+    {
+        auto i = [&x] (const char* k, int def, int lo, int hi) { return juce::jlimit (lo, hi, x.getIntAttribute (k, def)); };
+        auto f = [&x] (const char* k, float def, float lo, float hi) { return juce::jlimit (lo, hi, (float) x.getDoubleAttribute (k, def)); };
+        micChannel = i ("micChannel", 0, 0, 7);
+        refSource = i ("refSource", 3, 0, 9);
+        genOutput = i ("genOutput", 0, 0, 8);
+        genType = i ("genType", 0, 0, 4);
+        genLevelDb = f ("genLevelDb", -20.0f, -90.0f, 0.0f);
+        genFreq = f ("genFreq", 1000.0f, 10.0f, 20000.0f);
+        genSweepSec = f ("genSweepSec", 3.0f, 0.5f, 30.0f);
+        const int fs = x.getIntAttribute ("fftSize", 32768);
+        fftSize = (fs == 8192 || fs == 16384 || fs == 32768 || fs == 65536) ? fs : 32768;
+        averages = i ("averages", 8, 1, 128);
+        smoothing = i ("smoothing", 24, 1, 48);
+        delayMs = f ("delayMs", 0.0f, 0.0f, 2000.0f);
+        coherenceBlank = f ("coherenceBlank", 0.4f, 0.0f, 0.95f);
+        magRange = f ("magRange", 20.0f, 6.0f, 60.0f);
+        rtaBands = i ("rtaBands", 3, 1, 48);
+        rtaSpeed = i ("rtaSpeed", 1, 0, 2);
+        rtaShowRef = x.getBoolAttribute ("rtaShowRef", false);
+        rtaPeakHold = x.getBoolAttribute ("rtaPeakHold", false);
+        splCalibrated = x.getBoolAttribute ("splCalibrated", false);
+        splOffset = f ("splOffset", 120.0f, 0.0f, 200.0f);
+        view = i ("view", (int) View::Transfer, 0, 2);
+        theme = i ("theme", 0, 0, 1);
+        temperatureC = f ("temperatureC", 20.0f, -20.0f, 50.0f);
+        distanceUnit = i ("distanceUnit", 0, 0, 1);
+        irMode = i ("irMode", 0, 0, 1);
+        irRange = i ("irRange", 1, 0, 2);
+    }
+};
+} // namespace la

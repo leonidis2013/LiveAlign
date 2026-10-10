@@ -1,0 +1,116 @@
+name: Build LiveAlign
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tests:
+    name: Analysis engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measurement engine tests (with address and undefined-behaviour sanitizers)
+        run: |
+          g++ -std=c++17 -O1 -g -fsanitize=address,undefined -Wall -Wextra -ISource Tests/AnalysisTests.cpp -o analysis_tests
+          ./analysis_tests
+
+  build:
+    name: App + VST3 (${{ matrix.name }})
+    needs: tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -B build
+
+      - name: Configure (macOS, universal arm64 + x86_64)
+        if: runner.os == 'macOS'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --target LiveAlign_VST3 LiveAlign_Standalone --parallel
+
+      - name: Locate the builds
+        id: locate
+        shell: bash
+        run: |
+          VST3=$(find build -maxdepth 6 -name "LiveAlign.vst3" | head -n 1)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            APP=$(find build -maxdepth 6 -name "LiveAlign.app" | head -n 1)
+          else
+            APP=$(find build -maxdepth 6 -path "*Standalone*" -name "LiveAlign.exe" | head -n 1)
+          fi
+          echo "VST3: $VST3"
+          echo "App:  $APP"
+          echo "vst3=$VST3" >> "$GITHUB_OUTPUT"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Ad-hoc sign (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - "${{ steps.locate.outputs.vst3 }}"
+          codesign --force --deep --sign - "${{ steps.locate.outputs.app }}"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "${{ steps.locate.outputs.vst3 }}" -DestinationPath LiveAlign-Windows-VST3.zip
+          Compress-Archive -Path "${{ steps.locate.outputs.app }}" -DestinationPath LiveAlign-Windows-App.zip
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ditto -c -k --keepParent "${{ steps.locate.outputs.vst3 }}" LiveAlign-macOS-VST3.zip
+          ditto -c -k --keepParent "${{ steps.locate.outputs.app }}" LiveAlign-macOS-App.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveAlign-${{ matrix.name }}
+          path: LiveAlign-*.zip
+
+  release:
+    name: Publish downloads
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish as a GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            gh release create "$TAG" dist/*.zip --title "LiveAlign $TAG" --notes "Windows x64 and macOS universal builds: standalone app and VST3."
+          else
+            # rolling release that always holds the newest build from main
+            gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+            gh release create latest dist/*.zip --target "$GITHUB_SHA" --prerelease \
+              --title "Latest build" \
+              --notes "Newest build from main (${GITHUB_SHA::7}). Windows x64 and macOS universal (arm64 + x86_64): the standalone app and the VST3, zipped."
+          fi
