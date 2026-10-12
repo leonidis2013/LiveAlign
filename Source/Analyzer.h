@@ -43,6 +43,30 @@ struct Snapshot
     bool splIsSpl = false;
 };
 
+// Loopback check: the reference input compared with the generator signal that was sent out.
+struct LoopbackReport
+{
+    juce::uint64 serial = 0;
+    bool valid = false;          // the generator was found in the reference input
+    double latencyMs = 0.0;      // output-to-input round trip of the interface
+    bool inverted = false;
+    float refLevelDbfs = -200.0f;
+    float gainDb = 0.0f;         // reference level relative to the generator
+};
+
+// Background noise of the room, measured with the generator off.
+struct NoiseReport
+{
+    juce::uint64 serial = 0;
+    bool measuring = false;
+    float progress = 0.0f;       // 0..1 while measuring
+    bool done = false;
+    float laeq = -200, lceq = -200, lzeq = -200;   // dB SPL when calibrated, else dBFS
+    bool isSpl = false;
+    std::vector<double> bandFreq;                  // 1/3-octave band levels at the end
+    std::vector<float> bandDb;
+};
+
 struct DelayReport
 {
     juce::uint64 serial = 0;
@@ -59,20 +83,48 @@ public:
     {
         micFifo.resize (kFifoSize);
         refFifo.resize (kFifoSize);
+        genFifo.resize (kFifoSize);
         startThread (juce::Thread::Priority::normal);
     }
 
     ~Analyzer() override { stopThread (2000); }
 
     // ---- audio thread ----
-    void push (const float* mic, const float* ref, int n)
+    // gen: the generator signal as sent to the outputs (for the loopback check).
+    void push (const float* mic, const float* ref, const float* gen, int n)
     {
         int s1, n1, s2, n2;
         fifo.prepareToWrite (n, s1, n1, s2, n2);
         if (n1 + n2 < n) overflowed = true;
-        if (n1 > 0) { std::copy (mic, mic + n1, micFifo.begin() + s1); std::copy (ref, ref + n1, refFifo.begin() + s1); }
-        if (n2 > 0) { std::copy (mic + n1, mic + n1 + n2, micFifo.begin() + s2); std::copy (ref + n1, ref + n1 + n2, refFifo.begin() + s2); }
+        if (n1 > 0)
+        {
+            std::copy (mic, mic + n1, micFifo.begin() + s1);
+            std::copy (ref, ref + n1, refFifo.begin() + s1);
+            std::copy (gen, gen + n1, genFifo.begin() + s1);
+        }
+        if (n2 > 0)
+        {
+            std::copy (mic + n1, mic + n1 + n2, micFifo.begin() + s2);
+            std::copy (ref + n1, ref + n1 + n2, refFifo.begin() + s2);
+            std::copy (gen + n1, gen + n1 + n2, genFifo.begin() + s2);
+        }
         fifo.finishedWrite (n1 + n2);
+    }
+
+    // ---- message thread: guided checks ----
+    void requestLoopbackCheck() { loopbackRequested = true; }
+    void requestNoiseMeasurement (double seconds) { noiseSeconds = seconds; noiseRequested = true; }
+
+    LoopbackReport readLoopbackReport() const
+    {
+        const std::lock_guard<std::mutex> lock (snapMutex);
+        return loopbackReport;
+    }
+
+    NoiseReport readNoiseReport() const
+    {
+        const std::lock_guard<std::mutex> lock (snapMutex);
+        return noiseReport;
     }
 
     void setSampleRate (double rate) { pendingRate = rate; }
@@ -125,7 +177,7 @@ private:
 
     void run() override
     {
-        std::vector<float> mic (kChunk), ref (kChunk);
+        std::vector<float> mic (kChunk), ref (kChunk), gen (kChunk);
         while (! threadShouldExit())
         {
             wait (10);
@@ -139,13 +191,15 @@ private:
                 if (got == 0) break;
                 std::copy (micFifo.begin() + s1, micFifo.begin() + s1 + n1, mic.begin());
                 std::copy (refFifo.begin() + s1, refFifo.begin() + s1 + n1, ref.begin());
+                std::copy (genFifo.begin() + s1, genFifo.begin() + s1 + n1, gen.begin());
                 if (n2 > 0)
                 {
                     std::copy (micFifo.begin() + s2, micFifo.begin() + s2 + n2, mic.begin() + n1);
                     std::copy (refFifo.begin() + s2, refFifo.begin() + s2 + n2, ref.begin() + n1);
+                    std::copy (genFifo.begin() + s2, genFifo.begin() + s2 + n2, gen.begin() + n1);
                 }
                 fifo.finishedRead (got);
-                process (mic.data(), ref.data(), got);
+                process (mic.data(), ref.data(), gen.data(), got);
                 if (threadShouldExit()) return;
             }
 
@@ -185,6 +239,10 @@ private:
             rawLen = nextPowerOfTwo ((int) (sr * 2.7));
             rawMic.assign ((size_t) rawLen, 0.0f);
             rawRef.assign ((size_t) rawLen, 0.0f);
+            rawGen.assign ((size_t) rawLen, 0.0f);
+            noiseMeter.prepare (sr);
+            noiseRta.prepare (sr, sr > 60000.0 ? 32768 : 16384, sr > 60000.0 ? 4096 : 2048);
+            noiseRta.setTimeConstant (1000.0);
             rawPos = 0;
             appliedCal = -1;
             dirty = true;
@@ -203,6 +261,8 @@ private:
             calLocal = c;
             rtaMic.setBinGains (binGains (c, rtaMic.fftSize()));
             spl.setMicCorrection (binGains (c, sr > 60000.0 ? 8192 : 4096));
+            noiseMeter.setMicCorrection (binGains (c, sr > 60000.0 ? 8192 : 4096));
+            noiseRta.setBinGains (binGains (c, noiseRta.fftSize()));
             dirty = true;
         }
 
@@ -220,13 +280,25 @@ private:
         return g;
     }
 
-    void process (const float* mic, const float* ref, int n)
+    void process (const float* mic, const float* ref, const float* gen, int n)
     {
         for (int i = 0; i < n; ++i)
         {
             rawMic[(size_t) rawPos] = mic[i];
             rawRef[(size_t) rawPos] = ref[i];
+            rawGen[(size_t) rawPos] = gen[i];
             rawPos = (rawPos + 1) & (rawLen - 1);
+        }
+
+        if (noiseActive)
+        {
+            noiseMeter.push (mic, n);
+            noiseRta.push (mic, n);
+            noiseDone += n;
+            const double total = noiseSeconds * sr;
+            const std::lock_guard<std::mutex> lock (snapMutex);
+            noiseReport.progress = (float) juce::jlimit (0.0, 1.0, noiseDone / total);
+            if (noiseDone >= total) finishNoise();
         }
 
         spl.push (mic, n);
@@ -239,8 +311,69 @@ private:
         dirty = true;
     }
 
+    void finishNoise()   // called with snapMutex held
+    {
+        noiseActive = false;
+        const bool calibrated = settings.splCalibrated.load();
+        const float offset = calibrated ? settings.splOffset.load() : 0.0f;
+        noiseReport.measuring = false;
+        noiseReport.done = true;
+        noiseReport.progress = 1.0f;
+        noiseReport.isSpl = calibrated;
+        noiseReport.laeq = (float) noiseMeter.leqDb (SplMeter::A) + offset;
+        noiseReport.lceq = (float) noiseMeter.leqDb (SplMeter::C) + offset;
+        noiseReport.lzeq = (float) noiseMeter.leqDb (SplMeter::Z) + offset;
+        noiseReport.bandFreq = octaveBandCentres (3, 20.0, std::min (20000.0, sr * 0.45));
+        std::vector<double> p;
+        PowerSpectrum::bands (noiseRta.averaged(), noiseRta.binHz(), noiseReport.bandFreq, 1.0 / 3.0, p);
+        noiseReport.bandDb.resize (p.size());
+        for (size_t i = 0; i < p.size(); ++i) noiseReport.bandDb[i] = (float) powerToDbfs (p[i]) + offset;
+        noiseReport.serial++;
+    }
+
     void handleRequests()
     {
+        if (noiseRequested.exchange (false))
+        {
+            noiseMeter.reset();
+            noiseRta.reset();
+            noiseDone = 0;
+            noiseActive = true;
+            const std::lock_guard<std::mutex> lock (snapMutex);
+            noiseReport.measuring = true;
+            noiseReport.done = false;
+            noiseReport.progress = 0.0f;
+            noiseReport.serial++;
+        }
+        if (loopbackRequested.exchange (false))
+        {
+            // Use the most recent ~1.4 s (the check runs the generator for about two seconds).
+            const int n = rawLen / 2;
+            std::vector<float> g ((size_t) n), r ((size_t) n);
+            double eg = 0.0, er = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                const size_t idx = (size_t) ((rawPos - n + i + rawLen) & (rawLen - 1));
+                g[(size_t) i] = rawGen[idx];
+                r[(size_t) i] = rawRef[idx];
+                eg += (double) g[(size_t) i] * g[(size_t) i];
+                er += (double) r[(size_t) i] * r[(size_t) i];
+            }
+            LoopbackReport rep;
+            rep.refLevelDbfs = (float) powerToDbfs (er / n);
+            if (eg > 0.0 && er > 0.0)
+            {
+                const auto res = findDelay (g.data(), r.data(), n, 0.25 * sr, 0.0);
+                rep.valid = res.valid;
+                rep.latencyMs = res.samples * 1000.0 / sr;
+                rep.inverted = res.inverted;
+                rep.gainDb = (float) (10.0 * std::log10 (er / eg));
+            }
+            const std::lock_guard<std::mutex> lock (snapMutex);
+            rep.serial = loopbackReport.serial + 1;
+            loopbackReport = rep;
+        }
+
         if (settings.requestResetAverages.exchange (false)) { tf.reset(); rtaMic.reset(); rtaRef.reset(); dirty = true; }
         if (settings.requestResetLeq.exchange (false)) { spl.resetLeq(); dirty = true; }
         if (settings.requestClearPeak.exchange (false)) { rtaMic.clearPeak(); dirty = true; }
@@ -354,7 +487,16 @@ private:
     SplMeter spl;
     std::vector<double> grid;
 
-    std::vector<float> rawMic, rawRef;
+    std::vector<float> rawMic, rawRef, rawGen;
+    std::vector<float> genFifo;
+    std::atomic<bool> loopbackRequested { false }, noiseRequested { false };
+    std::atomic<double> noiseSeconds { 5.0 };
+    bool noiseActive = false;
+    double noiseDone = 0.0;
+    SplMeter noiseMeter;
+    PowerSpectrum noiseRta;
+    LoopbackReport loopbackReport;
+    NoiseReport noiseReport;
     int rawLen = 0, rawPos = 0;
 
     mutable std::mutex calMutex;

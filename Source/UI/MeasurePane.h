@@ -59,6 +59,17 @@ public:
         else impulse.update (snap);
     }
 
+    void setStatus (const juce::String& s) { if (s != status) { status = s; repaint (0, 0, getWidth(), 30); } }
+
+    void paint (juce::Graphics& g) override
+    {
+        if (status.isEmpty()) return;
+        auto head = getLocalBounds().removeFromTop (30).withTrimmedLeft (3 * 80 + 16).withTrimmedRight (centreButton.isVisible() ? 84 : 6);
+        g.setColour (status.contains ("BEHIND") ? pal().warn : pal().textDim);
+        g.setFont (monoFont (11.0f));
+        g.drawText (status, head, juce::Justification::centredRight, true);
+    }
+
     void resized() override
     {
         auto r = getLocalBounds();
@@ -80,5 +91,6 @@ private:
     RtaView rta;
     ImpulseView impulse;
     juce::TextButton tabs[3], centreButton { "Centre" };
+    juce::String status;
 };
 } // namespace la::ui

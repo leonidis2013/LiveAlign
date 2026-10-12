@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.2.0** (stage 1, the Metering page: split screen, full screen, calibration pop-up, target curves, consolidated settings)
+**Version 0.3.0**: guided workflow tabs, the Mic setup checklist, venue project files, JUCE 9 and ASIO on Windows
 
 ## What you need
 
@@ -14,14 +14,53 @@ LiveProfessor). Windows and macOS.
   input) back into a second interface input. If you only use the generator, Settings > Reference > *Generator
   (internal copy)* works without a cable.
 
-## Layout
+## Workflow
 
-Tabs across the top walk through the tuning process. Stage 1 has the **Metering** page; the next stages add their
-own tabs.
+LiveAlign walks through setting up and tuning a live sound system in four tabs. You can jump to any tab at any time;
+each one shows its progress and has Back / Next buttons.
 
-The Metering page shows **one, two or three graphs** (Settings > Screen), stacked or side by side. Each graph has its
-own RTA / Transfer / Impulse buttons, so the RTA, transfer function and impulse response can all be on screen at once.
-**Full screen** (app only, key `F`, `Esc` to leave) fills the whole display.
+| Tab | Status | What it does |
+|-----|--------|--------------|
+| **1 Mic setup** | Built | A checklist: audio interface, inputs, mic calibration file, sound level calibration, reference loopback check, room noise floor |
+| **2 Speakers** | Next stage | Build the system, speaker library, measure and overlay each speaker or group, crossover recommendation, PA2 settings page |
+| **3 Room tuning** | Later | Several mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
+| **4 Monitoring** | Built | RTA, transfer function, impulse response, sound level, delay finder and traces, for use during the event |
+
+The **VST3** shows the Monitoring tab only, since it runs inside a host during the event.
+
+### 1 Mic setup
+
+Each step turns green when done (amber when done with a warning). Steps you cannot do can be skipped.
+
+1. **Audio interface:** pick the interface (app only).
+2. **Inputs:** mic input and reference. It checks the mic input is live and not the same input as the reference.
+3. **Mic calibration file:** load the file that came with the mic, or mark that it has none.
+4. **Sound level calibration:** 94 or 114 dB calibrator, with a live reading; or carry on in dBFS.
+5. **Reference loopback check:** plays pink noise at -20 dBFS for 2 seconds from the generator output and finds it on
+   the reference input. Reports the interface round trip, polarity (warns if inverted) and level (warns below -36
+   or above -3 dBFS). Turn the amps down if you don't want to hear it. Not needed when the reference is the
+   generator's internal copy.
+6. **Room noise floor:** with the generator off, measures 5 seconds of background noise (LAeq and LCeq), says how
+   loud the test signal should be (15 dB above it), and keeps the spectrum as the RTA trace "Room noise floor".
+
+The RTA and input meters sit beside the checklist so you can see what the mic hears.
+
+### Venue projects
+
+**Project** (top bar) > New venue, Open venue, Save (`Cmd/Ctrl+S`), Save as, Venue name and notes. A `.lavenue` file
+holds the venue name and notes, the settings, the mic calibration (the data itself, so it works on another computer),
+the traces, the target curve and the checklist. The theme is not stored in projects. The top bar shows the venue name
+and "Unsaved changes" when there is something to save. The app also remembers the open project between sessions.
+
+Traces now live in the project. Traces saved by version 0.1 or 0.2 (in `LiveAlign/Traces`) are loaded once.
+
+## Monitoring tab
+
+### Layout
+
+The Monitoring tab shows **one, two or three graphs** (Settings > Screen), stacked or side by side. Each graph has
+its own RTA / Transfer / Impulse buttons, so the RTA, transfer function and impulse response can all be on screen at
+once. **Full screen** (app only, key `F`, `Esc` to leave) fills the whole display.
 
 ## Views
 
@@ -31,8 +70,8 @@ own RTA / Transfer / Impulse buttons, so the RTA, transfer function and impulse 
 | **RTA** (key `1`) | The mic in 1/1 to 1/48 octave bands, in dB SPL once calibrated (dBFS before). Optional reference overlay and peak hold |
 | **Impulse** (key `3`) | Impulse response, linear or log (ETC), 20 / 100 / 500 ms. Shows the arrival time and distance, and warns when the polarity looks inverted |
 
-Header controls: **Running / Frozen** (`Space`) freezes the graphs (the sound level keeps running), **Reset avg**
-(`R`) restarts the averages, **Full screen**, **Settings**. Keys `1`, `2`, `3` switch the top graph.
+Top bar on this tab: **Running** (green) / **Frozen** (amber) with `Space` freezes the graphs (the sound level keeps
+running), **Reset avg** (`R`) restarts the averages. Keys `1`, `2`, `3` switch the top graph.
 
 ## Right-hand column
 
@@ -70,7 +109,6 @@ Everything is in one Settings window, in sections:
 - **Screen:** number of graphs, stacked or side by side, theme.
 - **Impulse response:** linear or log (ETC), time range.
 - **Environment:** temperature (Celsius or Fahrenheit), distance in feet or metres.
-- **Files:** open the saved traces folder.
 
 ## Calibration
 
@@ -84,8 +122,9 @@ Everything is in one Settings window, in sections:
 
 ## Keys
 
+`Cmd/Ctrl+S` save project, `G` generator, `F` full screen, `Esc` leave full screen. On the Monitoring tab:
 `1` / `2` / `3` top graph view, `Space` freeze, `R` reset averages, `D` find delay, `C` capture (whatever the graphs
-show), `G` generator, `F` full screen, `Esc` leave full screen.
+show).
 
 ## Installing
 
@@ -115,13 +154,13 @@ VST3:
 
 - App: unzip `LiveAlign-Windows-App.zip` and run `LiveAlign.exe`. Allow microphone access for desktop apps in
   Windows Settings > Privacy & security > Microphone. Choose the interface under Settings > **Audio device...**
-  (WASAPI or DirectSound; see Known limits).
+  (ASIO, WASAPI or DirectSound).
 - VST3: copy `LiveAlign.vst3` to `C:\Program Files\Common Files\VST3` and rescan in your host.
 
 ## Building
 
 GitHub Actions builds the Windows and macOS (universal) app and VST3 on every push to main and publishes them on the
-Releases page. Local build (CMake 3.22 or newer; JUCE 8.0.8 is downloaded automatically):
+Releases page. Local build (CMake 3.22 or newer; JUCE 9.0.3 is downloaded automatically):
 
 ```
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -150,14 +189,17 @@ screenshots of every view.
 - The transfer function uses one FFT size for all frequencies (8k to 64k). Low frequencies need the bigger sizes;
   a multi-window FFT like Smaart's is a possible later improvement.
 - Pink noise uses Paul Kellet's filter, designed for 44.1 kHz; at 96 kHz the slope below about 20 Hz differs slightly.
-- On Windows the app uses WASAPI or DirectSound. ASIO is not included.
+- ASIO on Windows uses the ASIO headers bundled with JUCE 9; Steinberg's licence terms for them apply.
 - The VST3 can only measure what the host routes to its inputs (input 1 mic, input 2 reference by default).
-- JUCE is licensed under AGPLv3 or a commercial licence. That matters if you distribute LiveAlign to others.
+- Built with JUCE 9, which is licensed under AGPLv3 or the commercial JUCE 9 licence. Keeping LiveAlign for your own
+  use is unaffected; if you ever distribute or sell it, you either release the source under AGPLv3 or need a
+  commercial JUCE licence. See [JUCE's licensing page](https://juce.com/get-juce/#licensing-faq).
 
 ## Roadmap
 
-- **Stage 2, tuning tools:** speaker library (spec sheet values, onboard DSP settings, imported FRD / CSV / CLF
-  data and in-app measurements), crossover designer limited to the filters the DriveRack PA2 offers, phase
-  alignment of tops and subs, target curves with suggested EQ, and a PA2 settings page in its menu order.
-- **Stage 3, live and room tools:** feedback detection and ring-out, room acoustics (RT60, EDT, C50/C80, room
-  modes, noise floor), SPL logging with alarms, multi-position averaging, and PDF reports.
+- **Tab 2, Speakers:** speaker library (spec sheet values, onboard DSP settings, imported EASE metadata, FRD / CSV /
+  CLF data and in-app measurements), measuring and overlaying each speaker or group, crossover designer limited to
+  the filters the DriveRack PA2 offers, top / sub phase alignment, and a PA2 settings page in its menu order.
+- **Tab 3, Room tuning:** multi-position averaging, target curves with suggested EQ, alignment at the seats,
+  feedback ring-out, room acoustics (RT60, EDT, C50/C80, room modes).
+- **Tab 4, Monitoring additions:** spectrogram, delay tracking, trace offsets, SPL logging with alarms, PDF reports.

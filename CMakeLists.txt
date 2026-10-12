@@ -6,7 +6,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 # Apple universal binary (Apple silicon + Intel) by default; Windows builds are x64.
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
 
-project(LiveAlign VERSION 0.2.0 LANGUAGES C CXX)
+project(LiveAlign VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,7 +20,7 @@ else()
     include(FetchContent)
     FetchContent_Declare(JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-        GIT_TAG 8.0.8
+        GIT_TAG 9.0.3
         GIT_SHALLOW ON)
     FetchContent_MakeAvailable(JUCE)
 endif()
@@ -50,6 +50,11 @@ target_compile_definitions(LiveAlign PUBLIC
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+
+# ASIO on Windows, using the ASIO headers bundled with JUCE 9 (Steinberg licence terms apply).
+if (WIN32)
+    target_compile_definitions(LiveAlign PUBLIC JUCE_ASIO=1)
+endif()
 
 target_link_libraries(LiveAlign
     PRIVATE

@@ -4,6 +4,7 @@
 #include "Settings.h"
 #include "Analyzer.h"
 #include "TraceStore.h"
+#include "Checklist.h"
 #include "Analysis/Generator.h"
 
 // LiveAlign runs as a standalone app (system tuning: drives the PA with the generator and measures through the mic)
@@ -42,6 +43,7 @@ public:
     void setStateInformation (const void*, int) override;
 
     bool isStandalone() const { return wrapperType == wrapperType_Standalone; }
+    bool uiAsStandalone = false;   // local screenshot tool only: show every tab
     int numInputs() const { return getTotalNumInputChannels(); }
     int numOutputs() const { return getTotalNumOutputChannels(); }
 
@@ -55,6 +57,21 @@ public:
     float micRmsDb() const { return micRms.load(); }
     float refRmsDb() const { return refRms.load(); }
 
+    // ---- venue project (message thread) ----
+    // A project holds the venue details, the settings, the mic calibration, the traces and the checklist.
+    std::unique_ptr<juce::XmlElement> createProjectXml() const;
+    void loadProjectXml (const juce::XmlElement&);
+    juce::String saveProject (const juce::File&);   // returns an error message, or empty
+    juce::String openProject (const juce::File&);
+    void newProject();
+    static juce::String projectExtension() { return ".lavenue"; }
+    // True when the project differs from the last save / open.
+    bool projectChanged() const;
+
+    juce::String venueName { "Untitled venue" }, venueNotes;
+    juce::File projectFile;
+    la::MicChecklist micChecklist;
+
     la::Settings settings;
     la::Analyzer analyzer { settings };
     la::TraceStore traces;
@@ -64,7 +81,9 @@ private:
     std::vector<float> genBuf, zeros;
     double rmsCoeff = 0.0, micMs = 0.0, refMs = 0.0;
     std::atomic<float> micPeak { 0.0f }, refPeak { 0.0f }, micRms { -120.0f }, refRms { -120.0f };
-    juce::String calPath;
+    juce::String savedProjectText;
+    void saveCalibration (juce::XmlElement&) const;
+    void loadCalibration (const juce::XmlElement&);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LiveAlignProcessor)
 };

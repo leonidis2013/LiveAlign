@@ -157,10 +157,6 @@ public:
         unitBox.onChange = [this] { settings.distanceUnit = unitBox.getSelectedItemIndex(); };
         row (1, "Distance unit", unitBox);
 
-        header (1, "Files");
-        folderButton.onClick = [] { TraceStore::traceFolder().createDirectory(); TraceStore::traceFolder().revealToUser(); };
-        row (1, "Saved traces", folderButton);
-
         setSize (2 * kColW + kColGap + 2 * kPad, juce::jmax (colY[0], colY[1]) + 40);
         startTimerHz (2);
     }
@@ -262,7 +258,7 @@ private:
     std::vector<Header> headers;
     int colY[2] { kTop, kTop };
 
-    juce::TextButton deviceButton { "Audio device..." }, calButton { "Calibration..." }, folderButton { "Open folder" };
+    juce::TextButton deviceButton { "Audio device..." }, calButton { "Calibration..." };
     juce::ComboBox micBox, refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,
         themeBox, irModeBox, irRangeBox, tempUnitBox, unitBox;
     juce::ToggleButton refRtaToggle { "Reference" }, peakToggle { "Peak hold" };

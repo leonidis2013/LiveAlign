@@ -1,6 +1,7 @@
 #pragma once
-// Saved traces: snapshots of a transfer function or RTA kept for comparison, stored as small text files
-// (FRD-compatible, with coherence as a 4th column) in the user's LiveAlign folder. Message thread only.
+// Saved traces: snapshots of a transfer function or RTA kept for comparison. They live in memory and are saved
+// with the app / plug-in state and inside venue project files. FRD files are used to exchange them with other software.
+// Message thread only.
 #include <juce_core/juce_core.h>
 #include "Analysis/FreqTable.h"
 
@@ -16,7 +17,6 @@ struct Trace
     bool visible = true;
     juce::String created;
     FreqTable data;   // freq, db, phase (transfer), extra = coherence (transfer)
-    juce::File file;
 };
 
 class TraceStore
@@ -24,30 +24,27 @@ class TraceStore
 public:
     static juce::File userFolder()
     {
-        return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                   .getChildFile ("LiveAlign");
+        return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("LiveAlign");
     }
 
-    static juce::File traceFolder() { return userFolder().getChildFile ("Traces"); }
+    // Folder used by version 0.1 / 0.2 for trace files; read once so nothing is lost on upgrade.
+    static juce::File legacyTraceFolder() { return userFolder().getChildFile ("Traces"); }
 
-    TraceStore() { reload(); }
-
-    void reload()
+    void importLegacyFolder()
     {
-        traces.clear();
-        auto files = traceFolder().findChildFiles (juce::File::findFiles, false, "*.latrace");
+        auto files = legacyTraceFolder().findChildFiles (juce::File::findFiles, false, "*.latrace");
         files.sort();
         for (const auto& f : files)
         {
             auto t = parseFreqTable (f.loadFileAsString().toStdString());
             if (t.empty()) continue;
             Trace tr;
-            tr.file = f;
             tr.name = juce::String (t.metaValue ("name", f.getFileNameWithoutExtension().toStdString()));
             tr.kind = t.metaValue ("kind") == "rta" ? Trace::Rta : Trace::Transfer;
             tr.colour = juce::String (t.metaValue ("colour", "0")).getIntValue();
             tr.visible = t.metaValue ("visible", "1") != "0";
             tr.created = juce::String (t.metaValue ("created"));
+            t.meta.clear();
             tr.data = std::move (t);
             traces.push_back (std::move (tr));
         }
@@ -58,9 +55,7 @@ public:
     {
         t.colour = nextColour();
         if (t.created.isEmpty()) t.created = juce::Time::getCurrentTime().toString (true, true, false, true);
-        t.file = uniqueFile (t.name);
         traces.push_back (std::move (t));
-        save ((int) traces.size() - 1);
         ++version;
         return (int) traces.size() - 1;
     }
@@ -68,16 +63,16 @@ public:
     void remove (int i)
     {
         if (! valid (i)) return;
-        traces[(size_t) i].file.deleteFile();
         traces.erase (traces.begin() + i);
         ++version;
     }
+
+    void clear() { traces.clear(); ++version; }
 
     void rename (int i, const juce::String& newName)
     {
         if (! valid (i) || newName.trim().isEmpty()) return;
         traces[(size_t) i].name = newName.trim();
-        save (i);
         ++version;
     }
 
@@ -85,7 +80,6 @@ public:
     {
         if (! valid (i)) return;
         traces[(size_t) i].visible = v;
-        save (i);
         ++version;
     }
 
@@ -117,33 +111,50 @@ public:
         return {};
     }
 
+    void save (juce::XmlElement& parent) const
+    {
+        auto* list = parent.createNewChildElement ("Traces");
+        for (const auto& t : traces)
+        {
+            auto* e = list->createNewChildElement ("Trace");
+            e->setAttribute ("name", t.name);
+            e->setAttribute ("kind", t.kind == Trace::Rta ? "rta" : "transfer");
+            e->setAttribute ("colour", t.colour);
+            e->setAttribute ("visible", t.visible);
+            e->setAttribute ("created", t.created);
+            FreqTable copy = t.data;
+            copy.meta.clear();
+            e->addTextElement (juce::String (writeFrd (copy, {}, true)));
+        }
+    }
+
+    // Replaces the traces with the ones in `parent`. Returns false when it has no <Traces> element.
+    bool load (const juce::XmlElement& parent)
+    {
+        const auto* list = parent.getChildByName ("Traces");
+        if (list == nullptr) return false;
+        traces.clear();
+        for (const auto* e : list->getChildWithTagNameIterator ("Trace"))
+        {
+            Trace t;
+            t.name = e->getStringAttribute ("name", "Trace");
+            t.kind = e->getStringAttribute ("kind") == "rta" ? Trace::Rta : Trace::Transfer;
+            t.colour = e->getIntAttribute ("colour", 0);
+            t.visible = e->getBoolAttribute ("visible", true);
+            t.created = e->getStringAttribute ("created");
+            t.data = parseFreqTable (e->getAllSubText().toStdString());
+            if (! t.data.empty()) traces.push_back (std::move (t));
+        }
+        ++version;
+        return true;
+    }
+
     const std::vector<Trace>& all() const { return traces; }
     int size() const { return (int) traces.size(); }
     bool valid (int i) const { return i >= 0 && i < (int) traces.size(); }
     int getVersion() const { return version; }
 
 private:
-    void save (int i)
-    {
-        auto& t = traces[(size_t) i];
-        FreqTable copy = t.data;
-        copy.meta = { { "name", t.name.toStdString() },
-                      { "kind", t.kind == Trace::Rta ? "rta" : "transfer" },
-                      { "colour", std::to_string (t.colour) },
-                      { "visible", t.visible ? "1" : "0" },
-                      { "created", t.created.toStdString() } };
-        traceFolder().createDirectory();
-        t.file.replaceWithText (writeFrd (copy, { "LiveAlign trace", "Freq(Hz) Mag(dB) Phase(deg) Coherence" }, true));
-    }
-
-    juce::File uniqueFile (const juce::String& name) const
-    {
-        traceFolder().createDirectory();
-        const auto stamp = juce::Time::getCurrentTime().formatted ("%Y%m%d-%H%M%S");
-        const auto safe = juce::File::createLegalFileName (name).substring (0, 40);
-        return traceFolder().getNonexistentChildFile (stamp + " " + safe, ".latrace", false);
-    }
-
     int nextColour() const
     {
         int used[8] {};

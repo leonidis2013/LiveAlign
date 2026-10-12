@@ -49,6 +49,7 @@ struct Settings
     std::atomic<int> paneLayout { 0 };       // 0 stacked (rows), 1 side by side (columns)
     std::atomic<int> paneView2 { (int) View::Rta }, paneView3 { (int) View::Impulse };
     std::atomic<int> targetCurve { 0 };      // la::targets index, 0 = none
+    std::atomic<int> currentTab { 0 };       // workflow tab: 0 mic setup, 1 speakers, 2 room tuning, 3 monitoring
     std::atomic<int> theme { 0 };            // 0 dark, 1 light
     std::atomic<float> temperatureC { 20.0f };
     std::atomic<int> distanceUnit { 0 };     // 0 feet, 1 metres
@@ -108,6 +109,7 @@ struct Settings
         x.setAttribute ("irMode", irMode.load());
         x.setAttribute ("irRange", irRange.load());
         x.setAttribute ("paneCount", paneCount.load());
+        x.setAttribute ("currentTab", currentTab.load());
         x.setAttribute ("paneLayout", paneLayout.load());
         x.setAttribute ("paneView2", paneView2.load());
         x.setAttribute ("paneView3", paneView3.load());
@@ -148,6 +150,7 @@ struct Settings
         irMode = i ("irMode", 0, 0, 1);
         irRange = i ("irRange", 1, 0, 2);
         paneCount = i ("paneCount", 1, 1, 3);
+        currentTab = i ("currentTab", 0, 0, 3);
         paneLayout = i ("paneLayout", 0, 0, 1);
         paneView2 = i ("paneView2", (int) View::Rta, 0, 2);
         paneView3 = i ("paneView3", (int) View::Impulse, 0, 2);

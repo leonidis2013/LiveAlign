@@ -6,23 +6,62 @@
 using namespace la::ui;
 
 LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), settings (p.settings),
+    : AudioProcessorEditor (&p), processor (p), settings (p.settings), standalone (p.isStandalone() || p.uiAsStandalone),
       splPanel (p.settings), inputPanel (p.settings), delayPanel (p.settings), tracesPanel (p.traces, p.settings), generator (p.settings)
 {
     setLookAndFeel (&laf);
     setWantsKeyboardFocus (true);
 
+    // ---- workflow tabs and pages ----
     addAndMakeVisible (workflowTabs);
+    workflowTabs.onSelect = [this] (int t) { showTab (t); };
+
+    micPage = std::make_unique<MicSetupPage> (p);
+    micPage->onLoadCalFile = [this] { loadCalFile(); };
+    micPage->onNext = [this] { showTab (1); };
+    addChildComponent (*micPage);
+
+    speakerPage = std::make_unique<PlaceholderPage> (1,
+        "Measure each speaker or group on its own, compare their responses, and get the crossover settings for the DriveRack PA2.",
+        juce::StringArray { "Build the system: tops, subs, delays, groups such as a line array or several subs",
+                            "Speaker library: spec sheet, built-in DSP switches, EASE / FRD / CSV / CLF data",
+                            "Measure and overlay each speaker or group",
+                            "Crossover recommendation: frequency, PA2 filter type and slope, delay, polarity",
+                            "Predicted combined response, then the PA2 settings page in menu order" });
+    roomPage = std::make_unique<PlaceholderPage> (2,
+        "Measure across the listening area, compare with a target curve and tune the system.",
+        juce::StringArray { "Several mic positions, averaged",
+                            "Target curve with suggested EQ cuts",
+                            "Top and sub alignment checked at the seats",
+                            "Feedback ring-out for the stage mics",
+                            "Room acoustics: reverb time, clarity, room modes" });
+    speakerPage->onBack = [this] { showTab (0); };
+    speakerPage->onNext = [this] { showTab (2); };
+    roomPage->onBack = [this] { showTab (1); };
+    roomPage->onNext = [this] { showTab (3); };
+    addChildComponent (*speakerPage);
+    addChildComponent (*roomPage);
+
+    // ---- monitoring page ----
     for (int i = 0; i < 3; ++i)
     {
         panes[i] = std::make_unique<MeasurePane> (p.settings, p.traces, i);
         addChildComponent (*panes[i]);
     }
-    addAndMakeVisible (splPanel);
-    addAndMakeVisible (inputPanel);
-    addAndMakeVisible (delayPanel);
-    addAndMakeVisible (tracesPanel);
+    addChildComponent (splPanel);
+    addChildComponent (inputPanel);
+    addChildComponent (delayPanel);
+    addChildComponent (tracesPanel);
+    monitorBackButton.setButtonText (juce::String ("Back: ") + tabInfo (2).name);
+    monitorBackButton.onClick = [this] { showTab (2); };
+    addChildComponent (monitorBackButton);
+
     addAndMakeVisible (generator);
+
+    // ---- header ----
+    projectButton.setTooltip ("New, open and save venue projects");
+    projectButton.onClick = [this] { showProjectMenu(); };
+    addAndMakeVisible (projectButton);
 
     runButton.setTooltip ("Freeze the graphs to study them; the sound level keeps running (key: Space)");
     runButton.onClick = [this] { settings.running = ! settings.running.load(); };
@@ -49,6 +88,10 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     tracesPanel.onExport = [this] (int i) { exportTrace (i); };
     tracesPanel.onDelete = [this] (int i) { deleteTrace (i); };
 
+    // The VST3 lives in a host during the event: it shows Monitoring only.
+    if (! standalone)
+        for (int i = 0; i < 3; ++i) workflowTabs.setTabVisible (i, false);
+
     applyTheme (settings.theme.load());
     generator.setNumOutputs (p.numOutputs());
     generator.sync();
@@ -56,8 +99,172 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     setResizable (true, true);
     setResizeLimits (1100, 720, 5120, 2880);
     setSize (1400, 900);
+    showTab (standalone ? settings.currentTab.load() : 3);
 
     startTimerHz (30);
+}
+
+void LiveAlignEditor::showTab (int tab)
+{
+    tab = standalone ? juce::jlimit (0, 3, tab) : 3;
+    settings.currentTab = tab;
+    shownTab = tab;
+    workflowTabs.setCurrent (tab);
+
+    workflowTabs.setDone (0, micPage->completedSteps() == 6);
+    workflowTabs.setProgress (0, micPage->completedSteps() == 6 ? juce::String() : juce::String (micPage->completedSteps()) + " of 6 done");
+    micPage->setVisible (tab == 0);
+    if (tab == 0 && snapSerial > 0) micPage->setSnapshot (snap);
+    speakerPage->setVisible (tab == 1);
+    roomPage->setVisible (tab == 2);
+    const bool mon = tab == 3;
+    for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
+    splPanel.setVisible (mon);
+    inputPanel.setVisible (mon);
+    delayPanel.setVisible (mon);
+    tracesPanel.setVisible (mon);
+    monitorBackButton.setVisible (mon && standalone);
+    resetButton.setVisible (mon);
+    runButton.setVisible (mon);
+    resized();
+}
+
+// ---- venue projects ----
+void LiveAlignEditor::showProjectMenu()
+{
+    juce::PopupMenu m;
+    m.addItem (1, "New venue");
+    m.addItem (2, "Open venue...");
+    m.addSeparator();
+    m.addItem (3, "Save", true);
+    m.addItem (4, "Save as...");
+    m.addSeparator();
+    m.addItem (5, "Venue name and notes...");
+    if (processor.projectFile != juce::File())
+        m.addItem (6, "Show file in folder");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [safe] (int r)
+    {
+        if (safe == nullptr) return;
+        switch (r)
+        {
+            case 1: safe->confirmDiscard ([safe] { if (safe != nullptr) safe->newProject(); }); break;
+            case 2: safe->confirmDiscard ([safe] { if (safe != nullptr) safe->openProject(); }); break;
+            case 3: safe->saveProject (false); break;
+            case 4: safe->saveProject (true); break;
+            case 5: safe->editVenueDetails(); break;
+            case 6: safe->processor.projectFile.revealToUser(); break;
+            default: break;
+        }
+    });
+}
+
+void LiveAlignEditor::confirmDiscard (std::function<void()> then)
+{
+    if (! processor.projectChanged()) { then(); return; }
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsYesNoCancel (juce::MessageBoxIconType::QuestionIcon, "Unsaved changes",
+                                      "Save the changes to \"" + processor.venueName + "\" first?", "Save", "Don't save", "Cancel", this),
+                                  [safe, then] (int r)
+    {
+        if (safe == nullptr) return;
+        if (r == 1)
+        {
+            if (safe->processor.projectFile == juce::File()) { safe->saveProject (true); return; }
+            safe->saveProject (false);
+            then();
+        }
+        else if (r == 2) then();
+    });
+}
+
+void LiveAlignEditor::saveProject (bool askForFile)
+{
+    if (! askForFile && processor.projectFile != juce::File())
+    {
+        const auto err = processor.saveProject (processor.projectFile);
+        if (err.isNotEmpty()) showMessage ("Save failed", err);
+        repaint (venueArea);
+        return;
+    }
+    auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory()
+                                                     : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    chooser = std::make_unique<juce::FileChooser> ("Save venue project",
+                                                   dir.getChildFile (juce::File::createLegalFileName (processor.venueName) + LiveAlignProcessor::projectExtension()),
+                                                   "*" + LiveAlignProcessor::projectExtension());
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        const auto f = fc.getResult();
+        if (f == juce::File()) return;
+        const auto err = safe->processor.saveProject (f);
+        if (err.isNotEmpty()) safe->showMessage ("Save failed", err);
+        safe->repaint();
+    });
+}
+
+void LiveAlignEditor::openProject()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Open venue project", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                                   "*" + LiveAlignProcessor::projectExtension());
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        const auto f = fc.getResult();
+        if (f == juce::File()) return;
+        const auto err = safe->processor.openProject (f);
+        if (err.isNotEmpty()) { safe->showMessage ("Could not open the project", err); return; }
+        safe->afterProjectLoaded();
+    });
+}
+
+void LiveAlignEditor::newProject()
+{
+    processor.newProject();
+    afterProjectLoaded();
+    editVenueDetails();
+}
+
+void LiveAlignEditor::afterProjectLoaded()
+{
+    micPage->refreshChoices();
+    generator.sync();
+    tracesPanel.syncTarget();
+    tracesPanel.refresh();
+    for (auto& pane : panes) pane->sync();
+    layoutPanes();
+    showTab (standalone ? settings.currentTab.load() : 3);
+    repaint();
+}
+
+void LiveAlignEditor::editVenueDetails()
+{
+    venueWindow = std::make_unique<juce::AlertWindow> ("Venue", "Name and notes for this venue project.", juce::MessageBoxIconType::NoIcon, this);
+    venueWindow->addTextEditor ("name", processor.venueName, "Venue name");
+    venueWindow->addTextEditor ("notes", processor.venueNotes, "Notes");
+    if (auto* notes = venueWindow->getTextEditor ("notes"))
+    {
+        notes->setMultiLine (true, true);
+        notes->setReturnKeyStartsNewLine (true);
+        notes->setSize (notes->getWidth(), 90);
+    }
+    venueWindow->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    venueWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    venueWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int result)
+    {
+        if (safe == nullptr || safe->venueWindow == nullptr) return;
+        if (result == 1)
+        {
+            const auto name = safe->venueWindow->getTextEditorContents ("name").trim();
+            safe->processor.venueName = name.isEmpty() ? juce::String ("Untitled venue") : name;
+            safe->processor.venueNotes = safe->venueWindow->getTextEditorContents ("notes");
+        }
+        safe->venueWindow->setVisible (false);
+        safe->repaint();
+    }), false);
 }
 
 LiveAlignEditor::~LiveAlignEditor()
@@ -94,7 +301,7 @@ void LiveAlignEditor::layoutPanes()
     const int gap = 8;
     for (int i = 0; i < 3; ++i)
     {
-        panes[i]->setVisible (i < count);
+        panes[i]->setVisible (i < count && shownTab == 3);
         if (i >= count) continue;
         const int remaining = count - i;
         if (columns)
@@ -289,16 +496,18 @@ void LiveAlignEditor::showMessage (const juce::String& title, const juce::String
 bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
 {
     const auto c = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
-    if (key == juce::KeyPress::spaceKey) { settings.running = ! settings.running.load(); return true; }
+    if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { saveProject (false); return true; }
     if (key == juce::KeyPress::escapeKey)
     {
         if (la::StandaloneHooks::isFullScreen() && la::StandaloneHooks::isFullScreen()()) toggleFullScreen();
         return true;
     }
     if (c == 'f' || key == juce::KeyPress (juce::KeyPress::F11Key)) { toggleFullScreen(); return true; }
+    if (c == 'g') { toggleGenerator(); return true; }
+    if (shownTab != 3) return false;
+    if (key == juce::KeyPress::spaceKey) { settings.running = ! settings.running.load(); return true; }
     if (c == 'c') { capture(); return true; }
     if (c == 'd') { settings.requestFindDelay = true; return true; }
-    if (c == 'g') { toggleGenerator(); return true; }
     if (c == 'r') { settings.requestResetAverages = true; return true; }
     if (c == '1' || c == '2' || c == '3') { settings.view = (int) (c - '1'); panes[0]->sync(); return true; }
     return false;
@@ -311,20 +520,33 @@ void LiveAlignEditor::timerCallback()
     if (settings.paneCount.load() != laidOutCount || settings.paneLayout.load() != laidOutLayout) layoutPanes();
     for (auto& pane : panes) pane->sync();
 
+    const bool monitoring = shownTab == 3;
     if (processor.analyzer.readSnapshot (snap, snapSerial))
     {
         snapSerial = snap.serial;
-        for (int i = 0; i < laidOutCount; ++i) panes[i]->update (snap);
-        splPanel.update (snap);
+        if (monitoring)
+        {
+            for (int i = 0; i < laidOutCount; ++i) panes[i]->update (snap);
+            splPanel.update (snap);
+        }
+        else if (shownTab == 0)
+            micPage->setSnapshot (snap);
     }
 
-    inputPanel.setLevels (processor.takeMicPeak(), processor.micRmsDb(), processor.takeRefPeak(), processor.refRmsDb());
-    delayPanel.setReport (processor.analyzer.readDelayReport());
-    tracesPanel.refresh();
+    const float mp = processor.takeMicPeak(), rp = processor.takeRefPeak();
+    if (monitoring) inputPanel.setLevels (mp, processor.micRmsDb(), rp, processor.refRmsDb());
+    else micPage->setLevels (mp, processor.micRmsDb(), rp, processor.refRmsDb());
+    if (monitoring)
+    {
+        delayPanel.setReport (processor.analyzer.readDelayReport());
+        tracesPanel.refresh();
+    }
 
+    // Running is green; Frozen is amber so a frozen screen is never mistaken for live data.
     const bool running = settings.running.load();
-    runButton.setToggleState (! running, juce::dontSendNotification);
     runButton.setButtonText (running ? "Running" : "Frozen");
+    runButton.setColour (juce::TextButton::buttonColourId, running ? pal().good : pal().warn);
+    runButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
 
     if (processor.analyzer.hasOverflowed()) overloadUntil = juce::Time::getMillisecondCounter() + 3000;
 
@@ -336,12 +558,26 @@ void LiveAlignEditor::timerCallback()
         const bool fs = la::StandaloneHooks::isFullScreen() && la::StandaloneHooks::isFullScreen()();
         fullScreenButton.setButtonText (fs ? "Exit full screen" : "Full screen");
 
+        const int micDone = micPage->completedSteps();
+        workflowTabs.setDone (0, micDone == 6);
+        workflowTabs.setProgress (0, micDone == 6 ? juce::String() : juce::String (micDone) + " of 6 done");
+
         juce::String s;
-        s << juce::String (snap.sampleRate / 1000.0, 1) << " kHz   FFT " << snap.fftSize / 1024 << "k   "
-          << juce::jmin (snap.tfFrames, settings.averages.load()) << "/" << settings.averages.load() << " avg   1/"
-          << settings.smoothing.load() << " oct";
-        if (juce::Time::getMillisecondCounter() < overloadUntil) s << "   ANALYSIS BEHIND";
-        if (s != status) { status = s; repaint (statusArea); }
+        if (monitoring)
+        {
+            s << juce::String (snap.sampleRate / 1000.0, 1) << " kHz   FFT " << snap.fftSize / 1024 << "k   "
+              << juce::jmin (snap.tfFrames, settings.averages.load()) << "/" << settings.averages.load() << " avg   1/"
+              << settings.smoothing.load() << " oct";
+            if (juce::Time::getMillisecondCounter() < overloadUntil) s << "   ANALYSIS BEHIND";
+        }
+        status = s;
+        panes[0]->setStatus (s);
+    }
+
+    if (tick % 30 == 0)
+    {
+        const bool changed = processor.projectChanged();
+        if (changed != unsaved) { unsaved = changed; repaint (venueArea); }
     }
 }
 
@@ -360,19 +596,27 @@ void LiveAlignEditor::paint (juce::Graphics& g)
     g.setFont (monoFont (11.0f));
     g.drawText ("v" + juce::String (JucePlugin_VersionString), header.withTrimmedLeft (124).withWidth (60), juce::Justification::centredLeft);
 
-    g.setFont (monoFont (11.5f));
-    g.setColour (status.contains ("BEHIND") ? p.warn : p.textDim);
-    g.drawText (status, statusArea, juce::Justification::centredRight);
+    // venue name, with a dot while there are unsaved changes
+    auto v = venueArea;
+    g.setColour (p.text);
+    g.setFont (font (13.0f, true));
+    g.drawText (processor.venueName, v.removeFromTop (v.getHeight() / 2 + 2).withTrimmedTop (2), juce::Justification::bottomLeft, true);
+    g.setColour (unsaved ? p.warn : p.textDim);
+    g.setFont (font (10.5f));
+    g.drawText (unsaved ? juce::String ("Unsaved changes") : (processor.projectFile != juce::File() ? processor.projectFile.getFileName() : juce::String ("Not saved yet")),
+                v, juce::Justification::topLeft, true);
+
 }
 
 void LiveAlignEditor::resized()
 {
     auto r = getLocalBounds().reduced (12);
-    auto header = r.removeFromTop (40);
+    auto header = r.removeFromTop (44);
     r.removeFromTop (8);
 
-    auto h = header.withTrimmedLeft (196);
-    workflowTabs.setBounds (h.removeFromLeft (140));
+    auto h = header.withTrimmedLeft (186);
+    workflowTabs.setBounds (h.removeFromLeft (workflowTabs.preferredWidth()));
+    h.removeFromLeft (16);
 
     settingsButton.setBounds (h.removeFromRight (90).withSizeKeepingCentre (90, 28));
     h.removeFromRight (8);
@@ -381,17 +625,35 @@ void LiveAlignEditor::resized()
         fullScreenButton.setBounds (h.removeFromRight (124).withSizeKeepingCentre (124, 28));
         h.removeFromRight (8);
     }
-    resetButton.setBounds (h.removeFromRight (86).withSizeKeepingCentre (86, 28));
-    h.removeFromRight (6);
-    runButton.setBounds (h.removeFromRight (90).withSizeKeepingCentre (90, 28));
-    h.removeFromRight (14);
+    if (resetButton.isVisible())
+    {
+        resetButton.setBounds (h.removeFromRight (86).withSizeKeepingCentre (86, 28));
+        h.removeFromRight (6);
+        runButton.setBounds (h.removeFromRight (90).withSizeKeepingCentre (90, 28));
+        h.removeFromRight (14);
+    }
+    projectButton.setBounds (h.removeFromLeft (76).withSizeKeepingCentre (76, 28));
+    h.removeFromLeft (8);
+    venueArea = h.removeFromLeft (juce::jmin (220, h.getWidth() / 2));
+    h.removeFromLeft (8);
     statusArea = h;
 
     generator.setBounds (r.removeFromBottom (54));
     r.removeFromBottom (8);
+    pageArea = r;
+
+    micPage->setBounds (r);
+    speakerPage->setBounds (r);
+    roomPage->setBounds (r);
 
     auto side = r.removeFromRight (330);
     r.removeFromRight (8);
+    if (standalone)
+    {
+        auto nav = side.removeFromBottom (36);
+        monitorBackButton.setBounds (nav.removeFromLeft (220));
+        side.removeFromBottom (8);
+    }
     paneArea = r;
     layoutPanes();
 

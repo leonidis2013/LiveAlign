@@ -68,7 +68,7 @@ public:
     void timerCallback() override
     {
         ++ticks;
-        if (ticks < 150) feed (960);   // ~20 ms of audio per 20 ms tick: real time
+        if (ticks < 245) feed (960);   // ~20 ms of audio per 20 ms tick: real time
         if (ticks == 60) proc.settings.requestFindDelay = true;
 
         if (ticks == 140)
@@ -82,14 +82,19 @@ public:
             proc.traces.add (t);
         }
 
-        if (ticks == 150) { editor.reset (dynamic_cast<LiveAlignEditor*> (proc.createEditor())); editor->setSize (1400, 900); proc.settings.view = 1; proc.settings.targetCurve = 4; }
+        if (ticks == 150) { proc.uiAsStandalone = true; proc.settings.currentTab = 3; editor.reset (dynamic_cast<LiveAlignEditor*> (proc.createEditor())); editor->setSize (1400, 900); proc.settings.view = 1; proc.settings.targetCurve = 4; }
         if (ticks == 170) shot ("transfer");
         if (ticks == 171) { proc.settings.paneCount = 3; editor->setPaneViews (1, 0, 2); }
         if (ticks == 190) shot ("three-stacked");
         if (ticks == 191) { proc.settings.paneCount = 2; proc.settings.paneLayout = 1; editor->setPaneViews (0, 2, 1); }
         if (ticks == 210) shot ("two-side-by-side");
         if (ticks == 211) { proc.settings.paneCount = 1; proc.settings.paneLayout = 0; editor->setPaneViews (1, 0, 2); proc.settings.theme = 1; proc.settings.temperatureUnit = 1; }
-        if (ticks == 230) shot ("transfer-light");
+        if (ticks == 238) shot ("transfer-light");
+        if (ticks == 225) { proc.settings.theme = 0; proc.micChecklist.noiseDone = true; proc.micChecklist.noiseA = 38.5f; proc.micChecklist.noiseC = 52.1f; proc.micChecklist.noiseIsSpl = true; editor->showTab (0); }
+        if (ticks == 229) shot ("mic-setup");
+        if (ticks == 230) editor->showTab (1);
+        if (ticks == 232) shot ("speakers-placeholder");
+        if (ticks == 233) { editor->showTab (3); proc.settings.theme = 1; }
         if (ticks == 231)
         {
             proc.settings.theme = 0;
@@ -108,11 +113,31 @@ public:
                 cp.setLookAndFeel (nullptr);
             }
         }
-        if (ticks == 235)
+        if (ticks == 240)
         {
             const auto d = proc.analyzer.readDelayReport();
             std::printf ("delay report: valid=%d ms=%.3f inv=%d conf=%.1f  applied=%.3f ms\n", (int) d.valid, d.ms, (int) d.inverted,
                          d.confidenceDb, (double) proc.settings.delayMs.load());
+            // venue project round trip
+            proc.venueName = "Test church";
+            proc.micChecklist.calFileSkipped = true;
+            const auto f = dir.getChildFile ("test.lavenue");
+            const auto err = proc.saveProject (f);
+            const int tracesBefore = proc.traces.size();
+            const float offsetBefore = proc.settings.splOffset.load();
+            proc.newProject();
+            proc.settings.splOffset = 50.0f;
+            const auto err2 = proc.openProject (f);
+            std::printf ("project: save '%s' open '%s' name=%s traces %d->%d offset %.1f->%.1f skipped=%d changed=%d\n",
+                         err.toRawUTF8(), err2.toRawUTF8(), proc.venueName.toRawUTF8(), tracesBefore, proc.traces.size(),
+                         (double) offsetBefore, (double) proc.settings.splOffset.load(), (int) proc.micChecklist.calFileSkipped,
+                         (int) proc.projectChanged());
+            juce::MemoryBlock state;
+            proc.getStateInformation (state);
+            proc.newProject();
+            proc.setStateInformation (state.getData(), (int) state.getSize());
+            std::printf ("state: name=%s traces=%d changed=%d\n", proc.venueName.toRawUTF8(), proc.traces.size(), (int) proc.projectChanged());
+            f.deleteFile();
             editor.reset();
             for (int i = proc.traces.size() - 1; i >= 0; --i) proc.traces.remove (i);
             juce::MessageManager::getInstance()->stopDispatchLoop();
