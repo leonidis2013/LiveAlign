@@ -22,12 +22,12 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     addChildComponent (*micPage);
 
     speakerPage = std::make_unique<PlaceholderPage> (1,
-        "Measure each speaker or group on its own, compare their responses, and get the crossover settings for the DriveRack PA2.",
+        "Measure each speaker or group on its own, compare their responses, and get crossover settings for your speaker management system.",
         juce::StringArray { "Build the system: tops, subs, delays, groups such as a line array or several subs",
                             "Speaker library: spec sheet, built-in DSP switches, EASE / FRD / CSV / CLF data",
                             "Measure and overlay each speaker or group",
-                            "Crossover recommendation: frequency, PA2 filter type and slope, delay, polarity",
-                            "Predicted combined response, then the PA2 settings page in menu order" });
+                            "Crossover recommendation: frequency, filter type and slope, delay, polarity",
+                            "Predicted combined response, then a settings summary to enter in your processor" });
     roomPage = std::make_unique<PlaceholderPage> (2,
         "Measure across the listening area, compare with a target curve and tune the system.",
         juce::StringArray { "Several mic positions, averaged",

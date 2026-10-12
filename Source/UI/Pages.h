@@ -11,7 +11,7 @@ inline const TabInfo& tabInfo (int i)
 {
     static const TabInfo tabs[] = {
         { "Mic setup", "Mic, inputs, calibration, loopback and room noise" },
-        { "Speakers", "Measure each speaker or group, compare them, and get crossover and PA2 settings" },
+        { "Speakers", "Measure each speaker or group, compare them, and get crossover settings" },
         { "Room tuning", "Measure across the room, compare with a target and tune" },
         { "Monitoring", "RTA, transfer function, impulse response and sound level during the event" } };
     return tabs[juce::jlimit (0, 3, i)];

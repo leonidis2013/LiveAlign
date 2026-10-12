@@ -10,7 +10,7 @@ LiveProfessor). Windows and macOS.
 ## What you need
 
 - A measurement mic (flat, omni) on an audio interface input, ideally with its calibration file.
-- A **reference** signal. The most accurate is a loopback: split the output that feeds the PA (or the DriveRack PA2
+- A **reference** signal. The most accurate is a loopback: split the output that feeds the PA (or your speaker processor's
   input) back into a second interface input. If you only use the generator, Settings > Reference > *Generator
   (internal copy)* works without a cable.
 
@@ -22,7 +22,7 @@ each one shows its progress and has Back / Next buttons.
 | Tab | Status | What it does |
 |-----|--------|--------------|
 | **1 Mic setup** | Built | A checklist: audio interface, inputs, mic calibration file, sound level calibration, reference loopback check, room noise floor |
-| **2 Speakers** | Next stage | Build the system, speaker library, measure and overlay each speaker or group, crossover recommendation, PA2 settings page |
+| **2 Speakers** | Next stage | Build the system, speaker library, measure and overlay each speaker or group, crossover recommendation, settings summary |
 | **3 Room tuning** | Later | Several mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
 | **4 Monitoring** | Built | RTA, transfer function, impulse response, sound level, delay finder and traces, for use during the event |
 
@@ -197,9 +197,10 @@ screenshots of every view.
 
 ## Roadmap
 
-- **Tab 2, Speakers:** speaker library (spec sheet values, onboard DSP settings, imported EASE metadata, FRD / CSV /
-  CLF data and in-app measurements), measuring and overlaying each speaker or group, crossover designer limited to
-  the filters the DriveRack PA2 offers, top / sub phase alignment, and a PA2 settings page in its menu order.
+- **Tab 2, Speakers:** any speakers and any speaker management system. Speaker library (spec sheet values, onboard
+  DSP settings, imported EASE metadata, FRD / CSV / CLF data and in-app measurements), measuring and overlaying each
+  speaker or group, a crossover designer that can be limited to the filter types and slopes your processor offers,
+  top / sub phase alignment, and a settings summary to enter in your processor.
 - **Tab 3, Room tuning:** multi-position averaging, target curves with suggested EQ, alignment at the seats,
   feedback ring-out, room acoustics (RT60, EDT, C50/C80, room modes).
 - **Tab 4, Monitoring additions:** spectrogram, delay tracking, trace offsets, SPL logging with alarms, PDF reports.

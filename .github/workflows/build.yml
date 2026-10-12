@@ -46,7 +46,17 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cmake --build build --config Release --target LiveAlign_VST3 LiveAlign_Standalone --parallel
+        run: |
+          set -o pipefail
+          cmake --build build --config Release --target LiveAlign_VST3 LiveAlign_Standalone --parallel 2>&1 | tee build.log
+
+      - name: Report compile errors
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "error [A-Z]+[0-9]+|error:|fatal error|LNK[0-9]+" build.log | sort -u | head -40 | while IFS= read -r line; do
+            echo "::error::${line//%/%25}"
+          done
 
       - name: Locate the builds
         id: locate
