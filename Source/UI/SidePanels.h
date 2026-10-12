@@ -4,6 +4,7 @@
 #include "Graph.h"
 #include "../Analyzer.h"
 #include "../TraceStore.h"
+#include "../Analysis/TargetCurves.h"
 
 namespace la::ui
 {
@@ -23,11 +24,21 @@ public:
         resetButton.setTooltip ("Restart the Leq and maximum readings");
         resetButton.onClick = [this] { settings.requestResetLeq = true; };
         addAndMakeVisible (resetButton);
+        calButton.setTooltip ("Calibrate the sound level with an acoustic calibrator, and load the mic's calibration file");
+        calButton.onClick = [this] { if (onCalibrate) onCalibrate(); };
+        addAndMakeVisible (calButton);
     }
 
     void update (const Snapshot& snap) { data = &snap; repaint(); }
 
-    void resized() override { resetButton.setBounds (getWidth() - 74, 8, 64, 22); }
+    void resized() override
+    {
+        resetButton.setBounds (getWidth() - 84, 6, 74, 24);
+        calButton.setBounds (getWidth() - 84 - 86, 6, 82, 24);
+    }
+
+    std::function<void()> onCalibrate;
+    juce::Component& calibrateButton() { return calButton; }
 
     void paint (juce::Graphics& g) override
     {
@@ -72,7 +83,7 @@ public:
 private:
     Settings& settings;
     const Snapshot* data = nullptr;
-    juce::TextButton resetButton { "Reset" };
+    juce::TextButton resetButton { "Reset Leq" }, calButton { "Calibrate" };
 };
 
 //==============================================================================
@@ -203,8 +214,7 @@ public:
         g.drawText (juce::String (ms, 2) + " ms", r.removeFromTop (28).removeFromLeft (140), juce::Justification::centredLeft);
         g.setColour (p.textDim);
         g.setFont (font (12.0f));
-        g.drawText (settings.distanceText (ms) + "  at " + juce::String (juce::roundToInt (settings.temperatureC.load()))
-                        + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0")) + "C",
+        g.drawText (settings.distanceText (ms) + "  at " + settings.temperatureText(),
                     getLocalBounds().reduced (12, 0).withTrimmedTop (62).withHeight (28).withTrimmedLeft (140), juce::Justification::centredLeft);
 
         juce::String status;
@@ -238,8 +248,18 @@ public:
     std::function<void()> onCapture, onImport;
     std::function<void (int)> onRename, onExport, onDelete;
 
-    explicit TracesPanel (TraceStore& t) : traces (t)
+    TracesPanel (TraceStore& t, Settings& s) : traces (t), settings (s)
     {
+        for (int i = 0; i < targets::count(); ++i) targetBox.addItem (targets::list()[(size_t) i].name, i + 1);
+        targetBox.setSelectedItemIndex (settings.targetCurve.load(), juce::dontSendNotification);
+        targetBox.onChange = [this]
+        {
+            settings.targetCurve = targetBox.getSelectedItemIndex();
+            targetBox.setTooltip (targets::list()[(size_t) juce::jmax (0, targetBox.getSelectedItemIndex())].description);
+        };
+        targetBox.setTooltip (targets::list()[(size_t) settings.targetCurve.load()].description);
+        addAndMakeVisible (targetBox);
+
         captureButton.setTooltip ("Save the current transfer function or RTA as a trace (key: C)");
         importButton.setTooltip ("Load a trace or speaker response from an FRD, TXT or CSV file");
         captureButton.onClick = [this] { if (onCapture) onCapture(); };
@@ -258,12 +278,19 @@ public:
         captureButton.setBounds (r.removeFromLeft (w));
         r.removeFromLeft (6);
         importButton.setBounds (r);
+        targetBox.setBounds (getLocalBounds().reduced (12, 0).withTrimmedTop (62).removeFromTop (26).withTrimmedLeft (54));
     }
+
+    void syncTarget() { targetBox.setSelectedItemIndex (settings.targetCurve.load(), juce::dontSendNotification); }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
         drawPanel (g, getLocalBounds().toFloat(), "Traces");
+        g.setColour (p.text);
+        g.setFont (font (12.0f));
+        g.drawText ("Target", getLocalBounds().reduced (12, 0).withTrimmedTop (62).removeFromTop (26).withWidth (50),
+                    juce::Justification::centredLeft);
         const auto list = listArea();
         const auto& all = traces.all();
         if (all.empty())
@@ -377,7 +404,7 @@ private:
         });
     }
 
-    juce::Rectangle<int> listArea() const { return getLocalBounds().reduced (8, 0).withTrimmedTop (62).withTrimmedBottom (8); }
+    juce::Rectangle<int> listArea() const { return getLocalBounds().reduced (8, 0).withTrimmedTop (96).withTrimmedBottom (8); }
     int visibleRows() const { return juce::jmax (1, listArea().getHeight() / kRowH); }
     juce::Rectangle<int> rowBounds (int row) const { return listArea().withHeight (kRowH).translated (0, row * kRowH); }
 
@@ -391,7 +418,9 @@ private:
 
     static constexpr int kRowH = 26;
     TraceStore& traces;
+    Settings& settings;
     juce::TextButton captureButton { "Capture" }, importButton { "Import..." };
+    juce::ComboBox targetBox;
     int seenVersion = -1, hoverRow = -1, scroll = 0;
 };
 } // namespace la::ui

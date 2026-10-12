@@ -1,5 +1,5 @@
 #pragma once
-// The pop-up box for setup and rarely changed options, so the main window stays free for the graphs.
+// The Settings pop-up: every option in one place, grouped into sections in two columns.
 #include <functional>
 #include <memory>
 #include "Theme.h"
@@ -11,24 +11,24 @@ namespace la::ui
 class SettingsPanel : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void()> onThemeChanged, onLoadCalFile;
+    std::function<void()> onThemeChanged, onOpenCalibration, onLayoutChanged;
 
-    SettingsPanel (LiveAlignProcessor& p, std::function<float()> rawZSlowDbfs) : proc (p), settings (p.settings), rawZ (std::move (rawZSlowDbfs))
+    explicit SettingsPanel (LiveAlignProcessor& p) : settings (p.settings)
     {
         const int nIn = juce::jmax (1, p.numInputs());
 
-        // ---- left column: routing and analysis ----
+        // ================= left column =================
+        header (0, "Inputs");
         if (StandaloneHooks::showAudioSettings())
         {
             deviceButton.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
             deviceButton.setTooltip ("Choose the audio interface, sample rate, buffer size and which channels are used");
-            addRow (0, "Audio device", deviceButton);
+            row (0, "Audio device", deviceButton);
         }
-
         for (int i = 0; i < nIn; ++i) micBox.addItem ("Input " + juce::String (i + 1), i + 1);
         micBox.setSelectedItemIndex (juce::jlimit (0, nIn - 1, settings.micChannel.load()), juce::dontSendNotification);
         micBox.onChange = [this] { settings.micChannel = micBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
-        addRow (0, "Measurement mic", micBox);
+        row (0, "Measurement mic", micBox);
 
         refBox.addItem ("Off", 1);
         refBox.addItem ("Generator (internal copy)", 2);
@@ -37,134 +37,181 @@ public:
         refBox.setTooltip ("What the mic is compared against. A loopback cable from the output that feeds the PA is the most "
                            "accurate. The internal generator copy works without a cable but only with the generator.");
         refBox.onChange = [this] { settings.refSource = refBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
-        addRow (0, "Reference", refBox);
+        row (0, "Reference", refBox);
 
-        fftBox.addItem ("8k   (5.9 Hz, fast)", 1);
-        fftBox.addItem ("16k  (2.9 Hz)", 2);
-        fftBox.addItem ("32k  (1.5 Hz)", 3);
-        fftBox.addItem ("64k  (0.7 Hz, slow)", 4);
+        calButton.setTooltip ("SPL calibration with an acoustic calibrator, and the mic's calibration file");
+        calButton.onClick = [this] { if (onOpenCalibration) onOpenCalibration(); };
+        row (0, "Mic calibration", calButton);
+
+        header (0, "Transfer function");
         static const int sizes[] = { 8192, 16384, 32768, 65536 };
+        fftBox.addItemList ({ "8k   (5.9 Hz, fast)", "16k  (2.9 Hz)", "32k  (1.5 Hz)", "64k  (0.7 Hz, slow)" }, 1);
         for (int i = 0; i < 4; ++i) if (sizes[i] == settings.fftSize.load()) fftBox.setSelectedItemIndex (i, juce::dontSendNotification);
-        fftBox.setTooltip ("Transfer function FFT size. Bigger resolves low frequencies better but reacts more slowly. "
-                           "Resolution shown at 48 kHz.");
+        fftBox.setTooltip ("Bigger resolves low frequencies better but reacts more slowly. Resolution shown at 48 kHz.");
         fftBox.onChange = [this] { settings.fftSize = sizes[juce::jlimit (0, 3, fftBox.getSelectedItemIndex())]; };
-        addRow (0, "FFT size", fftBox);
+        row (0, "FFT size", fftBox);
+
+        static const int avgs[] = { 1, 2, 4, 8, 16, 32, 64 };
+        for (int i = 0; i < 7; ++i)
+        {
+            avgBox.addItem (juce::String (avgs[i]) + (avgs[i] == 1 ? " (none)" : " frames"), i + 1);
+            if (avgs[i] == settings.averages.load()) avgBox.setSelectedItemIndex (i, juce::dontSendNotification);
+        }
+        avgBox.setTooltip ("More averages are steadier but slower to react");
+        avgBox.onChange = [this] { settings.averages = avgs[juce::jlimit (0, 6, avgBox.getSelectedItemIndex())]; };
+        row (0, "Averaging", avgBox);
+
+        static const int smooth[] = { 48, 24, 12, 6, 3 };
+        for (int i = 0; i < 5; ++i)
+        {
+            smoothBox.addItem ("1/" + juce::String (smooth[i]) + " octave", i + 1);
+            if (smooth[i] == settings.smoothing.load()) smoothBox.setSelectedItemIndex (i, juce::dontSendNotification);
+        }
+        smoothBox.setTooltip ("1/24 or 1/12 octave for tuning, 1/3 for the overall tonal shape");
+        smoothBox.onChange = [this] { settings.smoothing = smooth[juce::jlimit (0, 4, smoothBox.getSelectedItemIndex())]; };
+        row (0, "Smoothing", smoothBox);
 
         blankBox.addItemList ({ "Off", "20 %", "40 %", "60 %", "80 %" }, 1);
         blankBox.setSelectedItemIndex (juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)), juce::dontSendNotification);
-        blankBox.setTooltip ("Hide parts of the transfer function where coherence is below this, so noise and reflections "
-                             "do not look like real response");
+        blankBox.setTooltip ("Hide parts of the transfer function where coherence is below this");
         blankBox.onChange = [this] { settings.coherenceBlank = (float) blankBox.getSelectedItemIndex() / 5.0f; };
-        addRow (0, "Coherence blanking", blankBox);
+        row (0, "Coherence blanking", blankBox);
 
-        rangeBox.addItemList ({ "+/- 12 dB", "+/- 20 dB", "+/- 30 dB", "+/- 40 dB" }, 1);
         static const float ranges[] = { 12.0f, 20.0f, 30.0f, 40.0f };
+        rangeBox.addItemList ({ "+/- 12 dB", "+/- 20 dB", "+/- 30 dB", "+/- 40 dB" }, 1);
         for (int i = 0; i < 4; ++i) if (std::abs (ranges[i] - settings.magRange.load()) < 0.1f) rangeBox.setSelectedItemIndex (i, juce::dontSendNotification);
         rangeBox.onChange = [this] { settings.magRange = ranges[juce::jlimit (0, 3, rangeBox.getSelectedItemIndex())]; };
-        addRow (0, "Magnitude range", rangeBox);
+        row (0, "Magnitude range", rangeBox);
+
+        header (0, "RTA");
+        static const int bands[] = { 1, 3, 6, 12, 24, 48 };
+        for (int i = 0; i < 6; ++i)
+        {
+            bandsBox.addItem ("1/" + juce::String (bands[i]) + " octave", i + 1);
+            if (bands[i] == settings.rtaBands.load()) bandsBox.setSelectedItemIndex (i, juce::dontSendNotification);
+        }
+        bandsBox.onChange = [this] { settings.rtaBands = bands[juce::jlimit (0, 5, bandsBox.getSelectedItemIndex())]; };
+        row (0, "Resolution", bandsBox);
 
         speedBox.addItemList ({ "Fast", "Medium", "Slow" }, 1);
         speedBox.setSelectedItemIndex (settings.rtaSpeed.load(), juce::dontSendNotification);
         speedBox.onChange = [this] { settings.rtaSpeed = speedBox.getSelectedItemIndex(); };
-        addRow (0, "RTA speed", speedBox);
+        row (0, "Speed", speedBox);
 
         refRtaToggle.setToggleState (settings.rtaShowRef.load(), juce::dontSendNotification);
         refRtaToggle.onClick = [this] { settings.rtaShowRef = refRtaToggle.getToggleState(); };
-        addRow (0, "RTA overlay", refRtaToggle);
-
         peakToggle.setToggleState (settings.rtaPeakHold.load(), juce::dontSendNotification);
         peakToggle.onClick = [this] { settings.rtaPeakHold = peakToggle.getToggleState(); settings.requestClearPeak = true; };
-        addRow (0, "RTA peak hold", peakToggle);
+        row (0, "Overlays", refRtaToggle, &peakToggle);
 
-        // ---- right column: calibration, environment, display ----
-        calLoad.onClick = [this] { if (onLoadCalFile) onLoadCalFile(); };
-        calLoad.setTooltip ("Load your measurement mic's calibration file (frequency and dB per line, as supplied with the mic)");
-        calClear.onClick = [this] { proc.clearCalibration(); refreshText(); };
-        addRow (1, "Mic calibration file", calLoad, &calClear);
+        // ================= right column =================
+        header (1, "Screen");
+        countBox.addItemList ({ "1 graph", "2 graphs", "3 graphs" }, 1);
+        countBox.setSelectedItemIndex (settings.paneCount.load() - 1, juce::dontSendNotification);
+        countBox.setTooltip ("Split the screen to show the RTA, transfer function and impulse response together. "
+                             "Pick what each graph shows with the buttons above it.");
+        countBox.onChange = [this] { settings.paneCount = countBox.getSelectedItemIndex() + 1; if (onLayoutChanged) onLayoutChanged(); };
+        row (1, "Graphs", countBox);
 
-        cal94.onClick = [this] { calibrateTo (94.0f); };
-        cal114.onClick = [this] { calibrateTo (114.0f); };
-        cal94.setTooltip ("Put a 94 dB calibrator on the mic, then press this");
-        cal114.setTooltip ("Put a 114 dB calibrator on the mic, then press this");
-        addRow (1, "SPL calibrator", cal94, &cal114);
-
-        offsetSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-        offsetSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 70, 24);
-        offsetSlider.setRange (60.0, 160.0, 0.1);
-        offsetSlider.setTextValueSuffix (" dB");
-        offsetSlider.setValue (settings.splOffset.load(), juce::dontSendNotification);
-        offsetSlider.setTooltip ("dB SPL that a full-scale (0 dBFS) signal at the mic input would be. Set by the calibrator "
-                                 "buttons, or type it in.");
-        offsetSlider.onValueChange = [this] { settings.splOffset = (float) offsetSlider.getValue(); settings.splCalibrated = true; splToggle.setToggleState (true, juce::dontSendNotification); };
-        addRow (1, "SPL offset", offsetSlider);
-
-        splToggle.setToggleState (settings.splCalibrated.load(), juce::dontSendNotification);
-        splToggle.onClick = [this] { settings.splCalibrated = splToggle.getToggleState(); };
-        addRow (1, "Show levels as", splToggle);
-
-        tempSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-        tempSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 70, 24);
-        tempSlider.setRange (-10.0, 45.0, 1.0);
-        tempSlider.setTextValueSuffix (juce::String (juce::CharPointer_UTF8 (" \xc2\xb0" "C")));
-        tempSlider.setValue (settings.temperatureC.load(), juce::dontSendNotification);
-        tempSlider.setTooltip ("Air temperature, for converting delay to distance (speed of sound)");
-        tempSlider.onValueChange = [this] { settings.temperatureC = (float) tempSlider.getValue(); };
-        addRow (1, "Temperature", tempSlider);
-
-        unitBox.addItemList ({ "Feet", "Metres" }, 1);
-        unitBox.setSelectedItemIndex (settings.distanceUnit.load(), juce::dontSendNotification);
-        unitBox.onChange = [this] { settings.distanceUnit = unitBox.getSelectedItemIndex(); };
-        addRow (1, "Distance units", unitBox);
+        layoutBox.addItemList ({ "Stacked", "Side by side" }, 1);
+        layoutBox.setSelectedItemIndex (settings.paneLayout.load(), juce::dontSendNotification);
+        layoutBox.onChange = [this] { settings.paneLayout = layoutBox.getSelectedItemIndex(); if (onLayoutChanged) onLayoutChanged(); };
+        row (1, "Arrangement", layoutBox);
 
         themeBox.addItemList ({ "Dark", "Light" }, 1);
         themeBox.setSelectedItemIndex (settings.theme.load(), juce::dontSendNotification);
         themeBox.onChange = [this] { settings.theme = themeBox.getSelectedItemIndex(); if (onThemeChanged) onThemeChanged(); };
-        addRow (1, "Theme", themeBox);
+        row (1, "Theme", themeBox);
 
+        header (1, "Impulse response");
+        irModeBox.addItemList ({ "Linear", "Log (ETC)" }, 1);
+        irModeBox.setSelectedItemIndex (settings.irMode.load(), juce::dontSendNotification);
+        irModeBox.onChange = [this] { settings.irMode = irModeBox.getSelectedItemIndex(); };
+        row (1, "Display", irModeBox);
+
+        irRangeBox.addItemList ({ "20 ms", "100 ms", "500 ms" }, 1);
+        irRangeBox.setSelectedItemIndex (settings.irRange.load(), juce::dontSendNotification);
+        irRangeBox.onChange = [this] { settings.irRange = irRangeBox.getSelectedItemIndex(); };
+        row (1, "Time range", irRangeBox);
+
+        header (1, "Environment");
+        tempUnitBox.addItemList ({ juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "C  Celsius")),
+                                   juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "F  Fahrenheit")) }, 1);
+        tempUnitBox.setSelectedItemIndex (settings.temperatureUnit.load(), juce::dontSendNotification);
+        tempUnitBox.onChange = [this] { settings.temperatureUnit = tempUnitBox.getSelectedItemIndex(); setupTemperatureSlider(); };
+        row (1, "Temperature unit", tempUnitBox);
+
+        tempSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+        tempSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 70, 24);
+        tempSlider.setTooltip ("Air temperature, used to turn delay times into distances (speed of sound)");
+        tempSlider.onValueChange = [this]
+        {
+            const double v = tempSlider.getValue();
+            settings.temperatureC = (float) (settings.temperatureUnit.load() == 1 ? (v - 32.0) * 5.0 / 9.0 : v);
+        };
+        setupTemperatureSlider();
+        row (1, "Temperature", tempSlider);
+
+        unitBox.addItemList ({ "Feet", "Metres" }, 1);
+        unitBox.setSelectedItemIndex (settings.distanceUnit.load(), juce::dontSendNotification);
+        unitBox.onChange = [this] { settings.distanceUnit = unitBox.getSelectedItemIndex(); };
+        row (1, "Distance unit", unitBox);
+
+        header (1, "Files");
         folderButton.onClick = [] { TraceStore::traceFolder().createDirectory(); TraceStore::traceFolder().revealToUser(); };
-        addRow (1, "Saved traces", folderButton);
+        row (1, "Saved traces", folderButton);
 
-        const int numRows = juce::jmax (rowCount[0], rowCount[1]);
-        setSize (2 * kColW + 3 * kPad, kTop + numRows * kRowH + 64);
-        refreshText();
-        startTimerHz (4);
+        setSize (2 * kColW + kColGap + 2 * kPad, juce::jmax (colY[0], colY[1]) + 40);
+        startTimerHz (2);
     }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
         g.fillAll (p.panel);
-        g.setColour (p.textDim);
-        g.setFont (font (11.0f, true));
-        g.drawText ("SETTINGS", kPad, 0, 200, kTop - 6, juce::Justification::centredLeft);
+        g.setColour (p.text);
+        g.setFont (font (14.0f, true));
+        g.drawText ("Settings", kPad, 6, 200, 30, juce::Justification::centredLeft);
 
-        g.setFont (font (12.0f));
+        // divider between the columns
+        g.setColour (p.border);
+        const int divX = kPad + kColW + kColGap / 2;
+        g.drawVerticalLine (divX, (float) kTop, (float) getHeight() - 36.0f);
+
+        for (const auto& h : headers)
+        {
+            const int x = colX (h.col);
+            g.setColour (p.accent);
+            g.setFont (font (11.0f, true));
+            g.drawText (h.text.toUpperCase(), x, h.y, kColW, 22, juce::Justification::bottomLeft);
+            g.setColour (p.border);
+            g.drawHorizontalLine (h.y + 24, (float) x, (float) (x + kColW));
+        }
+
+        g.setFont (font (12.5f));
         for (const auto& r : rows)
         {
             g.setColour (p.text);
-            g.drawText (r.label, colX (r.col), kTop + r.row * kRowH, kLabelW - 6, 28, juce::Justification::centredLeft);
+            g.drawText (r.label, colX (r.col), r.y, kLabelW - 8, 28, juce::Justification::centredLeft);
         }
 
-        auto bottom = getLocalBounds().reduced (kPad, 8).removeFromBottom (48);
-        g.setFont (font (11.5f));
         g.setColour (p.textDim);
-        g.drawText ("Calibration file: " + calText, bottom.removeFromTop (16), juce::Justification::centredLeft);
-        g.setColour (message.startsWith ("!") ? p.warn : p.textDim);
-        g.drawText (message.trimCharactersAtStart ("!"), bottom.removeFromTop (16), juce::Justification::centredLeft);
-        g.setColour (p.textDim);
-        g.drawText (deviceText + "      " + JucePlugin_Name + " " + JucePlugin_VersionString, bottom, juce::Justification::centredLeft);
+        g.setFont (font (11.0f));
+        g.drawText (deviceText, kPad, getHeight() - 30, getWidth() / 2, 20, juce::Justification::centredLeft);
+        g.drawText (juce::String (JucePlugin_Name) + " " + JucePlugin_VersionString, getWidth() / 2, getHeight() - 30,
+                    getWidth() / 2 - kPad, 20, juce::Justification::centredRight);
     }
 
     void resized() override
     {
         for (auto& r : rows)
         {
-            auto area = juce::Rectangle<int> (colX (r.col) + kLabelW, kTop + r.row * kRowH, kColW - kLabelW, 28);
+            auto area = juce::Rectangle<int> (colX (r.col) + kLabelW, r.y, kColW - kLabelW, 28);
             if (r.second != nullptr)
             {
-                const int w = (area.getWidth() - 6) / 2;
+                const int w = (area.getWidth() - 8) / 2;
                 r.comp->setBounds (area.removeFromLeft (w));
-                area.removeFromLeft (6);
+                area.removeFromLeft (8);
                 r.second->setBounds (area);
             }
             else
@@ -173,57 +220,53 @@ public:
     }
 
 private:
-    static constexpr int kColW = 380, kLabelW = 150, kRowH = 36, kTop = 34, kPad = 14;
-    static int colX (int col) { return kPad + col * (kColW + kPad); }
+    static constexpr int kColW = 400, kColGap = 48, kLabelW = 150, kRowH = 36, kTop = 44, kPad = 20;
+    static int colX (int col) { return kPad + col * (kColW + kColGap); }
 
-    struct Row { juce::String label; juce::Component* comp; juce::Component* second; int col, row; };
+    struct Row { juce::String label; juce::Component* comp; juce::Component* second; int col, y; };
+    struct Header { juce::String text; int col, y; };
 
-    void addRow (int col, const juce::String& label, juce::Component& c, juce::Component* second = nullptr)
+    void header (int col, const juce::String& text)
+    {
+        if (colY[col] > kTop) colY[col] += 10;
+        headers.push_back ({ text, col, colY[col] });
+        colY[col] += 32;
+    }
+
+    void row (int col, const juce::String& label, juce::Component& c, juce::Component* second = nullptr)
     {
         addAndMakeVisible (c);
         if (second != nullptr) addAndMakeVisible (second);
-        rows.push_back ({ label, &c, second, col, rowCount[col]++ });
+        rows.push_back ({ label, &c, second, col, colY[col] });
+        colY[col] += kRowH;
     }
 
-    void timerCallback() override { refreshText(); }
-
-    void refreshText()
+    void setupTemperatureSlider()
     {
-        const auto n = proc.analyzer.getCalibrationName();
-        calText = n.isEmpty() ? "none (flat)" : n;
-        deviceText = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : "Inputs and outputs come from the host";
-        splToggle.setButtonText (settings.splCalibrated.load() ? "dB SPL" : "dBFS");
-        splToggle.setToggleState (settings.splCalibrated.load(), juce::dontSendNotification);
-        if (! offsetSlider.isMouseButtonDown()) offsetSlider.setValue (settings.splOffset.load(), juce::dontSendNotification);
-        repaint();
+        const bool f = settings.temperatureUnit.load() == 1;
+        const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+        tempSlider.setRange (f ? 14.0 : -10.0, f ? 113.0 : 45.0, 1.0);
+        tempSlider.setTextValueSuffix (" " + deg + (f ? "F" : "C"));
+        const double c = settings.temperatureC.load();
+        tempSlider.setValue (f ? c * 9.0 / 5.0 + 32.0 : c, juce::dontSendNotification);
     }
 
-    void calibrateTo (float target)
+    void timerCallback() override
     {
-        const float level = rawZ ? rawZ() : -200.0f;
-        if (level < -80.0f)
-        {
-            message = "!No signal on the mic input. Fit the calibrator, switch it on, wait a second, then press again.";
-            repaint();
-            return;
-        }
-        settings.splOffset = target - level;
-        settings.splCalibrated = true;
-        message = "Calibrated: " + juce::String (level, 1) + " dBFS = " + juce::String (juce::roundToInt (target)) + " dB SPL";
-        refreshText();
+        const auto d = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : juce::String ("Inputs and outputs come from the host");
+        if (d != deviceText) { deviceText = d; repaint(); }
     }
 
-    LiveAlignProcessor& proc;
     Settings& settings;
-    std::function<float()> rawZ;
     std::vector<Row> rows;
-    int rowCount[2] {};
+    std::vector<Header> headers;
+    int colY[2] { kTop, kTop };
 
-    juce::TextButton deviceButton { "Audio device..." }, calLoad { "Load..." }, calClear { "Clear" },
-        cal94 { "Set 94 dB" }, cal114 { "Set 114 dB" }, folderButton { "Open folder" };
-    juce::ComboBox micBox, refBox, fftBox, blankBox, rangeBox, speedBox, unitBox, themeBox;
-    juce::ToggleButton refRtaToggle { "Show reference" }, peakToggle { "Show peaks" }, splToggle { "dB SPL" };
-    juce::Slider offsetSlider, tempSlider;
-    juce::String calText, deviceText, message;
+    juce::TextButton deviceButton { "Audio device..." }, calButton { "Calibration..." }, folderButton { "Open folder" };
+    juce::ComboBox micBox, refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,
+        themeBox, irModeBox, irRangeBox, tempUnitBox, unitBox;
+    juce::ToggleButton refRtaToggle { "Reference" }, peakToggle { "Peak hold" };
+    juce::Slider tempSlider;
+    juce::String deviceText;
 };
 } // namespace la::ui

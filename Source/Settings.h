@@ -40,13 +40,19 @@ struct Settings
     // Mic level calibration: dB SPL = dBFS + splOffset
     std::atomic<bool> splCalibrated { false };
     std::atomic<float> splOffset { 120.0f };
+    std::atomic<float> calibratorDb { 94.0f };
 
     // Display
     std::atomic<bool> running { true };
-    std::atomic<int> view { (int) View::Transfer };
+    std::atomic<int> view { (int) View::Transfer };   // view of graph 1 (keys 1, 2, 3)
+    std::atomic<int> paneCount { 1 };        // graphs on screen, 1 to 3
+    std::atomic<int> paneLayout { 0 };       // 0 stacked (rows), 1 side by side (columns)
+    std::atomic<int> paneView2 { (int) View::Rta }, paneView3 { (int) View::Impulse };
+    std::atomic<int> targetCurve { 0 };      // la::targets index, 0 = none
     std::atomic<int> theme { 0 };            // 0 dark, 1 light
     std::atomic<float> temperatureC { 20.0f };
     std::atomic<int> distanceUnit { 0 };     // 0 feet, 1 metres
+    std::atomic<int> temperatureUnit { 1 };  // 0 Celsius, 1 Fahrenheit
     std::atomic<int> irMode { 0 };           // 0 linear, 1 log (ETC)
     std::atomic<int> irRange { 1 };          // 0 = 20 ms, 1 = 100 ms, 2 = 500 ms
 
@@ -55,6 +61,15 @@ struct Settings
     std::atomic<bool> requestFindDelay { false };
     std::atomic<bool> requestResetLeq { false };
     std::atomic<bool> requestClearPeak { false };
+
+    std::atomic<int>& paneViewRef (int pane) { return pane == 0 ? view : (pane == 1 ? paneView2 : paneView3); }
+
+    juce::String temperatureText() const
+    {
+        const float c = temperatureC.load();
+        if (temperatureUnit.load() == 1) return juce::String (juce::roundToInt (c * 9.0f / 5.0f + 32.0f)) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0")) + "F";
+        return juce::String (juce::roundToInt (c)) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0")) + "C";
+    }
 
     double speedOfSound() const { return 331.3 * std::sqrt (1.0 + temperatureC.load() / 273.15); }
 
@@ -92,6 +107,13 @@ struct Settings
         x.setAttribute ("distanceUnit", distanceUnit.load());
         x.setAttribute ("irMode", irMode.load());
         x.setAttribute ("irRange", irRange.load());
+        x.setAttribute ("paneCount", paneCount.load());
+        x.setAttribute ("paneLayout", paneLayout.load());
+        x.setAttribute ("paneView2", paneView2.load());
+        x.setAttribute ("paneView3", paneView3.load());
+        x.setAttribute ("targetCurve", targetCurve.load());
+        x.setAttribute ("temperatureUnit", temperatureUnit.load());
+        x.setAttribute ("calibratorDb", calibratorDb.load());
         // The generator is never saved as "on": the app always starts silent.
     }
 
@@ -125,6 +147,13 @@ struct Settings
         distanceUnit = i ("distanceUnit", 0, 0, 1);
         irMode = i ("irMode", 0, 0, 1);
         irRange = i ("irRange", 1, 0, 2);
+        paneCount = i ("paneCount", 1, 1, 3);
+        paneLayout = i ("paneLayout", 0, 0, 1);
+        paneView2 = i ("paneView2", (int) View::Rta, 0, 2);
+        paneView3 = i ("paneView3", (int) View::Impulse, 0, 2);
+        targetCurve = i ("targetCurve", 0, 0, 20);
+        temperatureUnit = i ("temperatureUnit", 1, 0, 1);
+        calibratorDb = f ("calibratorDb", 94.0f, 60.0f, 140.0f);
     }
 };
 } // namespace la

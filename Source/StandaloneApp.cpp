@@ -54,6 +54,18 @@ public:
             return "No audio device";
         };
 
+        la::StandaloneHooks::toggleFullScreen() = [this]
+        {
+            auto& desktop = juce::Desktop::getInstance();
+            if (mainWindow == nullptr) return;
+            if (desktop.getKioskModeComponent() == mainWindow.get()) desktop.setKioskModeComponent (nullptr, false);
+            else desktop.setKioskModeComponent (mainWindow.get(), false);
+        };
+        la::StandaloneHooks::isFullScreen() = [this]
+        {
+            return mainWindow != nullptr && juce::Desktop::getInstance().getKioskModeComponent() == mainWindow.get();
+        };
+
         mainWindow = std::make_unique<juce::StandaloneFilterWindow> (
             getApplicationName(),
             juce::LookAndFeel::getDefaultLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId),
@@ -65,6 +77,10 @@ public:
     {
         la::StandaloneHooks::showAudioSettings() = nullptr;
         la::StandaloneHooks::deviceDescription() = nullptr;
+        la::StandaloneHooks::toggleFullScreen() = nullptr;
+        la::StandaloneHooks::isFullScreen() = nullptr;
+        if (juce::Desktop::getInstance().getKioskModeComponent() != nullptr)
+            juce::Desktop::getInstance().setKioskModeComponent (nullptr, false);
         mainWindow = nullptr;
         appProperties.saveIfNeeded();
     }

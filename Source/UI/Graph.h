@@ -3,6 +3,7 @@
 #include <cmath>
 #include <vector>
 #include "Theme.h"
+#include "../Analysis/TargetCurves.h"
 
 namespace la::ui
 {
@@ -104,6 +105,55 @@ inline void strokeTrace (juce::Graphics& g, const juce::Path& path, juce::Colour
 {
     g.setColour (c);
     g.strokePath (path, juce::PathStrokeType (width, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+// Target curve: dashed line with a +/-3 dB tolerance band. `level` is where the curve's 1 kHz point sits.
+template <typename YFn>
+void drawTarget (juce::Graphics& g, int id, const FreqAxis& ax, juce::Rectangle<float> area, YFn yAt, float level)
+{
+    if (id <= 0 || id >= targets::count()) return;
+    const auto& p = pal();
+    juce::Graphics::ScopedSaveState save (g);
+    g.reduceClipRegion (area.toNearestInt());
+
+    juce::Path line, band;
+    std::vector<juce::Point<float>> lower;
+    const int n = 160;
+    for (int i = 0; i <= n; ++i)
+    {
+        const double f = ax.fMin * std::pow (ax.fMax / ax.fMin, (double) i / n);
+        const float x = ax.x (f);
+        const float db = level + (float) targets::db (id, f);
+        if (i == 0) { line.startNewSubPath (x, yAt (db)); band.startNewSubPath (x, yAt (db + 3.0f)); }
+        else { line.lineTo (x, yAt (db)); band.lineTo (x, yAt (db + 3.0f)); }
+        lower.push_back ({ x, yAt (db - 3.0f) });
+    }
+    for (auto it = lower.rbegin(); it != lower.rend(); ++it) band.lineTo (*it);
+    band.closeSubPath();
+    g.setColour (p.good.withAlpha (p.dark ? 0.08f : 0.10f));
+    g.fillPath (band);
+
+    juce::Path dashed;
+    const float dashes[] = { 7.0f, 5.0f };
+    juce::PathStrokeType (1.6f).createDashedStroke (dashed, line, dashes, 2);
+    g.setColour (p.good.withAlpha (0.9f));
+    g.fillPath (dashed);
+
+    g.setFont (font (10.5f, true));
+    g.drawText (juce::String ("TARGET: ") + targets::list()[(size_t) id].name,
+                area.reduced (8.0f, 4.0f).removeFromBottom (14.0f), juce::Justification::centredRight);
+}
+
+// Average of finite values between fLo and fHi (used to line a target up with the measurement).
+inline bool bandAverage (const std::vector<double>& f, const std::vector<float>& v, double fLo, double fHi, float& out)
+{
+    double sum = 0.0;
+    int n = 0;
+    for (size_t i = 0; i < f.size() && i < v.size(); ++i)
+        if (f[i] >= fLo && f[i] <= fHi && std::isfinite (v[i])) { sum += v[i]; ++n; }
+    if (n == 0) return false;
+    out = (float) (sum / n);
+    return true;
 }
 
 inline void drawReadout (juce::Graphics& g, juce::Rectangle<float> plot, juce::Point<float> at, const juce::String& text)

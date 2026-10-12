@@ -84,10 +84,8 @@ public:
         g.drawText ("PHASE", phaseArea.translated (8.0f, 4.0f).withHeight (14.0f), juce::Justification::centredLeft);
 
         // saved traces
-        int ti = 0;
         for (const auto& t : traces.all())
         {
-            ++ti;
             if (! t.visible || t.kind != Trace::Transfer) continue;
             const auto& d = t.data;
             const auto col = traceColour (t.colour);
@@ -104,6 +102,13 @@ public:
                 strokeTrace (g, phasePath (ph, [&] (size_t i) { return axPhase.x (d.freq[i]); }, [] (size_t) { return true; }, phaseArea),
                              col.withAlpha (0.8f), 1.2f);
             }
+        }
+
+        // target curve, lined up with the live trace's 500 Hz to 2 kHz average
+        {
+            float level = centreDb;
+            if (data != nullptr && data->tfFrames > 0) bandAverage (data->tfFreq, data->tfMag, 500.0, 2000.0, level);
+            drawTarget (g, settings.targetCurve.load(), axMag, magArea, yMag, level);
         }
 
         // live trace
@@ -267,6 +272,11 @@ public:
 
         if (data == nullptr || data->rtaFreq.empty()) return;
         const auto& f = data->rtaFreq;
+        {
+            float level = 0.0f;
+            if (bandAverage (f, data->rtaMic, 500.0, 2000.0, level))
+                drawTarget (g, settings.targetCurve.load(), ax, plot, y, level);
+        }
         const double half = std::pow (2.0, 0.5 / bands);
 
         if (bands <= 6)
@@ -318,40 +328,27 @@ private:
 class ImpulseView : public juce::Component
 {
 public:
-    explicit ImpulseView (Settings& s) : settings (s)
-    {
-        const char* modes[] = { "Linear", "Log" };
-        const char* ranges[] = { "20 ms", "100 ms", "500 ms" };
-        for (int i = 0; i < 2; ++i) setupButton (modeButtons[i], modes[i], 301, [this, i] { settings.irMode = i; repaint(); });
-        for (int i = 0; i < 3; ++i) setupButton (rangeButtons[i], ranges[i], 302, [this, i] { settings.irRange = i; repaint(); });
-    }
+    explicit ImpulseView (Settings& s) : settings (s) {}
 
     void update (const Snapshot& snap) { data = &snap; repaint(); }
-
-    void resized() override
-    {
-        auto r = getLocalBounds().reduced (12, 10).removeFromTop (24);
-        for (int i = 2; i >= 0; --i) { rangeButtons[i].setBounds (r.removeFromRight (64)); r.removeFromRight (2); }
-        r.removeFromRight (12);
-        for (int i = 1; i >= 0; --i) { modeButtons[i].setBounds (r.removeFromRight (62)); r.removeFromRight (2); }
-    }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
         drawPanel (g, getLocalBounds().toFloat(), {});
-        for (int i = 0; i < 2; ++i) modeButtons[i].setToggleState (settings.irMode.load() == i, juce::dontSendNotification);
-        for (int i = 0; i < 3; ++i) rangeButtons[i].setToggleState (settings.irRange.load() == i, juce::dontSendNotification);
 
         auto r = getLocalBounds().toFloat().reduced (10.0f, 8.0f);
-        r.removeFromTop (30.0f);
+        r.removeFromTop (22.0f);
         r.removeFromLeft (44.0f);
         r.removeFromRight (16.0f);
         const auto plot = r.withTrimmedBottom (16.0f);
 
         g.setColour (p.textDim);
         g.setFont (font (11.0f, true));
-        g.drawText ("IMPULSE RESPONSE", getLocalBounds().toFloat().reduced (14.0f, 10.0f).withHeight (24.0f), juce::Justification::centredLeft);
+        static const char* rangeNames[] = { "20 ms", "100 ms", "500 ms" };
+        g.drawText (juce::String ("IMPULSE RESPONSE   ") + (settings.irMode.load() == 1 ? "LOG (ETC)" : "LINEAR") + "   "
+                        + rangeNames[juce::jlimit (0, 2, settings.irRange.load())],
+                    getLocalBounds().toFloat().reduced (14.0f, 8.0f).withHeight (16.0f), juce::Justification::centredLeft);
 
         static const double rangesMs[] = { 20.0, 100.0, 500.0 };
         const double sr = data != nullptr ? data->sampleRate : 48000.0;
@@ -446,17 +443,7 @@ public:
     }
 
 private:
-    void setupButton (juce::TextButton& b, const juce::String& text, int group, std::function<void()> onClick)
-    {
-        b.setButtonText (text);
-        b.setClickingTogglesState (true);
-        b.setRadioGroupId (group);
-        b.onClick = std::move (onClick);
-        addAndMakeVisible (b);
-    }
-
     Settings& settings;
     const Snapshot* data = nullptr;
-    juce::TextButton modeButtons[2], rangeButtons[3];
 };
 } // namespace la::ui

@@ -69,7 +69,8 @@ public:
     {
         const auto r = b.getLocalBounds().toFloat().reduced (0.5f);
         const bool on = b.getToggleState();
-        auto fill = on ? b.findColour (juce::TextButton::buttonOnColourId) : pal().panelRaised;
+        auto fill = on ? b.findColour (juce::TextButton::buttonOnColourId)
+                     : (b.isColourSpecified (juce::TextButton::buttonColourId) ? b.findColour (juce::TextButton::buttonColourId) : pal().panelRaised);
         if (hover && ! on) fill = shade (fill, pal().dark ? 0.12f : -0.04f);
         if (down) fill = fill.darker (0.15f);
         g.setColour (fill);

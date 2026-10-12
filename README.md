@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.1.0** (stage 1: the measurement core)
+**Version 0.2.0** (stage 1, the Metering page: split screen, full screen, calibration pop-up, target curves, consolidated settings)
 
 ## What you need
 
@@ -13,6 +13,15 @@ LiveProfessor). Windows and macOS.
 - A **reference** signal. The most accurate is a loopback: split the output that feeds the PA (or the DriveRack PA2
   input) back into a second interface input. If you only use the generator, Settings > Reference > *Generator
   (internal copy)* works without a cable.
+
+## Layout
+
+Tabs across the top walk through the tuning process. Stage 1 has the **Metering** page; the next stages add their
+own tabs.
+
+The Metering page shows **one, two or three graphs** (Settings > Screen), stacked or side by side. Each graph has its
+own RTA / Transfer / Impulse buttons, so the RTA, transfer function and impulse response can all be on screen at once.
+**Full screen** (app only, key `F`, `Esc` to leave) fills the whole display.
 
 ## Views
 
@@ -22,21 +31,25 @@ LiveProfessor). Windows and macOS.
 | **RTA** (key `1`) | The mic in 1/1 to 1/48 octave bands, in dB SPL once calibrated (dBFS before). Optional reference overlay and peak hold |
 | **Impulse** (key `3`) | Impulse response, linear or log (ETC), 20 / 100 / 500 ms. Shows the arrival time and distance, and warns when the polarity looks inverted |
 
-Header controls: **Running / Frozen** (`Space`) freezes the graphs (the sound level keeps running), averages,
-smoothing (transfer) or bands per octave (RTA), **Reset** (`R`) restarts the averages.
+Header controls: **Running / Frozen** (`Space`) freezes the graphs (the sound level keeps running), **Reset avg**
+(`R`) restarts the averages, **Full screen**, **Settings**. Keys `1`, `2`, `3` switch the top graph.
 
 ## Right-hand column
 
 - **Sound level:** dBA slow, A fast, C slow, Z slow, LAeq, LCeq and LAF max since the last reset. A, C and Z
-  weighting follow the IEC 61672 curves. Calibrate in Settings so these read dB SPL.
+  weighting follow the IEC 61672 curves. **Calibrate** opens the calibration pop-up (below) so these read dB SPL.
 - **Inputs:** level of the mic and the reference, with peak hold and a clip light.
 - **Delay compensation:** **Find delay** (`D`) listens to the last ~3 seconds, finds how late the mic hears the
   reference and sets the compensation so the phase trace flattens. It also reports polarity. Nudge by 0.1 or 1 ms.
-  Distance uses the speed of sound at the temperature set in Settings.
+  Distance uses the speed of sound at the temperature set in Settings (Celsius or Fahrenheit).
 - **Traces:** **Capture** (`C`) saves the transfer function or RTA on screen. Click the colour square to show or
   hide it, double-click to rename, and the `...` menu exports it as an FRD file (for REW, VituixCAD and similar)
   or deletes it. **Import** reads FRD, TXT or CSV files (frequency, dB, optional phase) from other software or a
   speaker manufacturer. Traces are kept in your user folder (`LiveAlign/Traces`).
+- **Target:** draws a target curve with a +/-3 dB band over the transfer function and the RTA, lined up with the
+  measurement's 500 Hz to 2 kHz average. Built in: Flat, Speech, Gentle tilt (-1 dB/octave), Worship / live music,
+  Concert / high energy, Cinema X-curve (SMPTE ST 202) and Harman-style in-room (approx.). Only the X-curve is a
+  published standard; the others are common starting points, not rules.
 
 ## Generator
 
@@ -49,19 +62,30 @@ the PA. In the **VST3**, audio passes through untouched unless the generator is 
 
 ## Settings
 
-Audio device (app only), measurement mic input, reference source, FFT size (8k to 64k), coherence blanking,
-magnitude range, RTA speed, reference overlay, peak hold, mic calibration file, SPL calibration (94 or 114 dB
-calibrator, or type the offset), temperature, feet or metres, theme.
+Everything is in one Settings window, in sections:
 
-**Mic calibration files:** plain text, one `frequency dB [phase]` per line. miniDSP UMIK files (with the
-`Sens Factor` header), Dayton and REW-style files, comma or tab separated, and decimal-comma files all load.
-The correction is applied to the RTA, the sound level and the transfer function.
+- **Inputs:** audio device (app only), measurement mic input, reference source, mic calibration.
+- **Transfer function:** FFT size (8k to 64k), averaging, smoothing, coherence blanking, magnitude range.
+- **RTA:** resolution (1/1 to 1/48 octave), speed, reference overlay, peak hold.
+- **Screen:** number of graphs, stacked or side by side, theme.
+- **Impulse response:** linear or log (ETC), time range.
+- **Environment:** temperature (Celsius or Fahrenheit), distance in feet or metres.
+- **Files:** open the saved traces folder.
 
-**SPL calibration:** fit a calibrator to the mic, switch it on, open Settings and press **Set 94 dB** (or 114 dB).
+## Calibration
+
+**Calibrate** in the Sound level box (or Settings > Mic calibration) opens the calibration pop-up:
+
+- **Sound level:** fit a calibrator to the mic and switch it on, pick its level (94 dB, 114 dB or another value),
+  wait for the live reading to settle, then press **Calibrate**. The offset can also be set by hand.
+- **Mic calibration file:** plain text, one `frequency dB [phase]` per line. miniDSP UMIK files (with the
+  `Sens Factor` header), Dayton and REW-style files, comma or tab separated, and decimal-comma files all load.
+  The correction is applied to the RTA, the sound level and the transfer function.
 
 ## Keys
 
-`1` / `2` / `3` views, `Space` freeze, `R` reset averages, `D` find delay, `C` capture, `G` generator.
+`1` / `2` / `3` top graph view, `Space` freeze, `R` reset averages, `D` find delay, `C` capture (whatever the graphs
+show), `G` generator, `F` full screen, `Esc` leave full screen.
 
 ## Installing
 
@@ -115,7 +139,7 @@ g++ -std=c++17 -O2 -ISource Tests/AnalysisTests.cpp -o analysis_tests && ./analy
 They cover the FFT, RTA levels against a calibrated sine and white noise, the transfer function of a known gain and
 delay and of a Butterworth filter (magnitude and phase against theory), coherence at 0 dB signal-to-noise, the delay
 finder (full range, inverted polarity, a sub-like band-limited path, silence), A and C weighting, the sound level
-meter, generator levels and pink-noise slope, and calibration / FRD / CSV file parsing. CI runs them with address and
+meter, generator levels and pink-noise slope, calibration / FRD / CSV file parsing, and the target curves. CI runs them with address and
 undefined-behaviour sanitizers before building.
 
 `-DLA_BUILD_PREVIEW=ON` builds a local-only tool that feeds a simulated PA and room through the processor and saves

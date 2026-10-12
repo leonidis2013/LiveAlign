@@ -4,6 +4,7 @@
 #include "../Source/PluginProcessor.h"
 #include "../Source/PluginEditor.h"
 #include "../Source/UI/SettingsPanel.h"
+#include "../Source/UI/CalibrationPanel.h"
 
 namespace
 {
@@ -81,24 +82,31 @@ public:
             proc.traces.add (t);
         }
 
-        if (ticks == 150) { editor.reset (dynamic_cast<LiveAlignEditor*> (proc.createEditor())); editor->setSize (1340, 860); proc.settings.view = 1; }
+        if (ticks == 150) { editor.reset (dynamic_cast<LiveAlignEditor*> (proc.createEditor())); editor->setSize (1400, 900); proc.settings.view = 1; proc.settings.targetCurve = 4; }
         if (ticks == 170) shot ("transfer");
-        if (ticks == 171) proc.settings.view = 0;
-        if (ticks == 190) shot ("rta");
-        if (ticks == 191) proc.settings.view = 2;
-        if (ticks == 210) shot ("impulse");
-        if (ticks == 211) { proc.settings.view = 1; proc.settings.theme = 1; }
+        if (ticks == 171) { proc.settings.paneCount = 3; editor->setPaneViews (1, 0, 2); }
+        if (ticks == 190) shot ("three-stacked");
+        if (ticks == 191) { proc.settings.paneCount = 2; proc.settings.paneLayout = 1; editor->setPaneViews (0, 2, 1); }
+        if (ticks == 210) shot ("two-side-by-side");
+        if (ticks == 211) { proc.settings.paneCount = 1; proc.settings.paneLayout = 0; editor->setPaneViews (1, 0, 2); proc.settings.theme = 1; proc.settings.temperatureUnit = 1; }
         if (ticks == 230) shot ("transfer-light");
         if (ticks == 231)
         {
             proc.settings.theme = 0;
             la::ui::currentPalette() = &la::ui::darkPalette();
             la::ui::LALookAndFeel laf;
-            la::ui::SettingsPanel sp (proc, [] { return -30.0f; });
-            sp.setLookAndFeel (&laf);
-            auto img = sp.createComponentSnapshot (sp.getLocalBounds());
-            save (img, "settings");
-            sp.setLookAndFeel (nullptr);
+            {
+                la::ui::SettingsPanel sp (proc);
+                sp.setLookAndFeel (&laf);
+                save (sp.createComponentSnapshot (sp.getLocalBounds()), "settings");
+                sp.setLookAndFeel (nullptr);
+            }
+            {
+                la::ui::CalibrationPanel cp (proc.settings, [] { return -21.3f; }, [] { return juce::String ("7023270_90deg.txt"); });
+                cp.setLookAndFeel (&laf);
+                save (cp.createComponentSnapshot (cp.getLocalBounds()), "calibration");
+                cp.setLookAndFeel (nullptr);
+            }
         }
         if (ticks == 235)
         {

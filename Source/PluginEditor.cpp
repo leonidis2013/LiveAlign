@@ -1,79 +1,47 @@
 #include "PluginEditor.h"
 #include "UI/SettingsPanel.h"
+#include "UI/CalibrationPanel.h"
+#include "StandaloneHooks.h"
 
 using namespace la::ui;
 
-namespace
-{
-const int kAverages[] = { 1, 2, 4, 8, 16, 32, 64 };
-const int kTfSmoothing[] = { 48, 24, 12, 6, 3 };
-const int kRtaBands[] = { 1, 3, 6, 12, 24, 48 };
-}
-
 LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     : AudioProcessorEditor (&p), processor (p), settings (p.settings),
-      transferView (p.settings, p.traces), rtaView (p.settings, p.traces), impulseView (p.settings),
-      splPanel (p.settings), inputPanel (p.settings), delayPanel (p.settings), tracesPanel (p.traces), generator (p.settings)
+      splPanel (p.settings), inputPanel (p.settings), delayPanel (p.settings), tracesPanel (p.traces, p.settings), generator (p.settings)
 {
     setLookAndFeel (&laf);
     setWantsKeyboardFocus (true);
 
-    addChildComponent (transferView);
-    addChildComponent (rtaView);
-    addChildComponent (impulseView);
+    addAndMakeVisible (workflowTabs);
+    for (int i = 0; i < 3; ++i)
+    {
+        panes[i] = std::make_unique<MeasurePane> (p.settings, p.traces, i);
+        addChildComponent (*panes[i]);
+    }
     addAndMakeVisible (splPanel);
     addAndMakeVisible (inputPanel);
     addAndMakeVisible (delayPanel);
     addAndMakeVisible (tracesPanel);
     addAndMakeVisible (generator);
 
-    const char* viewNames[] = { "RTA", "Transfer", "Impulse" };
-    const char* viewTips[] = { "Real-time analyser of the mic (key: 1)",
-                               "Transfer function: magnitude, phase and coherence of the system, mic against reference (key: 2)",
-                               "Impulse response: arrival time, reflections and polarity (key: 3)" };
-    for (int i = 0; i < 3; ++i)
-    {
-        viewButtons[i].setButtonText (viewNames[i]);
-        viewButtons[i].setTooltip (viewTips[i]);
-        viewButtons[i].setClickingTogglesState (true);
-        viewButtons[i].setRadioGroupId (201);
-        viewButtons[i].onClick = [this, i] { if (viewButtons[i].getToggleState()) setView (i); };
-        addAndMakeVisible (viewButtons[i]);
-    }
-
-    runButton.setClickingTogglesState (true);
     runButton.setTooltip ("Freeze the graphs to study them; the sound level keeps running (key: Space)");
-    runButton.onClick = [this] { settings.running = ! runButton.getToggleState(); };
+    runButton.onClick = [this] { settings.running = ! settings.running.load(); };
     addAndMakeVisible (runButton);
 
-    for (int i = 0; i < 7; ++i) avgBox.addItem (juce::String (kAverages[i]) + " avg", i + 1);
-    avgBox.setTooltip ("Transfer function averaging: more averages are steadier but slower to react");
-    avgBox.onChange = [this] { settings.averages = kAverages[juce::jlimit (0, 6, avgBox.getSelectedItemIndex())]; };
-    addAndMakeVisible (avgBox);
-
-    smoothBox.onChange = [this]
-    {
-        const int idx = smoothBox.getSelectedItemIndex();
-        if (idx < 0) return;
-        if (settings.view.load() == (int) la::View::Rta) settings.rtaBands = kRtaBands[juce::jlimit (0, 5, idx)];
-        else settings.smoothing = kTfSmoothing[juce::jlimit (0, 4, idx)];
-    };
-    addAndMakeVisible (smoothBox);
-
-    resetButton.setTooltip ("Restart the averages (key: R)");
+    resetButton.setTooltip ("Restart the transfer function and RTA averages (key: R)");
     resetButton.onClick = [this] { settings.requestResetAverages = true; };
     addAndMakeVisible (resetButton);
 
-    centreButton.setTooltip ("Move the transfer function to the 0 dB line (or double-click the graph). Drag the graph up and down to shift it.");
-    centreButton.onClick = [this] { transferView.centreOnLive(); };
-    addAndMakeVisible (centreButton);
+    fullScreenButton.setTooltip ("Fill the whole screen (key: F, Esc to leave)");
+    fullScreenButton.onClick = [this] { toggleFullScreen(); };
+    addChildComponent (fullScreenButton);
+    fullScreenButton.setVisible ((bool) la::StandaloneHooks::toggleFullScreen());
 
-    settingsButton.setTooltip ("Inputs, reference, mic calibration, SPL calibration, FFT size, units and theme");
+    settingsButton.setTooltip ("Inputs, calibration, analysis, screen layout, units and theme");
     settingsButton.onClick = [this] { openSettings(); };
     addAndMakeVisible (settingsButton);
 
-    themeButton.onClick = [this] { settings.theme = appliedTheme == 0 ? 1 : 0; };
-    addAndMakeVisible (themeButton);
+    splPanel.onCalibrate = [this] { openCalibration(); };
 
     tracesPanel.onCapture = [this] { capture(); };
     tracesPanel.onImport = [this] { importTrace(); };
@@ -81,17 +49,13 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     tracesPanel.onExport = [this] (int i) { exportTrace (i); };
     tracesPanel.onDelete = [this] (int i) { deleteTrace (i); };
 
-    for (int i = 0; i < 7; ++i)
-        if (kAverages[i] == settings.averages.load()) avgBox.setSelectedItemIndex (i, juce::dontSendNotification);
-
     applyTheme (settings.theme.load());
-    setView (settings.view.load());
     generator.setNumOutputs (p.numOutputs());
     generator.sync();
 
     setResizable (true, true);
-    setResizeLimits (1100, 720, 2400, 1600);
-    setSize (1340, 860);
+    setResizeLimits (1100, 720, 5120, 2880);
+    setSize (1400, 900);
 
     startTimerHz (30);
 }
@@ -107,60 +71,66 @@ void LiveAlignEditor::applyTheme (int theme)
     appliedTheme = theme;
     currentPalette() = theme == 0 ? &darkPalette() : &lightPalette();
     laf.applyPalette();
-    themeButton.setButtonText (theme == 0 ? "Light" : "Dark");
     sendLookAndFeelChange();
     repaint();
 }
 
-void LiveAlignEditor::setView (int v)
+void LiveAlignEditor::setPaneViews (int a, int b, int c)
 {
-    v = juce::jlimit (0, 2, v);
-    settings.view = v;
-    shownView = v;
-    for (int i = 0; i < 3; ++i) viewButtons[i].setToggleState (i == v, juce::dontSendNotification);
-    rtaView.setVisible (v == (int) la::View::Rta);
-    transferView.setVisible (v == (int) la::View::Transfer);
-    impulseView.setVisible (v == (int) la::View::Impulse);
-    centreButton.setVisible (v == (int) la::View::Transfer);
-    smoothBox.setVisible (v != (int) la::View::Impulse);
-    rebuildSmoothingBox();
-    if (snapSerial > 0)
-    {
-        if (v == 0) rtaView.update (snap);
-        else if (v == 1) transferView.update (snap);
-        else impulseView.update (snap);
-    }
+    settings.view = a;
+    settings.paneView2 = b;
+    settings.paneView3 = c;
+    for (auto& pane : panes) pane->sync();
 }
 
-void LiveAlignEditor::rebuildSmoothingBox()
+void LiveAlignEditor::layoutPanes()
 {
-    smoothBox.clear (juce::dontSendNotification);
-    if (shownView == (int) la::View::Rta)
+    const int count = juce::jlimit (1, 3, settings.paneCount.load());
+    const bool columns = settings.paneLayout.load() == 1;
+    laidOutCount = count;
+    laidOutLayout = columns ? 1 : 0;
+
+    auto r = paneArea;
+    const int gap = 8;
+    for (int i = 0; i < 3; ++i)
     {
-        smoothBox.setTooltip ("RTA resolution: bands per octave");
-        for (int i = 0; i < 6; ++i)
+        panes[i]->setVisible (i < count);
+        if (i >= count) continue;
+        const int remaining = count - i;
+        if (columns)
         {
-            smoothBox.addItem ("1/" + juce::String (kRtaBands[i]) + " oct", i + 1);
-            if (kRtaBands[i] == settings.rtaBands.load()) smoothBox.setSelectedItemIndex (i, juce::dontSendNotification);
+            const int w = (r.getWidth() - gap * (remaining - 1)) / remaining;
+            panes[i]->setBounds (r.removeFromLeft (w));
+            r.removeFromLeft (gap);
         }
-    }
-    else
-    {
-        smoothBox.setTooltip ("Transfer function smoothing. 1/24 or 1/12 octave for tuning, 1/3 for the overall tonal shape.");
-        for (int i = 0; i < 5; ++i)
+        else
         {
-            smoothBox.addItem ("1/" + juce::String (kTfSmoothing[i]) + " oct", i + 1);
-            if (kTfSmoothing[i] == settings.smoothing.load()) smoothBox.setSelectedItemIndex (i, juce::dontSendNotification);
+            const int h = (r.getHeight() - gap * (remaining - 1)) / remaining;
+            panes[i]->setBounds (r.removeFromTop (h));
+            r.removeFromTop (gap);
         }
+        if (snapSerial > 0) panes[i]->update (snap);
     }
 }
 
 void LiveAlignEditor::openSettings()
 {
-    auto panel = std::make_unique<SettingsPanel> (processor, [this] { return snap.rawZSlowDbfs; });
+    auto panel = std::make_unique<SettingsPanel> (processor);
     panel->onThemeChanged = [this] { applyTheme (settings.theme.load()); };
-    panel->onLoadCalFile = [this] { loadCalFile(); };
+    panel->onLayoutChanged = [this] { layoutPanes(); };
+    panel->onOpenCalibration = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<LiveAlignEditor> (this)]
+                                                                         { if (safe != nullptr) safe->openCalibration(); }); };
     juce::CallOutBox::launchAsynchronously (std::move (panel), settingsButton.getBounds(), this);
+}
+
+void LiveAlignEditor::openCalibration()
+{
+    auto panel = std::make_unique<CalibrationPanel> (settings, [this] { return snap.rawZSlowDbfs; },
+                                                     [this] { return processor.analyzer.getCalibrationName(); });
+    panel->onLoadFile = [this] { loadCalFile(); };
+    panel->onClearFile = [this] { processor.clearCalibration(); };
+    const auto anchor = splPanel.calibrateButton().getBounds() + splPanel.getPosition();
+    juce::CallOutBox::launchAsynchronously (std::move (panel), anchor, this);
 }
 
 void LiveAlignEditor::toggleGenerator()
@@ -169,19 +139,27 @@ void LiveAlignEditor::toggleGenerator()
     generator.sync();
 }
 
-void LiveAlignEditor::toggleRunning()
+void LiveAlignEditor::toggleFullScreen()
 {
-    settings.running = ! settings.running.load();
+    if (auto& f = la::StandaloneHooks::toggleFullScreen()) f();
 }
 
+// Captures what is on screen: the transfer function and / or the RTA, whichever the graphs show.
 void LiveAlignEditor::capture()
 {
-    const bool rta = settings.view.load() == (int) la::View::Rta;
-    la::Trace t;
-    const auto time = juce::Time::getCurrentTime().formatted ("%H:%M:%S");
-    if (rta)
+    bool wantTf = false, wantRta = false;
+    for (int i = 0; i < settings.paneCount.load(); ++i)
     {
-        if (snap.rtaFreq.empty()) return;
+        const int v = settings.paneViewRef (i).load();
+        wantTf |= v != (int) la::View::Rta;   // the impulse view captures the transfer function behind it
+        wantRta |= v == (int) la::View::Rta;
+    }
+    const auto time = juce::Time::getCurrentTime().formatted ("%H:%M:%S");
+    bool added = false;
+
+    if (wantRta && ! snap.rtaFreq.empty())
+    {
+        la::Trace t;
         t.kind = la::Trace::Rta;
         t.name = "RTA " + time;
         for (size_t i = 0; i < snap.rtaFreq.size(); ++i)
@@ -189,17 +167,16 @@ void LiveAlignEditor::capture()
             t.data.freq.push_back (snap.rtaFreq[i]);
             t.data.db.push_back (snap.rtaMic[i]);
         }
+        processor.traces.add (std::move (t));
+        added = true;
     }
-    else
+
+    if (wantTf)
     {
-        if (snap.tfFrames == 0)
-        {
-            showMessage ("Nothing to capture", "There is no transfer function yet. Start the generator or program audio with a reference connected.");
-            return;
-        }
+        la::Trace t;
         t.kind = la::Trace::Transfer;
         t.name = "TF " + time;
-        for (size_t i = 0; i < snap.tfFreq.size(); ++i)
+        for (size_t i = 0; i < snap.tfFreq.size() && snap.tfFrames > 0; ++i)
         {
             if (! std::isfinite (snap.tfMag[i])) continue;
             t.data.freq.push_back (snap.tfFreq[i]);
@@ -207,9 +184,11 @@ void LiveAlignEditor::capture()
             t.data.phase.push_back (snap.tfPhase[i]);
             t.data.extra.push_back (snap.tfCoh[i]);
         }
-        if (t.data.freq.empty()) return;
+        if (! t.data.freq.empty()) { processor.traces.add (std::move (t)); added = true; }
+        else if (! added)
+            showMessage ("Nothing to capture", "There is no transfer function yet. Start the generator or program audio with a reference connected.");
     }
-    processor.traces.add (std::move (t));
+
     tracesPanel.refresh();
     repaint();
 }
@@ -310,14 +289,18 @@ void LiveAlignEditor::showMessage (const juce::String& title, const juce::String
 bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
 {
     const auto c = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
-    if (key == juce::KeyPress::spaceKey) { toggleRunning(); return true; }
+    if (key == juce::KeyPress::spaceKey) { settings.running = ! settings.running.load(); return true; }
+    if (key == juce::KeyPress::escapeKey)
+    {
+        if (la::StandaloneHooks::isFullScreen() && la::StandaloneHooks::isFullScreen()()) toggleFullScreen();
+        return true;
+    }
+    if (c == 'f' || key == juce::KeyPress (juce::KeyPress::F11Key)) { toggleFullScreen(); return true; }
     if (c == 'c') { capture(); return true; }
     if (c == 'd') { settings.requestFindDelay = true; return true; }
     if (c == 'g') { toggleGenerator(); return true; }
     if (c == 'r') { settings.requestResetAverages = true; return true; }
-    if (c == '1') { setView (0); return true; }
-    if (c == '2') { setView (1); return true; }
-    if (c == '3') { setView (2); return true; }
+    if (c == '1' || c == '2' || c == '3') { settings.view = (int) (c - '1'); panes[0]->sync(); return true; }
     return false;
 }
 
@@ -325,14 +308,13 @@ void LiveAlignEditor::timerCallback()
 {
     ++tick;
     if (settings.theme.load() != appliedTheme) applyTheme (settings.theme.load());
-    if (settings.view.load() != shownView) setView (settings.view.load());
+    if (settings.paneCount.load() != laidOutCount || settings.paneLayout.load() != laidOutLayout) layoutPanes();
+    for (auto& pane : panes) pane->sync();
 
     if (processor.analyzer.readSnapshot (snap, snapSerial))
     {
         snapSerial = snap.serial;
-        if (shownView == 0) rtaView.update (snap);
-        else if (shownView == 1) transferView.update (snap);
-        else impulseView.update (snap);
+        for (int i = 0; i < laidOutCount; ++i) panes[i]->update (snap);
         splPanel.update (snap);
     }
 
@@ -350,16 +332,16 @@ void LiveAlignEditor::timerCallback()
     {
         generator.setNumOutputs (processor.numOutputs());
         generator.sync();
-        for (int i = 0; i < 7; ++i)
-            if (kAverages[i] == settings.averages.load()) avgBox.setSelectedItemIndex (i, juce::dontSendNotification);
+        tracesPanel.syncTarget();
+        const bool fs = la::StandaloneHooks::isFullScreen() && la::StandaloneHooks::isFullScreen()();
+        fullScreenButton.setButtonText (fs ? "Exit full screen" : "Full screen");
 
         juce::String s;
-        s << juce::String (snap.sampleRate / 1000.0, 1) << " kHz";
-        if (shownView != 0)
-            s << "   FFT " << snap.fftSize / 1024 << "k   " << juce::jmin (snap.tfFrames, settings.averages.load()) << "/"
-              << settings.averages.load() << " avg";
+        s << juce::String (snap.sampleRate / 1000.0, 1) << " kHz   FFT " << snap.fftSize / 1024 << "k   "
+          << juce::jmin (snap.tfFrames, settings.averages.load()) << "/" << settings.averages.load() << " avg   1/"
+          << settings.smoothing.load() << " oct";
         if (juce::Time::getMillisecondCounter() < overloadUntil) s << "   ANALYSIS BEHIND";
-        if (s != status) { status = s; repaint (0, 0, getWidth(), 56); }
+        if (s != status) { status = s; repaint (statusArea); }
     }
 }
 
@@ -389,23 +371,20 @@ void LiveAlignEditor::resized()
     auto header = r.removeFromTop (40);
     r.removeFromTop (8);
 
-    auto h = header.withTrimmedLeft (190);
-    for (auto& b : viewButtons) { b.setBounds (h.removeFromLeft (84).withSizeKeepingCentre (84, 28)); h.removeFromLeft (2); }
-    h.removeFromLeft (14);
-    runButton.setBounds (h.removeFromLeft (84).withSizeKeepingCentre (84, 28));
-    h.removeFromLeft (8);
-    avgBox.setBounds (h.removeFromLeft (92).withSizeKeepingCentre (92, 28));
-    h.removeFromLeft (6);
-    smoothBox.setBounds (h.removeFromLeft (100).withSizeKeepingCentre (100, 28));
-    h.removeFromLeft (6);
-    resetButton.setBounds (h.removeFromLeft (62).withSizeKeepingCentre (62, 28));
-    h.removeFromLeft (6);
-    centreButton.setBounds (h.removeFromLeft (66).withSizeKeepingCentre (66, 28));
+    auto h = header.withTrimmedLeft (196);
+    workflowTabs.setBounds (h.removeFromLeft (140));
 
-    settingsButton.setBounds (h.removeFromRight (86).withSizeKeepingCentre (86, 28));
+    settingsButton.setBounds (h.removeFromRight (90).withSizeKeepingCentre (90, 28));
     h.removeFromRight (8);
-    themeButton.setBounds (h.removeFromRight (62).withSizeKeepingCentre (62, 28));
-    h.removeFromRight (12);
+    if (fullScreenButton.isVisible())
+    {
+        fullScreenButton.setBounds (h.removeFromRight (124).withSizeKeepingCentre (124, 28));
+        h.removeFromRight (8);
+    }
+    resetButton.setBounds (h.removeFromRight (86).withSizeKeepingCentre (86, 28));
+    h.removeFromRight (6);
+    runButton.setBounds (h.removeFromRight (90).withSizeKeepingCentre (90, 28));
+    h.removeFromRight (14);
     statusArea = h;
 
     generator.setBounds (r.removeFromBottom (54));
@@ -413,9 +392,8 @@ void LiveAlignEditor::resized()
 
     auto side = r.removeFromRight (330);
     r.removeFromRight (8);
-    transferView.setBounds (r);
-    rtaView.setBounds (r);
-    impulseView.setBounds (r);
+    paneArea = r;
+    layoutPanes();
 
     splPanel.setBounds (side.removeFromTop (186));
     side.removeFromTop (8);

@@ -14,6 +14,7 @@
 #include "Analysis/DelayFinder.h"
 #include "Analysis/FreqTable.h"
 #include "Analysis/Generator.h"
+#include "Analysis/TargetCurves.h"
 
 using namespace la;
 
@@ -370,8 +371,24 @@ static void testBanding()
     check (g.size() == 11 * 48 + 1, "Log grid size", (double) g.size(), 11 * 48 + 1);
 }
 
+static void testTargets()
+{
+    near (targets::db (6, 1000.0), 0.0, 1e-9, "X-curve 0 dB at 1 kHz");
+    near (targets::db (6, 500.0), 0.0, 1e-9, "X-curve flat below 2 kHz");
+    near (targets::db (6, 4000.0), -3.0, 1e-9, "X-curve -3 dB at 4 kHz");
+    near (targets::db (6, 8000.0), -6.0, 1e-9, "X-curve -6 dB at 8 kHz");
+    near (targets::db (1, 50.0), 0.0, 1e-9, "Flat target");
+    near (targets::db (3, 4000.0), -2.0, 1e-9, "Gentle tilt -1 dB/oct");
+    check (targets::db (4, 40.0) > 4.5 && targets::db (4, 40.0) < 6.5, "Worship target low-end lift", targets::db (4, 40.0), 5.5);
+    check (targets::db (5, 40.0) > 8.0, "Concert target low-end lift", targets::db (5, 40.0), 9.0);
+    check (targets::db (2, 50.0) < -10.0, "Speech target rolled off at 50 Hz", targets::db (2, 50.0), -12.0);
+    for (int id = 0; id < targets::count(); ++id)
+        near (targets::db (id, 1000.0), 0.0, 1e-9, std::string ("Target ") + targets::list()[(size_t) id].name + " is 0 dB at 1 kHz");
+}
+
 int main()
 {
+    testTargets();
     testFft();
     testBanding();
     testPowerSpectrum();
