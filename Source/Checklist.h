@@ -18,7 +18,8 @@ namespace la
 struct VenueMics
 {
     std::array<juce::String, kMaxMics> name, position;
-    std::array<juce::String, kMaxMics> lockerId;     // linked mic in this computer's mic locker (empty: none)
+    std::array<juce::String, kMaxMics> lockerId;
+    std::array<int, kMaxMics> aim { 1, 1, 1, 1, 1, 1, 1, 1 };   // which calibration: 0 = at the speaker (0 deg), 1 = pointing up (90 deg)     // linked mic in this computer's mic locker (empty: none)
     std::array<bool, kMaxMics> noCalFile {};    // "this mic has no calibration file"
     bool noCalibrator = false;                  // levels stay in dBFS; no SPL calibration
 
@@ -36,6 +37,7 @@ struct VenueMics
             c->setAttribute ("position", position[(size_t) m]);
             c->setAttribute ("noCalFile", noCalFile[(size_t) m]);
             c->setAttribute ("lockerId", lockerId[(size_t) m]);
+            c->setAttribute ("aim", aim[(size_t) m] == 0 ? 0 : 90);
         }
     }
 
@@ -53,6 +55,7 @@ struct VenueMics
                 position[(size_t) m] = c->getStringAttribute ("position");
                 noCalFile[(size_t) m] = c->getBoolAttribute ("noCalFile");
                 lockerId[(size_t) m] = c->getStringAttribute ("lockerId");
+                aim[(size_t) m] = c->getIntAttribute ("aim", 90) == 0 ? 0 : 1;
             }
         }
     }

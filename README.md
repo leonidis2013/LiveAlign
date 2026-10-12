@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -59,8 +59,8 @@ one visit.
 
 ### 1 Mic setup
 
-**Mic table** (up to 8 mics): name, input, position (pick one or type a new name), calibration file (load, clear, or
-mark that the mic has none), sound level (Calibrate, or Re-check level when it was calibrated in an earlier session),
+**Mic table** (up to 8 mics): name, input, position (pick one or type a new name), calibration files (load, clear, or
+mark that the mic has none), aim, sound level (Calibrate, or Re-check level when it was calibrated in an earlier session),
 and a live level meter. **+ Add mic** adds a row; the `x` removes one. Use several mics at once on separate inputs,
 or move one mic between named positions.
 
@@ -79,6 +79,17 @@ or move one mic between named positions.
    should be (15 dB above the loudest mic's noise), and each mic's spectrum kept as an RTA trace.
 
 The RTA beside the checklist shows every mic in its own colour.
+
+**0 and 90 degree calibration:** many mics come with two files: **0 degrees** for the mic pointed at the speaker,
+and **90 degrees** for the mic pointing up at the ceiling (sound arriving from the side, the usual way to measure in
+the seats). They differ mostly above about 5 kHz. **Load cal file(s)...** takes both at once; each goes to its
+angle by its name (miniDSP's `..._90deg.txt`, "90 deg", "-90" ...), and the file menu can load, clear or swap each
+angle by hand. The **Aim** column (enabled once a mic has both files) picks which one is used: *at speaker* (0
+degrees) or *pointing up* (90 degrees, the default). The **Speakers** step switches to the 0 degree file while it
+measures (point the mic at each speaker) and back afterwards; the measurement records which file it used. A mic
+with one file uses it either way. The Monitoring status line shows the file in use (CAL 0 or 90 degrees). Both
+files are kept in the venue and in the mic locker; venues and lockers from earlier versions keep their one file,
+placed by its name.
 
 **Mic locker:** the mics you own, saved on this computer (not in a venue), each with its calibration file and its
 last sound level calibration. The small arrow beside a mic's name opens the locker menu:

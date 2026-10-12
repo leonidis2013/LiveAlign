@@ -129,17 +129,65 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
 // ---------------------------------------------------------------------------- mics
 
-juce::String LiveAlignProcessor::loadCalibrationFile (int mic, const juce::File& f)
+juce::String LiveAlignProcessor::loadCalibrationFile (int mic, const juce::File& f, int angle)
 {
     if (! f.existsAsFile()) return "File not found: " + f.getFullPathName();
     auto t = la::parseFreqTable (f.loadFileAsString().toStdString());
     if (t.freq.size() < 3) return "No calibration data found in " + f.getFileName();
-    analyzer.setCalibration (mic, t, f.getFileName());
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    const int a = angle < 0 ? la::MicCalSet::angleFromName (f.getFileName()) : (angle & 1);
+    cals[(size_t) mic].table[a] = std::move (t);
+    cals[(size_t) mic].name[a] = f.getFileName();
     mics.noCalFile[(size_t) mic] = false;
+    applyCalibration (mic);
     return {};
 }
 
-void LiveAlignProcessor::clearCalibration (int mic) { analyzer.clearCalibration (mic); }
+void LiveAlignProcessor::clearCalibration (int mic, int angle)
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    if (angle < 0) cals[(size_t) mic].clearAll();
+    else cals[(size_t) mic].clear (angle);
+    applyCalibration (mic);
+}
+
+void LiveAlignProcessor::swapCalibrationAngle (int mic)
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    auto& c = cals[(size_t) mic];
+    std::swap (c.table[0], c.table[1]);
+    std::swap (c.name[0], c.name[1]);
+    applyCalibration (mic);
+}
+
+int LiveAlignProcessor::effectiveAim (int mic) const
+{
+    return aimOverrideValue >= 0 ? aimOverrideValue : mics.aim[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)];
+}
+
+void LiveAlignProcessor::setMicAim (int mic, int aim)
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    mics.aim[(size_t) mic] = aim == 0 ? 0 : 1;
+    applyCalibration (mic);
+}
+
+void LiveAlignProcessor::setAimOverride (int aim)
+{
+    aimOverrideValue = aim < 0 ? -1 : (aim == 0 ? 0 : 1);
+    for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
+}
+
+// Gives the analysis the file that matches how the mic is aimed now.
+void LiveAlignProcessor::applyCalibration (int mic)
+{
+    const auto& c = cals[(size_t) mic];
+    const int a = c.pick (effectiveAim (mic));
+    if (a < 0) { if (! analyzer.getCalibration (mic).empty()) analyzer.clearCalibration (mic); return; }
+    if (analyzer.getCalibrationName (mic) == c.name[a] && analyzer.getCalibration (mic).freq == c.table[a].freq
+        && analyzer.getCalibration (mic).db == c.table[a].db) return;
+    analyzer.setCalibration (mic, c.table[a], c.name[a]);
+}
 
 void LiveAlignProcessor::addMic()
 {
@@ -159,8 +207,10 @@ void LiveAlignProcessor::addMic()
     mics.position[(size_t) n] = {};
     mics.noCalFile[(size_t) n] = false;
     mics.lockerId[(size_t) n].clear();
+    mics.aim[(size_t) n] = 1;
     checks.splVerified[(size_t) n] = false;
-    analyzer.clearCalibration (n);
+    cals[(size_t) n].clearAll();
+    applyCalibration (n);
     settings.micCount = n + 1;
     settings.requestResetAverages = true;
 }
@@ -181,9 +231,12 @@ void LiveAlignProcessor::removeMic (int mic)
         mics.noCalFile[(size_t) m] = mics.noCalFile[(size_t) m + 1];
         checks.splVerified[(size_t) m] = checks.splVerified[(size_t) m + 1];
         mics.lockerId[(size_t) m] = mics.lockerId[(size_t) m + 1];
-        analyzer.setCalibration (m, analyzer.getCalibration (m + 1), analyzer.getCalibrationName (m + 1));
+        mics.aim[(size_t) m] = mics.aim[(size_t) m + 1];
+        cals[(size_t) m] = cals[(size_t) m + 1];
+        applyCalibration (m);
     }
-    analyzer.clearCalibration (n - 1);
+    cals[(size_t) n - 1].clearAll();
+    applyCalibration (n - 1);
     mics.lockerId[(size_t) n - 1].clear();
     settings.micCount = n - 1;
     if (settings.selectedMic.load() >= n - 1 && settings.selectedMic.load() != la::kAverageMic) settings.selectedMic = 0;
@@ -212,8 +265,7 @@ juce::String LiveAlignProcessor::saveMicToLocker (int mic, const juce::String& n
         entry = &locker.mics.back();
     }
     entry->name = name.isNotEmpty() ? name : mics.nameOf (mic);
-    entry->cal = analyzer.getCalibration (mic);
-    entry->calName = analyzer.getCalibrationName (mic);
+    entry->cals = cals[(size_t) mic];
     entry->noCalFile = mics.noCalFile[(size_t) mic];
     entry->hasSpl = settings.micSplCalibrated[mic].load();
     entry->splOffset = settings.micSplOffset[mic].load();
@@ -236,9 +288,9 @@ void LiveAlignProcessor::assignLockerMic (int mic, const juce::String& lockerId)
     for (int m = 0; m < la::kMaxMics; ++m) if (m != mic && mics.lockerId[(size_t) m] == lockerId) mics.lockerId[(size_t) m].clear();
     mics.lockerId[(size_t) mic] = lockerId;
     mics.name[(size_t) mic] = e->name;
-    if (! e->cal.empty()) analyzer.setCalibration (mic, e->cal, e->calName);
-    else analyzer.clearCalibration (mic);
-    mics.noCalFile[(size_t) mic] = e->cal.empty() && e->noCalFile;
+    cals[(size_t) mic] = e->cals;
+    applyCalibration (mic);
+    mics.noCalFile[(size_t) mic] = ! e->cals.any() && e->noCalFile;
     settings.micSplCalibrated[mic] = e->hasSpl;
     if (e->hasSpl) settings.micSplOffset[mic] = e->splOffset;
     checks.splVerified[(size_t) mic] = false;
@@ -252,11 +304,15 @@ bool LiveAlignProcessor::syncLocker()
     {
         auto* e = locker.find (mics.lockerId[(size_t) m]);
         if (e == nullptr) continue;
-        const auto calName = analyzer.getCalibrationName (m);
         const bool spl = settings.micSplCalibrated[m].load();
         const float off = settings.micSplOffset[m].load();
         const bool noFile = mics.noCalFile[(size_t) m];
-        if (calName != e->calName) { e->cal = analyzer.getCalibration (m); e->calName = calName; changed = true; }
+        const auto& c = cals[(size_t) m];
+        if (c.name[0] != e->cals.name[0] || c.name[1] != e->cals.name[1] || c.has (0) != e->cals.has (0) || c.has (1) != e->cals.has (1))
+        {
+            e->cals = c;
+            changed = true;
+        }
         if (noFile != e->noCalFile) { e->noCalFile = noFile; changed = true; }
         if (spl && (! e->hasSpl || std::abs (off - e->splOffset) > 0.005f))
         {
@@ -275,33 +331,37 @@ bool LiveAlignProcessor::syncLocker()
 void LiveAlignProcessor::saveMicCalibrations (juce::XmlElement& parent) const
 {
     for (int m = 0; m < la::kMaxMics; ++m)
-    {
-        const auto cal = analyzer.getCalibration (m);
-        if (cal.empty()) continue;
-        auto* e = parent.createNewChildElement ("MicCalibration");
-        e->setAttribute ("mic", m);
-        e->setAttribute ("name", analyzer.getCalibrationName (m));
-        if (cal.hasSensFactor) e->setAttribute ("sensFactorDb", cal.sensFactorDb);
-        la::FreqTable copy = cal;
-        copy.meta.clear();
-        e->addTextElement (juce::String (la::writeFrd (copy, {}, false)));
-    }
+        for (int a = 0; a < 2; ++a)
+        {
+            const auto& c = cals[(size_t) m];
+            if (! c.has (a)) continue;
+            auto* e = parent.createNewChildElement ("MicCalibration");
+            e->setAttribute ("mic", m);
+            e->setAttribute ("angle", a == la::Cal90 ? 90 : 0);
+            e->setAttribute ("name", c.name[a]);
+            la::MicCalSet::saveTable (*e, c.table[a]);
+        }
 }
 
 void LiveAlignProcessor::loadMicCalibrations (const juce::XmlElement& parent)
 {
-    for (int m = 0; m < la::kMaxMics; ++m) analyzer.clearCalibration (m);
+    for (auto& c : cals) c.clearAll();
     for (const auto* e : parent.getChildWithTagNameIterator ("MicCalibration"))
     {
         const int m = e->getIntAttribute ("mic", 0);   // 0.3 files have one, without "mic"
         if (m < 0 || m >= la::kMaxMics) continue;
-        auto t = la::parseFreqTable (e->getAllSubText().toStdString());
-        if (e->hasAttribute ("sensFactorDb")) { t.hasSensFactor = true; t.sensFactorDb = e->getDoubleAttribute ("sensFactorDb"); }
-        if (t.freq.size() >= 3) analyzer.setCalibration (m, t, e->getStringAttribute ("name"));
+        auto t = la::MicCalSet::loadTable (*e);
+        if (t.freq.size() < 3) continue;
+        const auto name = e->getStringAttribute ("name");
+        // before 0.9 there was one file per mic: its name says which angle it is for
+        const int a = e->hasAttribute ("angle") ? (e->getIntAttribute ("angle") == 90 ? la::Cal90 : la::Cal0) : la::MicCalSet::angleFromName (name);
+        cals[(size_t) m].table[a] = std::move (t);
+        cals[(size_t) m].name[a] = name;
     }
+    for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     // 0.1 / 0.2 state kept only the file path
     const juce::String path = parent.getStringAttribute ("calFile");
-    if (path.isNotEmpty() && juce::File (path).existsAsFile() && analyzer.getCalibration (0).empty())
+    if (path.isNotEmpty() && juce::File (path).existsAsFile() && ! cals[0].any())
         loadCalibrationFile (0, juce::File (path));
 }
 
@@ -393,6 +453,9 @@ void LiveAlignProcessor::resetVenue()
     venueNotes.clear();
     projectFile = juce::File();
     mics = {};
+    for (auto& c : cals) c.clearAll();
+    aimOverrideValue = -1;
+    for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     positions = { "FOH", "Centre", "Rear", "Balcony" };
     speakers = {};
     system = la::SpeakerSystem::defaults();
@@ -475,7 +538,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     for (int m = 0; m < la::kMaxMics; ++m)
         if (const auto* e = locker.find (mics.lockerId[(size_t) m]))
         {
-            if (! e->cal.empty() && e->calName != analyzer.getCalibrationName (m)) analyzer.setCalibration (m, e->cal, e->calName);
+            if (e->cals.any()) { cals[(size_t) m] = e->cals; applyCalibration (m); }
             if (e->hasSpl) { settings.micSplCalibrated[m] = true; settings.micSplOffset[m] = e->splOffset; }
         }
 

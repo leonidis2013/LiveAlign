@@ -742,10 +742,12 @@ public:
             juce::Colour c = p.textDim;
             if (sys.timingLocked) t << "Timing locked at " << juce::String (sys.lockedDelayMs, 2) << " ms for " << proc.mics.nameOf (sys.measureMic) << ".";
             else { t << "Timing is found on the first measurement, then locked so every speaker keeps its true arrival."; }
+            if (proc.calibrations (sys.measureMic).both())
+                t << "\nPoint the mic at each speaker: its " << calAngleName (Cal0) << " calibration is used while measuring.";
             if (phase != Phase::Idle) { t = phaseText(); c = p.accent; }
             g.setColour (c);
             g.setFont (font (11.5f, phase != Phase::Idle));
-            g.drawFittedText (t, measureInfo, juce::Justification::topLeft, 3);
+            g.drawFittedText (t, measureInfo, juce::Justification::topLeft, 4);
             if (phase != Phase::Idle)
             {
                 auto bar = measureInfo.removeFromBottom (5).toFloat();
@@ -891,7 +893,7 @@ public:
             row.removeFromRight (8);
             micBox.setBounds (row);
             c.removeFromTop (10);
-            measureInfo = c.removeFromTop (46);
+            measureInfo = c.removeFromTop (62);
             c.removeFromTop (12);
             labels.push_back ({ c.removeFromTop (16), "Signal quality" });
             c.removeFromTop (4);
@@ -1208,6 +1210,7 @@ private:
         }
         measuring = i;
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
+        proc.setAimOverride (Cal0);   // the mic is pointed at the speaker: use its 0 degree file
         settings.genOutput = sys.sources[(size_t) i].output;
         settings.genType = 0;   // pink noise
         settings.genOn = true;
@@ -1224,6 +1227,7 @@ private:
     void cancelMeasure (const juce::String& why)
     {
         settings.genOn = false;
+        proc.setAimOverride (-1);
         if (phase == Phase::FindingTime || phase == Phase::Averaging)
             for (int m = 0; m < kMaxMics; ++m) settings.micDelayMs[m] = savedDelays[(size_t) m];
         phase = Phase::Idle;
@@ -1393,7 +1397,10 @@ private:
         s.response = std::move (t);
         s.imported = false;
         s.delayUsedMs = sys.lockedDelayMs;
-        s.source = proc.mics.nameOf (mic) + ", " + LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
+        const int calAngle = proc.activeCalAngle (mic);
+        s.source = proc.mics.nameOf (mic) + (calAngle >= 0 ? " (" + calAngleName (calAngle) + " cal)" : juce::String()) + ", "
+                   + LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
+        proc.setAimOverride (-1);
         const auto who = nameOf (measuring);
         settings.genOn = false;
         phase = Phase::Idle;

@@ -41,7 +41,7 @@ private:
     void showUpdate();
     void openMicLocker();
     void openCalibration (int mic, juce::Component* anchor);
-    void loadCalFile (int mic);
+    void loadCalFile (int mic, int angle = -1);
     void capture();
     void importTrace();
     void importSpeaker (int source);

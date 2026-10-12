@@ -129,6 +129,12 @@ public:
 
         lockerButton.onClick = [this] { if (onLockerMenu) onLockerMenu(); };
         addAndMakeVisible (lockerButton);
+        aimBox.addItem (calAngleName (Cal0) + "  at speaker", 1);
+        aimBox.addItem (calAngleName (Cal90) + "  pointing up", 2);
+        aimBox.setTooltip ("How the mic is aimed, so the matching calibration file is used: at the speaker (0 degrees) or "
+                           "pointing up at the ceiling (90 degrees). The Speakers step uses 0 degrees while it measures.");
+        aimBox.onChange = [this] { proc.setMicAim (index, aimBox.getSelectedItemIndex()); changed(); };
+        addAndMakeVisible (aimBox);
         calFileButton.onClick = [this] { if (onCalFileMenu) onCalFileMenu(); };
         addAndMakeVisible (calFileButton);
         splButton.onClick = [this] { if (onCalibrate) onCalibrate(); };
@@ -162,9 +168,14 @@ public:
             positionBox.setText (proc.mics.position[(size_t) index], juce::dontSendNotification);
         }
 
-        const auto cal = proc.analyzer.getCalibrationName (index);
-        calFileButton.setButtonText (cal.isNotEmpty() ? cal : (proc.mics.noCalFile[(size_t) index] ? "No file (flat)" : "Load cal file..."));
-        calFileButton.setTooltip (cal.isNotEmpty() ? "Calibration file: " + cal : "Load this mic's calibration file, or mark that it has none");
+        const auto& cs = proc.calibrations (index);
+        calFileButton.setButtonText (cs.any() ? cs.label() : (proc.mics.noCalFile[(size_t) index] ? "No file (flat)" : "Load cal file(s)..."));
+        const int active = proc.activeCalAngle (index);
+        calFileButton.setTooltip (cs.any() ? "Calibration: " + cs.names() + ". In use now: " + calAngleName (active) + "."
+                                           : "Load this mic's calibration file(s): select the 0 and 90 degree files together if you have both");
+        aimBox.setSelectedItemIndex (proc.mics.aim[(size_t) index], juce::dontSendNotification);
+        aimBox.setEnabled (cs.both());
+        aimBox.setAlpha (cs.both() ? 1.0f : 0.55f);
 
         const auto* linked = proc.locker.find (proc.mics.lockerId[(size_t) index]);
         lockerButton.setColour (juce::TextButton::buttonColourId, linked != nullptr ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
@@ -227,15 +238,16 @@ public:
             nameCol.removeFromRight (4);
             nameEditor.setBounds (nameCol);
         }
-        inputBox.setBounds (take (w * 11 / 100));
-        positionBox.setBounds (take (w * 16 / 100));
-        calFileButton.setBounds (take (w * 19 / 100));
-        splButton.setBounds (take (w * 15 / 100));
+        inputBox.setBounds (take (w * 9 / 100));
+        positionBox.setBounds (take (w * 13 / 100));
+        calFileButton.setBounds (take (w * 16 / 100));
+        aimBox.setBounds (take (w * 10 / 100));
+        splButton.setBounds (take (w * 13 / 100));
         meterArea = r;
     }
 
     // Column positions for the table header.
-    static juce::StringArray columnNames() { return { "Name", "Input", "Position", "Calibration file", "Sound level", "Level" }; }
+    static juce::StringArray columnNames() { return { "Name", "Input", "Position", "Calibration file", "Aim", "Sound level", "Level" }; }
 
 private:
     void changed() { if (onChanged) onChanged(); }
@@ -243,7 +255,7 @@ private:
     LiveAlignProcessor& proc;
     const int index;
     juce::TextEditor nameEditor;
-    juce::ComboBox inputBox, positionBox;
+    juce::ComboBox inputBox, positionBox, aimBox;
     juce::TextButton lockerButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xbe")) }, calFileButton, splButton, removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
     juce::Rectangle<int> meterArea;
     float peakDb = -120.0f, rmsDb = -120.0f;
@@ -253,7 +265,8 @@ private:
 class MicSetupPage : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void (int)> onCalibrate, onLoadCalFile, onSaveToLocker;
+    std::function<void (int)> onCalibrate, onSaveToLocker;
+    std::function<void (int, int)> onLoadCalFile;   // mic, angle (-1: from the file names)
     std::function<void()> onManageLocker;
     std::function<void()> onChanged;
 
@@ -337,6 +350,14 @@ public:
         return false;
     }
 
+    // A message under the mic table for a few seconds.
+    void setNote (int mic, const juce::String& text)
+    {
+        note = proc.mics.nameOf (mic) + ": " + text;
+        noteUntil = juce::Time::getMillisecondCounter() + 10000;
+        repaint();
+    }
+
     void setSnapshot (const Snapshot& s) { snap = &s; rta.update (s); }
     juce::Component* calibrateButtonFor (int mic) { return mic < (int) rows.size() ? &rows[(size_t) mic]->calibrateButton() : nullptr; }
     juce::Component* calFileButtonFor (int mic) { return mic < (int) rows.size() ? &rows[(size_t) mic]->calFileComponent() : nullptr; }
@@ -371,19 +392,25 @@ public:
             const auto names = MicRow::columnNames();
             auto hdr = headerRow.withTrimmedLeft (30).withTrimmedRight (38);
             const int w = hdr.getWidth();
-            const int widths[] = { w * 16 / 100, w * 11 / 100, w * 16 / 100, w * 19 / 100, w * 15 / 100, 0 };
-            for (int i = 0; i < 6; ++i)
+            const int widths[] = { w * 16 / 100, w * 9 / 100, w * 13 / 100, w * 16 / 100, w * 10 / 100, w * 13 / 100, 0 };
+            for (int i = 0; i < 7; ++i)
             {
-                auto cell = i < 5 ? hdr.removeFromLeft (widths[i]) : hdr;
-                if (i < 5) hdr.removeFromLeft (8);
+                auto cell = i < 6 ? hdr.removeFromLeft (widths[i]) : hdr;
+                if (i < 6) hdr.removeFromLeft (8);
                 g.drawText (names[i].toUpperCase(), cell, juce::Justification::centredLeft);
             }
         }
         g.setColour (p.textFaint);
         g.setFont (font (11.0f));
-        g.drawText (juce::String (settings.micCount.load()) + " of " + juce::String (kMaxMics) + " mics. Mics, positions and calibration belong to the venue; "
-                        "the sound level is re-checked each session.",
-                    tableHint, juce::Justification::centredLeft, true);
+        if (note.isNotEmpty())
+        {
+            g.setColour (p.accent);
+            g.drawText (note, tableHint, juce::Justification::centredLeft, true);
+        }
+        else
+            g.drawText (juce::String (settings.micCount.load()) + " of " + juce::String (kMaxMics) + " mics. Mics, positions and calibration belong to the venue; "
+                            "the sound level is re-checked each session.",
+                        tableHint, juce::Justification::centredLeft, true);
     }
 
     void resized() override
@@ -483,17 +510,34 @@ private:
 
     void showCalFileMenu (int m)
     {
+        const auto& cs = proc.calibrations (m);
         juce::PopupMenu menu;
-        menu.addItem (1, "Load calibration file...");
-        menu.addItem (2, "Clear", proc.analyzer.getCalibrationName (m).isNotEmpty());
+        menu.addItem (1, "Load calibration file(s)...  (0 and 90 degree files together)");
+        menu.addSeparator();
+        for (int a = 0; a < 2; ++a)
+        {
+            const auto angle = calAngleName (a);
+            menu.addSectionHeader (angle + (a == Cal0 ? "  (mic at the speaker)" : "  (mic pointing up)") + (cs.has (a) ? ":  " + cs.name[a] : juce::String (":  none")));
+            menu.addItem (10 + a, "Load the " + angle + " file...");
+            menu.addItem (20 + a, "Clear the " + angle + " file", cs.has (a));
+        }
+        if (cs.has (0) != cs.has (1))
+        {
+            const int have = cs.has (0) ? 0 : 1;
+            menu.addItem (30, "This file is really the " + calAngleName (1 - have) + " one");
+        }
+        menu.addSeparator();
         menu.addItem (3, "This mic has no file (treat as flat)", true, proc.mics.noCalFile[(size_t) m]);
         juce::Component::SafePointer<MicSetupPage> safe (this);
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (calFileButtonFor (m)), [safe, m] (int r)
         {
-            if (safe == nullptr) return;
-            if (r == 1 && safe->onLoadCalFile) safe->onLoadCalFile (m);
-            if (r == 2) safe->proc.clearCalibration (m);
-            if (r == 3) safe->proc.mics.noCalFile[(size_t) m] = ! safe->proc.mics.noCalFile[(size_t) m];
+            if (safe == nullptr || r == 0) return;
+            auto& p = safe->proc;
+            if (r == 1 && safe->onLoadCalFile) safe->onLoadCalFile (m, -1);
+            if ((r == 10 || r == 11) && safe->onLoadCalFile) safe->onLoadCalFile (m, r - 10);
+            if (r == 20 || r == 21) p.clearCalibration (m, r - 20);
+            if (r == 30) p.swapCalibrationAngle (m);
+            if (r == 3) p.mics.noCalFile[(size_t) m] = ! p.mics.noCalFile[(size_t) m];
             safe->changed();
         });
     }
@@ -527,6 +571,7 @@ private:
         pollLoopback();
         pollNoise();
         if (++tick % 4 == 0) { for (auto& r : rows) r->refresh(); update(); }
+        if (note.isNotEmpty() && juce::Time::getMillisecondCounter() > noteUntil) { note.clear(); repaint(); }
     }
 
     // ---- step logic ----
@@ -574,7 +619,7 @@ private:
             int loaded = 0, none = 0;
             for (int m = 0; m < count; ++m)
             {
-                if (proc.analyzer.getCalibrationName (m).isNotEmpty()) ++loaded;
+                if (proc.calibrations (m).any()) ++loaded;
                 else if (proc.mics.noCalFile[(size_t) m]) ++none;
             }
             if (none == count) cards[3].set (StepState::Skipped, "No calibration files: the mics are treated as flat.");
@@ -740,6 +785,8 @@ private:
     StepCard cards[kSteps];
     std::vector<std::unique_ptr<MicRow>> rows;
     juce::Rectangle<int> tableCard, headerRow, tableHint;
+    juce::String note;
+    juce::uint32 noteUntil = 0;
 
     juce::TextButton addMicButton { "+ Add mic" }, lockerButton { "Mic locker..." }, deviceButton { "Audio device..." }, loopButton { "Run check" },
         noiseButton { "Measure (5 seconds)" };

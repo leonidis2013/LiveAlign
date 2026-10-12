@@ -9,6 +9,7 @@
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "Analysis/FreqTable.h"
+#include "MicCalibration.h"
 #include "TraceStore.h"
 
 namespace la
@@ -16,8 +17,7 @@ namespace la
 struct LockerMic
 {
     juce::String id, name, notes;
-    FreqTable cal;                 // empty: no calibration file
-    juce::String calName;          // file name of the calibration
+    MicCalSet cals;                // 0 and 90 degree calibration files (either may be missing)
     bool noCalFile = false;        // this mic has no file (treated as flat)
     bool hasSpl = false;           // sound level calibrated at least once
     float splOffset = 120.0f;      // dB SPL at 0 dBFS, with the interface gain used then
@@ -26,7 +26,7 @@ struct LockerMic
     juce::String summary() const
     {
         juce::StringArray s;
-        s.add (calName.isNotEmpty() ? calName : noCalFile ? juce::String ("no cal file (flat)") : juce::String ("no cal file yet"));
+        s.add (cals.any() ? cals.names() : noCalFile ? juce::String ("no cal file (flat)") : juce::String ("no cal file yet"));
         s.add (hasSpl ? "sound level " + splDate : juce::String ("sound level not calibrated"));
         return s.joinIntoString ("  -  ");
     }
@@ -70,16 +70,18 @@ public:
             if (m.id.isEmpty()) continue;
             m.name = e->getStringAttribute ("name");
             m.notes = e->getStringAttribute ("notes");
-            m.calName = e->getStringAttribute ("calName");
             m.noCalFile = e->getBoolAttribute ("noCalFile");
             m.hasSpl = e->getBoolAttribute ("hasSpl");
             m.splOffset = (float) e->getDoubleAttribute ("splOffset", 120.0);
             m.splDate = e->getStringAttribute ("splDate");
             m.savedOn = e->getStringAttribute ("savedOn");
-            if (const auto* c = e->getChildByName ("Calibration"))
+            for (const auto* c : e->getChildWithTagNameIterator ("Calibration"))
             {
-                m.cal = parseFreqTable (c->getAllSubText().toStdString());
-                if (c->hasAttribute ("sensFactorDb")) { m.cal.hasSensFactor = true; m.cal.sensFactorDb = c->getDoubleAttribute ("sensFactorDb"); }
+                // format 1 had one file and kept its name on the mic
+                const auto nm = c->getStringAttribute ("name", e->getStringAttribute ("calName"));
+                const int a = c->hasAttribute ("angle") ? (c->getIntAttribute ("angle") == 90 ? Cal90 : Cal0) : MicCalSet::angleFromName (nm);
+                m.cals.table[a] = MicCalSet::loadTable (*c);
+                m.cals.name[a] = nm;
             }
             mics.push_back (std::move (m));
         }
@@ -88,26 +90,25 @@ public:
     bool saveTo (const juce::File& f) const
     {
         juce::XmlElement x ("LiveAlignMicLocker");
-        x.setAttribute ("format", 1);
+        x.setAttribute ("format", 2);
         for (const auto& m : mics)
         {
             auto* e = x.createNewChildElement ("Mic");
             e->setAttribute ("id", m.id);
             e->setAttribute ("name", m.name);
             e->setAttribute ("notes", m.notes);
-            e->setAttribute ("calName", m.calName);
             e->setAttribute ("noCalFile", m.noCalFile);
             e->setAttribute ("hasSpl", m.hasSpl);
             e->setAttribute ("splOffset", m.splOffset);
             e->setAttribute ("splDate", m.splDate);
             e->setAttribute ("savedOn", m.savedOn);
-            if (! m.cal.empty())
+            for (int a = 0; a < 2; ++a)
             {
+                if (! m.cals.has (a)) continue;
                 auto* c = e->createNewChildElement ("Calibration");
-                if (m.cal.hasSensFactor) c->setAttribute ("sensFactorDb", m.cal.sensFactorDb);
-                FreqTable copy = m.cal;
-                copy.meta.clear();
-                c->addTextElement (juce::String (writeFrd (copy, {}, false)));
+                c->setAttribute ("angle", a == Cal90 ? 90 : 0);
+                c->setAttribute ("name", m.cals.name[a]);
+                MicCalSet::saveTable (*c, m.cals.table[a]);
             }
         }
         f.getParentDirectory().createDirectory();

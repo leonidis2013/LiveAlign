@@ -303,7 +303,7 @@ private:
             g.setColour (p.textDim);
             g.drawText (proc.mics.position[(size_t) m].isNotEmpty() ? proc.mics.position[(size_t) m] : juce::String ("-"), row.removeFromLeft (cols[2]), juce::Justification::centredLeft, true);
             g.drawText ("In " + juce::String (s.micInput[m].load() + 1), row.removeFromLeft (cols[3]), juce::Justification::centredLeft);
-            const auto cal = proc.analyzer.getCalibrationName (m);
+            const auto cal = proc.calibrations (m).label();
             g.drawText (cal.isNotEmpty() ? cal : (proc.mics.noCalFile[(size_t) m] ? juce::String ("none (flat)") : juce::String ("not loaded")),
                         row.removeFromLeft (cols[4]), juce::Justification::centredLeft, true);
             juce::String lvl = proc.mics.noCalibrator ? "dBFS" : (! s.micSplCalibrated[m].load() ? "not calibrated"

@@ -70,7 +70,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
 
     micPage = std::make_unique<MicSetupPage> (p);
     micPage->onCalibrate = [this] (int m) { openCalibration (m, micPage->calibrateButtonFor (m)); };
-    micPage->onLoadCalFile = [this] (int m) { loadCalFile (m); };
+    micPage->onLoadCalFile = [this] (int m, int angle) { loadCalFile (m, angle); };
     micPage->onChanged = [this] { pickerMics = -1; refreshMicPicker(); };
     micPage->onManageLocker = [this] { openMicLocker(); };
     micPage->onSaveToLocker = [this] (int m)
@@ -351,7 +351,11 @@ void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
 {
     auto panel = std::make_unique<CalibrationPanel> (settings, mic, processor.mics.nameOf (mic),
         [this, mic] { return mic < (int) snap.mics.size() ? snap.mics[(size_t) mic].rawZSlowDbfs : -200.0f; },
-        [this, mic] { return processor.analyzer.getCalibrationName (mic); });
+        [this, mic]
+        {
+            const int a = processor.activeCalAngle (mic);
+            return a < 0 ? juce::String() : la::calAngleName (a) + ": " + processor.calibrations (mic).name[a];
+        });
     panel->onLoadFile = [this, mic] { loadCalFile (mic); };
     panel->onClearFile = [this, mic] { processor.clearCalibration (mic); };
     panel->onVerified = [this, mic] { processor.checks.splVerified[(size_t) mic] = true; };
@@ -359,17 +363,37 @@ void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
     juce::CallOutBox::launchAsynchronously (std::move (panel), area, this);
 }
 
-void LiveAlignEditor::loadCalFile (int mic)
+// angle -1: one or both files at once; each goes to 0 or 90 degrees from its name (e.g. miniDSP's "_90deg").
+void LiveAlignEditor::loadCalFile (int mic, int angle)
 {
-    chooser = std::make_unique<juce::FileChooser> ("Load the calibration file for " + processor.mics.nameOf (mic), juce::File(), "*.txt;*.cal;*.frd;*.csv");
+    const auto title = angle < 0 ? "Load the calibration file(s) for " + processor.mics.nameOf (mic) + " (select both 0 and 90 degree files if you have them)"
+                                 : "Load the " + la::calAngleName (angle) + " calibration file for " + processor.mics.nameOf (mic);
+    chooser = std::make_unique<juce::FileChooser> (title, juce::File(), "*.txt;*.cal;*.frd;*.csv");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe, mic] (const juce::FileChooser& fc)
+    const int chooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                      | (angle < 0 ? juce::FileBrowserComponent::canSelectMultipleItems : 0);
+    chooser->launchAsync (chooserFlags, [safe, mic, angle] (const juce::FileChooser& fc)
     {
         if (safe == nullptr) return;
-        const auto f = fc.getResult();
-        if (f == juce::File()) return;
-        const auto err = safe->processor.loadCalibrationFile (mic, f);
-        if (err.isNotEmpty()) safe->showMessage ("Calibration file not loaded", err);
+        auto files = fc.getResults();
+        if (files.isEmpty()) return;
+        while (files.size() > 2) files.remove (2);
+        // two files: the one named for 90 degrees goes there, the other to 0 (if neither or both say 90, the order picked)
+        int angles[2] { angle, angle };
+        if (angle < 0)
+        {
+            for (int i = 0; i < files.size(); ++i) angles[i] = la::MicCalSet::angleFromName (files[i].getFileName());
+            if (files.size() == 2 && angles[0] == angles[1]) { angles[0] = la::Cal0; angles[1] = la::Cal90; }
+        }
+        juce::StringArray done, errors;
+        for (int i = 0; i < files.size(); ++i)
+        {
+            const auto err = safe->processor.loadCalibrationFile (mic, files[i], angles[i]);
+            if (err.isNotEmpty()) errors.add (err);
+            else done.add (la::calAngleName (angles[i]) + ": " + files[i].getFileName());
+        }
+        if (! errors.isEmpty()) safe->showMessage ("Calibration file not loaded", errors.joinIntoString ("\n"));
+        else if (angle < 0) safe->micPage->setNote (mic, "Loaded " + done.joinIntoString (", ") + ". Wrong angle? Use the file menu to load it as the other one.");
         safe->micPage->refreshChoices();
     });
 }
@@ -713,6 +737,11 @@ void LiveAlignEditor::timerCallback()
                     good += snap.tfCoh[i] >= juce::jmax (0.2f, settings.coherenceBlank.load()) ? 1 : 0;
                 }
                 if (n > 0) s << "   RELIABLE " << juce::roundToInt (100.0 * good / n) << "%";
+            }
+            {
+                const int fm = settings.focusMic();
+                const int a = processor.activeCalAngle (fm);
+                if (a >= 0 && settings.selectedMic.load() < la::kAverageMic) s << "   CAL " << la::calAngleName (a);
             }
             if (juce::Time::getMillisecondCounter() < overloadUntil) s << "   ANALYSIS BEHIND";
         }

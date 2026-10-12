@@ -279,17 +279,37 @@ public:
 
         // mic locker: save mic 1, change it, assign the saved mic to mic 3, check it came across
         const auto lockerBackup = la::MicLocker::file().loadFileAsString();
-        la::FreqTable cal;
-        cal.freq = { 20, 1000, 20000 }; cal.db = { 1.5, 0.0, -2.0 };
-        proc.analyzer.setCalibration (0, cal, "UMIK-1 7012345.txt");
+        // two calibration files picked up by name: miniDSP style "7012345.txt" (0 deg) and "7012345_90deg.txt"
+        const auto f0 = dir.getChildFile ("7012345.txt"), f90 = dir.getChildFile ("7012345_90deg.txt");
+        f0.replaceWithText ("\"Sens Factor =-1.5dB\"\n20 1.5\n1000 0\n10000 1.0\n20000 -2.0\n");
+        f90.replaceWithText ("20 1.5\n1000 0\n10000 4.0\n20000 6.0\n");
+        proc.loadCalibrationFile (0, f0);
+        proc.loadCalibrationFile (0, f90);
+        proc.setMicAim (0, 1);
+        const auto up = proc.analyzer.getCalibrationName (0);
+        proc.setAimOverride (0);
+        const auto overridden = proc.analyzer.getCalibrationName (0);
+        proc.setAimOverride (-1);
+        proc.setMicAim (0, 0);
+        std::printf ("cal angles: has0=%d has90=%d aimUp=%s override0=%s aim0=%s label=%s\n", (int) proc.calibrations (0).has (0),
+                     (int) proc.calibrations (0).has (1), up.toRawUTF8(), overridden.toRawUTF8(), proc.analyzer.getCalibrationName (0).toRawUTF8(),
+                     proc.calibrations (0).label().toRawUTF8());
+        {
+            auto x = proc.createProjectXml();
+            proc.loadProjectXml (*x);
+            std::printf ("cal venue round trip: has0=%d has90=%d aim=%d active=%s sens=%d\n", (int) proc.calibrations (0).has (0), (int) proc.calibrations (0).has (1),
+                         proc.mics.aim[0], proc.analyzer.getCalibrationName (0).toRawUTF8(), (int) proc.calibrations (0).table[0].hasSensFactor);
+        }
+        f0.deleteFile();
+        f90.deleteFile();
         proc.settings.micSplCalibrated[0] = true;
         proc.settings.micSplOffset[0] = 111.25f;
         const auto id = proc.saveMicToLocker (0, "UMIK-1 #7012345");
-        proc.analyzer.clearCalibration (2);
+        proc.clearCalibration (2);
         proc.settings.micSplCalibrated[2] = false;
         proc.assignLockerMic (2, id);
         std::printf ("locker: entries=%d mic3 name=%s cal=%s offset=%.2f calibrated=%d linkMoved=%d\n", (int) proc.locker.mics.size(),
-                     proc.mics.name[2].toRawUTF8(), proc.analyzer.getCalibrationName (2).toRawUTF8(), (double) proc.settings.micSplOffset[2].load(),
+                     proc.mics.name[2].toRawUTF8(), proc.calibrations (2).label().toRawUTF8(), (double) proc.settings.micSplOffset[2].load(),
                      (int) proc.settings.micSplCalibrated[2].load(), (int) proc.mics.lockerId[0].isEmpty());
         proc.settings.micSplOffset[2] = 112.0f;
         const bool synced = proc.syncLocker();
@@ -297,7 +317,7 @@ public:
         reread.load();
         const auto* e = reread.find (id);
         std::printf ("locker sync: saved=%d offset on disk=%.2f cal points=%d\n", (int) synced, e != nullptr ? (double) e->splOffset : -1.0,
-                     e != nullptr ? (int) e->cal.freq.size() : -1);
+                     e != nullptr ? (int) e->cals.table[1].freq.size() : -1);
         if (lockerBackup.isEmpty()) la::MicLocker::file().deleteFile(); else la::MicLocker::file().replaceWithText (lockerBackup);
         proc.locker.load();
     }

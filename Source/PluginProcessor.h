@@ -11,6 +11,7 @@
 #include "Checklist.h"
 #include "SpeakerSystem.h"
 #include "MicLocker.h"
+#include "MicCalibration.h"
 #include "UpdateChecker.h"
 #include "Analysis/Generator.h"
 
@@ -55,8 +56,17 @@ public:
     int numOutputs() const { return getTotalNumOutputChannels(); }
 
     // ---- mics (message thread) ----
-    juce::String loadCalibrationFile (int mic, const juce::File&);   // returns an error message, or empty
-    void clearCalibration (int mic);
+    // Each mic can have a 0 degree (at the speaker) and a 90 degree (pointing up) file; angle -1 = from the file name.
+    juce::String loadCalibrationFile (int mic, const juce::File&, int angle = -1);   // returns an error message, or empty
+    void clearCalibration (int mic, int angle = -1);                                  // -1: both
+    const la::MicCalSet& calibrations (int mic) const { return cals[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)]; }
+    void setMicAim (int mic, int aim);
+    void swapCalibrationAngle (int mic);        // a single file that was taken for the wrong angle          // 0 = at the speaker, 1 = pointing up
+    // A page that needs a particular aim while it measures (Speakers: at the speaker). -1 = each mic's own aim.
+    void setAimOverride (int aim);
+    int aimOverride() const { return aimOverrideValue; }
+    int effectiveAim (int mic) const;
+    int activeCalAngle (int mic) const { return calibrations (mic).pick (effectiveAim (mic)); }   // -1: no file
     void addMic();
     void removeMic (int mic);
 
@@ -122,6 +132,10 @@ private:
     double refMs = 0.0;
     std::array<std::atomic<float>, la::kMaxMics> micPeak {}, micRms {};
     std::atomic<float> refPeak { 0.0f }, refRms { -120.0f };
+
+    void applyCalibration (int mic);
+    std::array<la::MicCalSet, la::kMaxMics> cals;
+    int aimOverrideValue = -1;
 
     std::vector<la::SessionInfo> sessions;
     int current = 0;
