@@ -259,11 +259,47 @@ public:
                          proc.system.sources[1].proc.lp.freq, (int) proc.system.timingLocked, (int) proc.system.alignments.size(),
                          proc.system.alignments.empty() ? -1 : (int) proc.system.alignments[0].measured(), proc.system.sources[0].channel);
             f.deleteFile();
+            lockerAndUpdateChecks();
             sessionRoundTrip();
             stage = 99;
             editor.reset();
             juce::MessageManager::getInstance()->stopDispatchLoop();
         }
+    }
+
+    void lockerAndUpdateChecks()
+    {
+        using U = la::UpdateChecker;
+        std::printf ("versions: %d %d %d %d\n", U::compareVersions ("0.10.0", "0.9.9"), U::compareVersions ("v0.7.0", "0.7.0"),
+                     U::compareVersions ("0.7.0", "0.7.1"), U::compareVersions ("1.0", "0.99.0"));
+        const auto rel = U::parseRelease (R"({"tag_name":"v9.1.0","html_url":"https://github.com/x/y/releases/tag/v9.1.0","body":"New:\n- a\n- b"})", "0.7.0");
+        const auto same = U::parseRelease (R"({"tag_name":"v0.7.0"})", "0.7.0");
+        std::printf ("parse: state=%d latest=%s notes=%d | same state=%d | bad state=%d\n", (int) rel.state, rel.latest.toRawUTF8(),
+                     rel.notes.length(), (int) same.state, (int) U::parseRelease ("not json", "0.7.0").state);
+
+        // mic locker: save mic 1, change it, assign the saved mic to mic 3, check it came across
+        const auto lockerBackup = la::MicLocker::file().loadFileAsString();
+        la::FreqTable cal;
+        cal.freq = { 20, 1000, 20000 }; cal.db = { 1.5, 0.0, -2.0 };
+        proc.analyzer.setCalibration (0, cal, "UMIK-1 7012345.txt");
+        proc.settings.micSplCalibrated[0] = true;
+        proc.settings.micSplOffset[0] = 111.25f;
+        const auto id = proc.saveMicToLocker (0, "UMIK-1 #7012345");
+        proc.analyzer.clearCalibration (2);
+        proc.settings.micSplCalibrated[2] = false;
+        proc.assignLockerMic (2, id);
+        std::printf ("locker: entries=%d mic3 name=%s cal=%s offset=%.2f calibrated=%d linkMoved=%d\n", (int) proc.locker.mics.size(),
+                     proc.mics.name[2].toRawUTF8(), proc.analyzer.getCalibrationName (2).toRawUTF8(), (double) proc.settings.micSplOffset[2].load(),
+                     (int) proc.settings.micSplCalibrated[2].load(), (int) proc.mics.lockerId[0].isEmpty());
+        proc.settings.micSplOffset[2] = 112.0f;
+        const bool synced = proc.syncLocker();
+        la::MicLocker reread;
+        reread.load();
+        const auto* e = reread.find (id);
+        std::printf ("locker sync: saved=%d offset on disk=%.2f cal points=%d\n", (int) synced, e != nullptr ? (double) e->splOffset : -1.0,
+                     e != nullptr ? (int) e->cal.freq.size() : -1);
+        if (lockerBackup.isEmpty()) la::MicLocker::file().deleteFile(); else la::MicLocker::file().replaceWithText (lockerBackup);
+        proc.locker.load();
     }
 
     void sessionRoundTrip()

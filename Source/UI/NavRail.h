@@ -115,7 +115,7 @@ class NavRail : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     std::function<void (int)> onSelect;
-    std::function<void()> onSettings, onFullScreen, onVenue;
+    std::function<void()> onSettings, onFullScreen, onVenue, onUpdate;
 
     NavRail()
     {
@@ -125,11 +125,24 @@ public:
         fullScreenButton.setTooltip ("Fill the whole screen (key: F, Esc to leave)");
         addAndMakeVisible (settingsButton);
         addChildComponent (fullScreenButton);
+        updateButton.onClick = [this] { if (onUpdate) onUpdate(); };
+        addChildComponent (updateButton);
     }
 
     void setCurrent (int page) { if (page != current) { current = page; repaint(); } }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; repaint(); } }
     void setFullScreenAvailable (bool a) { fullScreenButton.setVisible (a); resized(); }
+    // Shown above the venue when a newer version is out.
+    void setUpdate (const juce::String& version)
+    {
+        updateButton.setVisible (version.isNotEmpty());
+        updateButton.setButtonText ("UPDATE: " + version);
+        updateButton.setTooltip ("LiveAlign " + version + " is available. Click for what's new and the download.");
+        updateButton.setColour (juce::TextButton::buttonColourId, pal().accent);
+        updateButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
+        resized();
+        repaint();
+    }
     void setFullScreenText (const juce::String& t) { fullScreenButton.setButtonText (t); }
 
     void setStatus (int page, StepStatus s, const juce::String& text, float fraction = 0.0f)
@@ -235,6 +248,8 @@ public:
             bottom.removeFromBottom (4);
             fullScreenButton.setBounds (bottom.removeFromBottom (30));
         }
+        updateButton.setBounds (settingsButton.getX(), settingsButton.getY() - (fullScreenButton.isVisible() ? 34 : 0) - 34,
+                                settingsButton.getWidth(), 30);
     }
 
     void mouseMove (const juce::MouseEvent& e) override
@@ -264,7 +279,7 @@ private:
 
     juce::Rectangle<int> venueBounds() const
     {
-        const int top = settingsButton.getY() - (fullScreenButton.isVisible() ? 34 : 0) - 78;
+        const int top = settingsButton.getY() - (fullScreenButton.isVisible() ? 34 : 0) - (updateButton.isVisible() ? 34 : 0) - 78;
         return { 6, top, getWidth() - 12, 72 };
     }
 
@@ -281,7 +296,7 @@ private:
     juce::Point<int> hoverPoint;
     juce::String venueName, sessionName;
     bool dirty = false;
-    juce::TextButton settingsButton { "SETTINGS" }, fullScreenButton { "FULL SCREEN" };
+    juce::TextButton settingsButton { "SETTINGS" }, fullScreenButton { "FULL SCREEN" }, updateButton;
 public:
     static constexpr int kWidth = 184;
 };

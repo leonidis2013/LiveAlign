@@ -16,7 +16,7 @@ class SettingsPanel : public juce::Component, private juce::Timer
 public:
     std::function<void()> onThemeChanged, onLayoutChanged;
 
-    explicit SettingsPanel (LiveAlignProcessor& p) : settings (p.settings)
+    explicit SettingsPanel (LiveAlignProcessor& p) : settings (p.settings), updates (p.updates)
     {
         const int nIn = juce::jmax (1, p.numInputs());
 
@@ -164,6 +164,18 @@ public:
         unitBox.onChange = [this] { settings.distanceUnit = unitBox.getSelectedItemIndex(); };
         row (1, "Distance unit", unitBox);
 
+        header (0, "Updates");
+        checkButton.onClick = [this] { updates.check(); refreshUpdate(); };
+        checkButton.setTooltip ("Ask GitHub for the latest LiveAlign release");
+        row (0, "Version " + juce::String (JucePlugin_VersionString), checkButton);
+        autoUpdateToggle.setToggleState (updates.autoCheck(), juce::dontSendNotification);
+        autoUpdateToggle.setTooltip ("Check once each time LiveAlign starts (needs an internet connection; nothing is sent but the request)");
+        autoUpdateToggle.onClick = [this] { updates.setAutoCheck (autoUpdateToggle.getToggleState()); };
+        row (0, "Automatically", autoUpdateToggle);
+        updateLine = { colX (0), colY[0], kColW, 22 };
+        colY[0] += 26;
+        refreshUpdate();
+
         setSize (2 * kColW + kColGap + 2 * kPad, juce::jmax (colY[0], colY[1]) + 40);
         startTimerHz (2);
     }
@@ -199,6 +211,10 @@ public:
             g.setColour (p.text);
             g.drawText (r.label, colX (r.col), r.y, kLabelW - 8, 28, juce::Justification::centredLeft);
         }
+
+        g.setColour (updateState == UpdateInfo::Available ? p.accent : updateState == UpdateInfo::Failed ? p.warn : p.textDim);
+        g.setFont (font (11.5f, updateState == UpdateInfo::Available));
+        g.drawText (updateText, updateLine, juce::Justification::centredLeft, true);
 
         g.setColour (p.textDim);
         g.setFont (font (11.0f));
@@ -256,13 +272,42 @@ private:
         tempSlider.setValue (f ? c * 9.0 / 5.0 + 32.0 : c, juce::dontSendNotification);
     }
 
+    void refreshUpdate()
+    {
+        const auto& u = updates.info();
+        juce::String t;
+        switch (u.state)
+        {
+            case UpdateInfo::Checking: t = "Checking..."; break;
+            case UpdateInfo::UpToDate: t = "Up to date (latest is " + u.latest + ")."; break;
+            case UpdateInfo::Available: t = "Version " + u.latest + " is available."; break;
+            case UpdateInfo::Failed: t = u.error; break;
+            case UpdateInfo::Unknown:
+            default: t = "Not checked yet."; break;
+        }
+        checkButton.setButtonText (u.state == UpdateInfo::Available ? "Download " + u.latest + "..." : juce::String ("Check for updates"));
+        checkButton.onClick = [this]
+        {
+            if (updates.info().state == UpdateInfo::Available) updates.openReleasePage();
+            else { updates.check(); refreshUpdate(); }
+        };
+        if (t != updateText) { updateText = t; updateState = u.state; repaint(); }
+    }
+
     void timerCallback() override
     {
+        refreshUpdate();
         const auto d = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : juce::String ("Inputs and outputs come from the host");
         if (d != deviceText) { deviceText = d; repaint(); }
     }
 
     Settings& settings;
+    UpdateChecker& updates;
+    juce::TextButton checkButton { "Check for updates" };
+    juce::ToggleButton autoUpdateToggle { "Check when LiveAlign starts" };
+    juce::String updateText;
+    int updateState = 0;
+    juce::Rectangle<int> updateLine;
     std::vector<Row> rows;
     std::vector<Header> headers;
     int colY[2] { kTop, kTop };

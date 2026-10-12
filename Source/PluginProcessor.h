@@ -10,6 +10,8 @@
 #include "TraceStore.h"
 #include "Checklist.h"
 #include "SpeakerSystem.h"
+#include "MicLocker.h"
+#include "UpdateChecker.h"
 #include "Analysis/Generator.h"
 
 // LiveAlign runs as a standalone app (system setup and tuning: drives the PA with the generator and measures through
@@ -57,6 +59,14 @@ public:
     void clearCalibration (int mic);
     void addMic();
     void removeMic (int mic);
+
+    // ---- mic locker (message thread) ----
+    juce::String saveMicToLocker (int mic, const juce::String& name);   // returns the locker id
+    void assignLockerMic (int mic, const juce::String& lockerId);
+    void unlinkLockerMic (int mic) { mics.lockerId[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)].clear(); }
+    bool syncLocker();          // linked mics' calibrations changed: update the locker (true when it was saved)
+    la::MicLocker locker;
+    la::UpdateChecker updates;
 
     // Input meters: peak since the last read, and a smoothed RMS (dBFS)
     float takeMicPeak (int mic) { return micPeak[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)].exchange (0.0f); }

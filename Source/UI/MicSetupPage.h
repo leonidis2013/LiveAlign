@@ -97,7 +97,7 @@ private:
 class MicRow : public juce::Component
 {
 public:
-    std::function<void()> onChanged, onRemove, onCalibrate, onCalFileMenu;
+    std::function<void()> onChanged, onRemove, onCalibrate, onCalFileMenu, onLockerMenu;
 
     MicRow (LiveAlignProcessor& p, int micIndex) : proc (p), index (micIndex)
     {
@@ -127,6 +127,8 @@ public:
         };
         addAndMakeVisible (positionBox);
 
+        lockerButton.onClick = [this] { if (onLockerMenu) onLockerMenu(); };
+        addAndMakeVisible (lockerButton);
         calFileButton.onClick = [this] { if (onCalFileMenu) onCalFileMenu(); };
         addAndMakeVisible (calFileButton);
         splButton.onClick = [this] { if (onCalibrate) onCalibrate(); };
@@ -139,6 +141,7 @@ public:
 
     juce::Component& calibrateButton() { return splButton; }
     juce::Component& calFileComponent() { return calFileButton; }
+    juce::Component& lockerComponent() { return lockerButton; }
 
     void refresh()
     {
@@ -162,6 +165,11 @@ public:
         const auto cal = proc.analyzer.getCalibrationName (index);
         calFileButton.setButtonText (cal.isNotEmpty() ? cal : (proc.mics.noCalFile[(size_t) index] ? "No file (flat)" : "Load cal file..."));
         calFileButton.setTooltip (cal.isNotEmpty() ? "Calibration file: " + cal : "Load this mic's calibration file, or mark that it has none");
+
+        const auto* linked = proc.locker.find (proc.mics.lockerId[(size_t) index]);
+        lockerButton.setColour (juce::TextButton::buttonColourId, linked != nullptr ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
+        lockerButton.setTooltip (linked != nullptr ? "From the mic locker: " + linked->name + ". Its calibration is kept in sync with the locker."
+                                                   : "Mic locker: use a saved mic (name, calibration file, sound level), or save this one");
 
         const bool calibrated = proc.settings.micSplCalibrated[index].load();
         const bool verified = proc.checks.splVerified[(size_t) index];
@@ -213,7 +221,12 @@ public:
         r.removeFromRight (8);
         const int w = r.getWidth();
         auto take = [&r] (int px) { auto a = r.removeFromLeft (px); r.removeFromLeft (8); return a; };
-        nameEditor.setBounds (take (w * 16 / 100));
+        {
+            auto nameCol = take (w * 16 / 100);
+            lockerButton.setBounds (nameCol.removeFromRight (26));
+            nameCol.removeFromRight (4);
+            nameEditor.setBounds (nameCol);
+        }
         inputBox.setBounds (take (w * 11 / 100));
         positionBox.setBounds (take (w * 16 / 100));
         calFileButton.setBounds (take (w * 19 / 100));
@@ -231,7 +244,7 @@ private:
     const int index;
     juce::TextEditor nameEditor;
     juce::ComboBox inputBox, positionBox;
-    juce::TextButton calFileButton, splButton, removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
+    juce::TextButton lockerButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xbe")) }, calFileButton, splButton, removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
     juce::Rectangle<int> meterArea;
     float peakDb = -120.0f, rmsDb = -120.0f;
 };
@@ -240,7 +253,8 @@ private:
 class MicSetupPage : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void (int)> onCalibrate, onLoadCalFile;
+    std::function<void (int)> onCalibrate, onLoadCalFile, onSaveToLocker;
+    std::function<void()> onManageLocker;
     std::function<void()> onChanged;
 
     explicit MicSetupPage (LiveAlignProcessor& p)
@@ -263,6 +277,10 @@ public:
         addMicButton.onClick = [this] { proc.addMic(); rebuildRows(); changed(); };   // rows are rebuilt; the add button is not one of them
         addMicButton.setTooltip ("Add a measurement mic (up to 8)");
         addAndMakeVisible (addMicButton);
+        lockerButton.onClick = [this] { if (onManageLocker) onManageLocker(); };
+        lockerButton.setTooltip ("The mics you own, saved with their calibration file and sound level. Use the small arrow beside "
+                                 "a mic's name to put a saved mic in that row, or to save it.");
+        addAndMakeVisible (lockerButton);
 
         deviceButton.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
         cards[0].addAndMakeVisible (deviceButton);
@@ -380,6 +398,8 @@ public:
         for (auto& row : rows) row->setBounds (t.removeFromTop (40));
         auto foot = t.removeFromTop (40).withSizeKeepingCentre (t.getWidth(), 30);
         addMicButton.setBounds (foot.removeFromLeft (130));
+        foot.removeFromLeft (8);
+        lockerButton.setBounds (foot.removeFromLeft (130));
         foot.removeFromLeft (14);
         tableHint = foot;
 
@@ -412,11 +432,53 @@ private:
             };
             row->onCalibrate = [this, m] { if (onCalibrate) onCalibrate (m); };
             row->onCalFileMenu = [this, m] { showCalFileMenu (m); };
+            row->onLockerMenu = [this, m] { showLockerMenu (m); };
             addAndMakeVisible (*row);
             rows.push_back (std::move (row));
         }
         addMicButton.setEnabled (settings.micCount.load() < kMaxMics);
         resized();
+    }
+
+    void showLockerMenu (int m)
+    {
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Mic locker");
+        const auto& lk = proc.locker.mics;
+        const auto linkedId = proc.mics.lockerId[(size_t) m];
+        for (int i = 0; i < (int) lk.size(); ++i)
+        {
+            juce::String usedBy;
+            for (int k = 0; k < settings.micCount.load(); ++k)
+                if (k != m && proc.mics.lockerId[(size_t) k] == lk[(size_t) i].id) usedBy = " (now in row " + juce::String (k + 1) + ")";
+            juce::PopupMenu::Item it (lk[(size_t) i].name + usedBy);
+            it.setID (100 + i);
+            it.setTicked (lk[(size_t) i].id == linkedId);
+            menu.addItem (it);
+        }
+        if (lk.empty()) menu.addItem (1, "No mics saved yet", false);
+        menu.addSeparator();
+        const auto* linked = proc.locker.find (linkedId);
+        menu.addItem (2, linked != nullptr ? "Save changes to \"" + linked->name + "\" now" : juce::String ("Save this mic to the locker..."));
+        if (linked != nullptr) menu.addItem (3, "Unlink from the locker");
+        menu.addItem (4, "Manage the mic locker...");
+        juce::Component::SafePointer<MicSetupPage> safe (this);
+        auto* target = m < (int) rows.size() ? &rows[(size_t) m]->lockerComponent() : nullptr;
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [safe, m] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto& p = safe->proc;
+            if (r >= 100 && r - 100 < (int) p.locker.mics.size()) p.assignLockerMic (m, p.locker.mics[(size_t) (r - 100)].id);
+            else if (r == 2)
+            {
+                if (p.locker.find (p.mics.lockerId[(size_t) m]) != nullptr) p.saveMicToLocker (m, p.mics.nameOf (m));
+                else if (safe->onSaveToLocker) safe->onSaveToLocker (m);
+            }
+            else if (r == 3) p.unlinkLockerMic (m);
+            else if (r == 4 && safe->onManageLocker) safe->onManageLocker();
+            safe->refreshChoices();
+            safe->changed();
+        });
     }
 
     void showCalFileMenu (int m)
@@ -679,7 +741,7 @@ private:
     std::vector<std::unique_ptr<MicRow>> rows;
     juce::Rectangle<int> tableCard, headerRow, tableHint;
 
-    juce::TextButton addMicButton { "+ Add mic" }, deviceButton { "Audio device..." }, loopButton { "Run check" },
+    juce::TextButton addMicButton { "+ Add mic" }, lockerButton { "Mic locker..." }, deviceButton { "Audio device..." }, loopButton { "Run check" },
         noiseButton { "Measure (5 seconds)" };
     juce::ToggleButton noFilesToggle { "No calibration files" }, noCalButton { "No calibrator (dBFS)" }, skipLoopButton { "Skip" };
     juce::ComboBox refBox;

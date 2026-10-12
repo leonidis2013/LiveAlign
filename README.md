@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -79,6 +79,19 @@ or move one mic between named positions.
    should be (15 dB above the loudest mic's noise), and each mic's spectrum kept as an RTA trace.
 
 The RTA beside the checklist shows every mic in its own colour.
+
+**Mic locker:** the mics you own, saved on this computer (not in a venue), each with its calibration file and its
+last sound level calibration. The small arrow beside a mic's name opens the locker menu:
+
+- **Pick a saved mic** to put it in that row: its name, calibration file and sound level offset come with it. The
+  sound level still needs a quick "Still correct" check each session, since the interface gain may differ.
+- **Save this mic to the locker...** after loading its calibration file and calibrating it, with a name you will
+  recognise (model and serial number).
+- A row that came from the locker stays **linked** (the arrow is tinted): a new calibration file or sound level
+  calibration updates the locker too, and opening a venue picks up the mic's latest calibration from the locker.
+  **Unlink** stops that for the row.
+- **Mic locker...** (beside + Add mic) lists the saved mics, which row of this venue uses each one, and Rename /
+  Remove. The locker is the file `MicLocker.xml` in LiveAlign's user folder.
 
 ### 2 Speakers
 
@@ -187,6 +200,13 @@ it plays. Choose the output it plays from. `G` toggles it.
 In the **app**, outputs carry only the generator; inputs are never passed through, so the mic cannot feed back into
 the PA. In the **VST3**, audio passes through untouched unless the generator is driving a channel.
 
+## Updates
+
+LiveAlign checks GitHub for a newer release once each time it starts (Settings > Updates > *Check when LiveAlign
+starts* turns this off; only the request is sent). When there is one, an **UPDATE** button appears in the
+navigation pane above the venue: it shows what's new and opens the download page in your browser. Settings >
+Updates > **Check for updates** checks by hand. Installing a new version keeps your venues, traces and mic locker.
+
 ## Settings
 
 Settings (bottom of the navigation pane) holds the options that are not part of a step:
@@ -199,6 +219,7 @@ Settings (bottom of the navigation pane) holds the options that are not part of 
 - **Impulse response:** linear or log (ETC), time range.
 - **Waterfall:** history length and colour range.
 - **Environment:** temperature (Celsius or Fahrenheit), distance in feet or metres.
+- **Updates:** check now, and whether to check when LiveAlign starts.
 
 ## Calibration
 

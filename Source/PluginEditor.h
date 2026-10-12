@@ -37,6 +37,9 @@ private:
     void refreshMicPicker();
 
     void openSettings();
+    void refreshUpdate();
+    void showUpdate();
+    void openMicLocker();
     void openCalibration (int mic, juce::Component* anchor);
     void loadCalFile (int mic);
     void capture();

@@ -17,6 +17,7 @@ juce::AudioProcessor::BusesProperties LiveAlignProcessor::defaultBuses()
 LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
 {
     for (auto& v : micRms) v = -120.0f;
+    locker.load();
     resetVenue();
     traces.importLegacyFolder();
     savedProjectText = createProjectXml()->toString();
@@ -157,6 +158,7 @@ void LiveAlignProcessor::addMic()
     mics.name[(size_t) n] = {};
     mics.position[(size_t) n] = {};
     mics.noCalFile[(size_t) n] = false;
+    mics.lockerId[(size_t) n].clear();
     checks.splVerified[(size_t) n] = false;
     analyzer.clearCalibration (n);
     settings.micCount = n + 1;
@@ -178,9 +180,11 @@ void LiveAlignProcessor::removeMic (int mic)
         mics.position[(size_t) m] = mics.position[(size_t) m + 1];
         mics.noCalFile[(size_t) m] = mics.noCalFile[(size_t) m + 1];
         checks.splVerified[(size_t) m] = checks.splVerified[(size_t) m + 1];
+        mics.lockerId[(size_t) m] = mics.lockerId[(size_t) m + 1];
         analyzer.setCalibration (m, analyzer.getCalibration (m + 1), analyzer.getCalibrationName (m + 1));
     }
     analyzer.clearCalibration (n - 1);
+    mics.lockerId[(size_t) n - 1].clear();
     settings.micCount = n - 1;
     if (settings.selectedMic.load() >= n - 1 && settings.selectedMic.load() != la::kAverageMic) settings.selectedMic = 0;
     settings.requestResetAverages = true;
@@ -192,6 +196,79 @@ juce::String LiveAlignProcessor::setupFingerprint() const
     s << "|" << juce::roundToInt (getSampleRate()) << "|ref" << settings.refSource.load();
     for (int m = 0; m < settings.micCount.load(); ++m) s << "|m" << settings.micInput[m].load();
     return s;
+}
+
+// ---------------------------------------------------------------------------- mic locker
+
+juce::String LiveAlignProcessor::saveMicToLocker (int mic, const juce::String& name)
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    auto* entry = locker.find (mics.lockerId[(size_t) mic]);
+    if (entry == nullptr)
+    {
+        la::LockerMic m;
+        m.id = juce::Uuid().toString();
+        locker.mics.push_back (m);
+        entry = &locker.mics.back();
+    }
+    entry->name = name.isNotEmpty() ? name : mics.nameOf (mic);
+    entry->cal = analyzer.getCalibration (mic);
+    entry->calName = analyzer.getCalibrationName (mic);
+    entry->noCalFile = mics.noCalFile[(size_t) mic];
+    entry->hasSpl = settings.micSplCalibrated[mic].load();
+    entry->splOffset = settings.micSplOffset[mic].load();
+    if (entry->hasSpl && entry->splDate.isEmpty()) entry->splDate = today();
+    entry->savedOn = today();
+    mics.lockerId[(size_t) mic] = entry->id;
+    if (mics.name[(size_t) mic].isEmpty()) mics.name[(size_t) mic] = entry->name;
+    locker.save();
+    return entry->id;
+}
+
+// Puts a locker mic in a slot of the venue's mic table: its name, calibration file and last sound level calibration.
+// The sound level still has to be confirmed this session (the interface gain may differ).
+void LiveAlignProcessor::assignLockerMic (int mic, const juce::String& lockerId)
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    const auto* e = locker.find (lockerId);
+    if (e == nullptr) return;
+    // a mic can only be in one slot
+    for (int m = 0; m < la::kMaxMics; ++m) if (m != mic && mics.lockerId[(size_t) m] == lockerId) mics.lockerId[(size_t) m].clear();
+    mics.lockerId[(size_t) mic] = lockerId;
+    mics.name[(size_t) mic] = e->name;
+    if (! e->cal.empty()) analyzer.setCalibration (mic, e->cal, e->calName);
+    else analyzer.clearCalibration (mic);
+    mics.noCalFile[(size_t) mic] = e->cal.empty() && e->noCalFile;
+    settings.micSplCalibrated[mic] = e->hasSpl;
+    if (e->hasSpl) settings.micSplOffset[mic] = e->splOffset;
+    checks.splVerified[(size_t) mic] = false;
+    settings.requestResetAverages = true;
+}
+
+bool LiveAlignProcessor::syncLocker()
+{
+    bool changed = false;
+    for (int m = 0; m < settings.micCount.load(); ++m)
+    {
+        auto* e = locker.find (mics.lockerId[(size_t) m]);
+        if (e == nullptr) continue;
+        const auto calName = analyzer.getCalibrationName (m);
+        const bool spl = settings.micSplCalibrated[m].load();
+        const float off = settings.micSplOffset[m].load();
+        const bool noFile = mics.noCalFile[(size_t) m];
+        if (calName != e->calName) { e->cal = analyzer.getCalibration (m); e->calName = calName; changed = true; }
+        if (noFile != e->noCalFile) { e->noCalFile = noFile; changed = true; }
+        if (spl && (! e->hasSpl || std::abs (off - e->splOffset) > 0.005f))
+        {
+            e->hasSpl = true;
+            e->splOffset = off;
+            e->splDate = today();
+            changed = true;
+        }
+        if (mics.name[(size_t) m].isNotEmpty() && mics.name[(size_t) m] != e->name) { e->name = mics.name[(size_t) m]; changed = true; }
+    }
+    if (changed) locker.save();
+    return changed;
 }
 
 // The calibration tables themselves are stored (not just their paths), so a venue file works on another computer.
@@ -394,6 +471,13 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     }
     speakers.load (x);
     system.load (x);
+    // mics linked to the locker pick up their latest calibration from it
+    for (int m = 0; m < la::kMaxMics; ++m)
+        if (const auto* e = locker.find (mics.lockerId[(size_t) m]))
+        {
+            if (! e->cal.empty() && e->calName != analyzer.getCalibrationName (m)) analyzer.setCalibration (m, e->cal, e->calName);
+            if (e->hasSpl) { settings.micSplCalibrated[m] = true; settings.micSplOffset[m] = e->splOffset; }
+        }
 
     if (const auto* list = x.getChildByName ("Sessions"))
     {

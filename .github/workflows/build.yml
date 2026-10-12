@@ -119,7 +119,10 @@ jobs:
           ls -l dist
           VERSION=$(sed -n 's/^project(LiveAlign VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
           TAG="v${VERSION}"
-          NOTES="LiveAlign ${VERSION}, built from ${GITHUB_SHA::7}. Windows x64 and macOS universal (Apple silicon + Intel): the standalone app and the VST3, zipped. See the README for installing."
+          # what's new: the commit message's bullet lines (shown by the app's update check), then the build note
+          CHANGES=$(git log -1 --pretty=%B "$GITHUB_SHA" | grep -E '^[[:space:]]*- ' || true)
+          BUILD="LiveAlign ${VERSION}, built from ${GITHUB_SHA::7}. Windows x64 and macOS universal (Apple silicon + Intel): the standalone app and the VST3, zipped. See the README for installing."
+          NOTES=$(printf '%s\n\n%s' "$CHANGES" "$BUILD")
           # remove the old rolling pre-release from earlier versions
           gh release delete latest --cleanup-tag --yes 2>/dev/null || true
           if gh release view "$TAG" >/dev/null 2>&1; then

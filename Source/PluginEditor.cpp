@@ -4,6 +4,7 @@
 #include "PluginEditor.h"
 #include "UI/SettingsPanel.h"
 #include "UI/CalibrationPanel.h"
+#include "UI/MicLockerPanel.h"
 #include "StandaloneHooks.h"
 
 using namespace la::ui;
@@ -35,6 +36,8 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     nav.onSettings = [this] { openSettings(); };
     nav.onFullScreen = [this] { toggleFullScreen(); };
     nav.onVenue = [this] { showPage ((int) Page::Home); };
+    nav.onUpdate = [this] { showUpdate(); };
+    processor.updates.onResult = [this] { refreshUpdate(); };
     nav.setFullScreenAvailable ((bool) la::StandaloneHooks::toggleFullScreen());
     if (! standalone)
         for (int i = 0; i < 4; ++i) nav.setPageVisible (i, false);   // the VST3 shows Monitoring only
@@ -69,6 +72,14 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     micPage->onCalibrate = [this] (int m) { openCalibration (m, micPage->calibrateButtonFor (m)); };
     micPage->onLoadCalFile = [this] (int m) { loadCalFile (m); };
     micPage->onChanged = [this] { pickerMics = -1; refreshMicPicker(); };
+    micPage->onManageLocker = [this] { openMicLocker(); };
+    micPage->onSaveToLocker = [this] (int m)
+    {
+        askText ("Save to the mic locker", "A name you will recognise, e.g. the model and serial number. Its calibration file and "
+                                           "sound level calibration are saved with it.",
+                 processor.mics.nameOf (m),
+                 [this, m] (const juce::String& name) { processor.saveMicToLocker (m, name); micPage->refreshChoices(); });
+    };
     addChildComponent (*micPage);
 
     speakerPage = std::make_unique<SpeakersPage> (p);
@@ -126,12 +137,15 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     showPage (standalone ? settings.currentTab.load() : (int) Page::Monitor);
     updateStatuses();
 
+    refreshUpdate();
+    processor.updates.checkAtStartIfWanted();
     startTimerHz (30);
 }
 
 LiveAlignEditor::~LiveAlignEditor()
 {
     stopTimer();
+    processor.updates.onResult = nullptr;
     setLookAndFeel (nullptr);
 }
 
@@ -287,6 +301,50 @@ void LiveAlignEditor::openSettings()
     panel->onThemeChanged = [this] { applyTheme (settings.theme.load()); };
     panel->onLayoutChanged = [this] { layoutPanes(); };
     juce::CallOutBox::launchAsynchronously (std::move (panel), nav.getBounds().withTrimmedTop (nav.getHeight() - 60), this);
+}
+
+void LiveAlignEditor::refreshUpdate()
+{
+    const auto& u = processor.updates.info();
+    nav.setUpdate (u.state == la::UpdateInfo::Available ? u.latest : juce::String());
+}
+
+void LiveAlignEditor::showUpdate()
+{
+    const auto& u = processor.updates.info();
+    if (u.state != la::UpdateInfo::Available) return;
+    juce::String msg = "LiveAlign " + u.latest + " is available. You have " + juce::String (JucePlugin_VersionString) + ".";
+    if (u.notes.isNotEmpty()) msg << "\n\n" << u.notes;
+    msg << "\n\nThe download page opens in your browser. Your venues, traces and mic locker are kept when you install it.";
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::InfoIcon, "Update available", msg,
+                                                                                "Download", "Later", this),
+                                  [safe] (int r) { if (safe != nullptr && r == 1) safe->processor.updates.openReleasePage(); });
+}
+
+void LiveAlignEditor::openMicLocker()
+{
+    auto panel = std::make_unique<MicLockerPanel> (processor);
+    auto* raw = panel.get();
+    juce::Component::SafePointer<MicLockerPanel> safePanel (raw);
+    panel->onChanged = [this] { micPage->refreshChoices(); };
+    panel->onRename = [this, safePanel] (const juce::String& id)
+    {
+        auto* e = processor.locker.find (id);
+        if (e == nullptr) return;
+        askText ("Rename mic", {}, e->name, [this, id, safePanel] (const juce::String& t)
+        {
+            if (auto* entry = processor.locker.find (id))
+            {
+                entry->name = t;
+                processor.locker.save();
+                for (int m = 0; m < la::kMaxMics; ++m) if (processor.mics.lockerId[(size_t) m] == id) processor.mics.name[(size_t) m] = t;
+            }
+            if (safePanel != nullptr) safePanel->rebuild();
+            micPage->refreshChoices();
+        });
+    };
+    juce::CallOutBox::launchAsynchronously (std::move (panel), micPage->getBounds().withSizeKeepingCentre (10, 10), this);
 }
 
 void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
@@ -660,6 +718,8 @@ void LiveAlignEditor::timerCallback()
         }
         panes[0]->setStatus (s);
     }
+
+    if (tick % 60 == 0 && processor.syncLocker() && shownPage == (int) Page::Mics) micPage->refreshChoices();
 
     if (tick % 15 == 0)
     {
