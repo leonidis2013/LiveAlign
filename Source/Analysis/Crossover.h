@@ -1,0 +1,451 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jerod Ulicki
+
+#pragma once
+// Crossover design for any pair of speakers (sub / top, low-mid / high ...), on any speaker processor:
+// analog-prototype responses of the usual crossover filters, measured responses brought to one timing reference,
+// and a search for the frequency, filter, delay, polarity and level that sum flattest. Plain C++, unit tested.
+#include <algorithm>
+#include <cmath>
+#include <complex>
+#include <string>
+#include <vector>
+#include "Fft.h"
+#include "FreqTable.h"
+
+namespace la::xo
+{
+enum FilterType { None = 0, Butterworth = 1, LinkwitzRiley = 2, Bessel = 3 };
+
+inline const char* typeName (int t)
+{
+    static const char* n[] = { "Off", "Butterworth", "Linkwitz-Riley", "Bessel" };
+    return n[std::clamp (t, 0, 3)];
+}
+inline const char* typeShort (int t)
+{
+    static const char* n[] = { "Off", "BW", "LR", "Bessel" };
+    return n[std::clamp (t, 0, 3)];
+}
+
+// Slopes each type can have, in dB/octave.
+inline bool slopeValid (int type, int slope)
+{
+    if (slope % 6 != 0 || slope < 6 || slope > 48) return false;
+    if (type == LinkwitzRiley) return slope % 12 == 0;
+    if (type == Bessel) return slope <= 24;
+    return type == Butterworth;
+}
+
+struct Filter
+{
+    int type = None;
+    int slope = 24;      // dB/octave
+    double freq = 100.0;
+    bool active() const { return type != None && slopeValid (type, slope); }
+};
+
+namespace detail
+{
+// Analog low-pass prototype at s (normalised so the corner is s = j).
+inline cplx butterworthLp (int order, cplx s)
+{
+    cplx h (1.0, 0.0);
+    for (int k = 0; k < order; ++k)
+    {
+        const cplx pk = std::polar (1.0, kPi * (2.0 * k + order + 1.0) / (2.0 * order));
+        h *= -pk / (s - pk);
+    }
+    return h;
+}
+
+inline const std::vector<double>& besselCoeffs (int order)   // reverse Bessel polynomial, highest power first
+{
+    static const std::vector<double> c[] = { { 1, 1 }, { 1, 1 }, { 1, 3, 3 }, { 1, 6, 15, 15 }, { 1, 10, 45, 105, 105 } };
+    return c[std::clamp (order, 1, 4)];
+}
+
+inline cplx besselPoly (int order, cplx s)
+{
+    cplx v (0.0, 0.0);
+    for (double c : besselCoeffs (order)) v = v * s + c;
+    return v;
+}
+
+// Frequency scale that puts the Bessel low-pass -3 dB point at the corner.
+inline double besselScale (int order)
+{
+    static double cache[5] {};
+    order = std::clamp (order, 1, 4);
+    if (cache[order] > 0.0) return cache[order];
+    const double target = 1.0 / std::sqrt (2.0);
+    double lo = 0.1, hi = 10.0;
+    const double b0 = besselCoeffs (order).back();
+    for (int i = 0; i < 80; ++i)
+    {
+        const double mid = 0.5 * (lo + hi);
+        const double mag = b0 / std::abs (besselPoly (order, cplx (0.0, mid)));
+        if (mag > target) lo = mid; else hi = mid;
+    }
+    cache[order] = 0.5 * (lo + hi);
+    return cache[order];
+}
+
+inline cplx besselLp (int order, cplx s)
+{
+    const double k = besselScale (order);
+    return besselCoeffs (order).back() / besselPoly (order, s * k);
+}
+} // namespace detail
+
+// Response of a high-pass or low-pass filter at frequency f.
+inline cplx response (const Filter& flt, bool highPass, double f)
+{
+    if (! flt.active() || f <= 0.0) return { 1.0, 0.0 };
+    const cplx s (0.0, f / flt.freq);
+    const cplx sx = highPass ? 1.0 / s : s;   // low-pass to high-pass: s -> 1/s
+    const int order = flt.slope / 6;
+    switch (flt.type)
+    {
+        case Butterworth: return detail::butterworthLp (order, sx);
+        case LinkwitzRiley: { const cplx h = detail::butterworthLp (order / 2, sx); return h * h; }
+        case Bessel: return detail::besselLp (order, sx);
+        default: return { 1.0, 0.0 };
+    }
+}
+
+// A speaker's complex response on a frequency grid.
+struct Response
+{
+    std::vector<double> f;
+    std::vector<cplx> h;
+    bool empty() const { return f.empty(); }
+};
+
+inline std::vector<double> analysisGrid() { return [] { std::vector<double> g; for (double f = 20.0; f <= 20000.0; f *= std::pow (2.0, 1.0 / 48.0)) g.push_back (f); return g; }(); }
+
+// From a measurement (dB + phase) taken with `delayUsedMs` of compensation, expressed relative to the common
+// timing reference `refMs`, on `grid`. Phase is unwrapped before interpolation.
+inline Response fromTable (const FreqTable& t, double delayUsedMs, double refMs, const std::vector<double>& grid)
+{
+    Response r;
+    if (t.freq.size() < 2) return r;
+    std::vector<double> ph (t.freq.size(), 0.0);
+    if (t.hasPhase())
+    {
+        ph[0] = t.phase[0];
+        for (size_t i = 1; i < ph.size(); ++i)
+        {
+            double d = t.phase[i] - t.phase[i - 1];
+            while (d > 180.0) d -= 360.0;
+            while (d < -180.0) d += 360.0;
+            ph[i] = ph[i - 1] + d;
+        }
+    }
+    r.f = grid;
+    r.h.resize (grid.size());
+    const double shift = (delayUsedMs - refMs) * 0.001;
+    for (size_t i = 0; i < grid.size(); ++i)
+    {
+        const double f = grid[i];
+        double db, p;
+        if (f <= t.freq.front()) { db = t.db.front(); p = ph.front(); }
+        else if (f >= t.freq.back()) { db = t.db.back(); p = ph.back(); }
+        else
+        {
+            const size_t k = (size_t) (std::upper_bound (t.freq.begin(), t.freq.end(), f) - t.freq.begin());
+            const double a = (std::log (f) - std::log (t.freq[k - 1])) / (std::log (t.freq[k]) - std::log (t.freq[k - 1]));
+            db = t.db[k - 1] + a * (t.db[k] - t.db[k - 1]);
+            p = ph[k - 1] + a * (ph[k] - ph[k - 1]);
+        }
+        // outside the measured range the speaker is treated as silent
+        const bool inside = f >= t.freq.front() * 0.999 && f <= t.freq.back() * 1.001;
+        const double mag = inside ? std::pow (10.0, db / 20.0) : 1e-6;
+        r.h[i] = std::polar (mag, (p - 360.0 * f * shift) * kPi / 180.0);
+    }
+    return r;
+}
+
+// Minimum phase for a magnitude-only table (a spec-sheet or manufacturer FRD without phase), by the folded
+// cepstrum. Close to a speaker's own phase in its passband and roll-offs; it carries no arrival time.
+inline void addMinimumPhase (FreqTable& t, double rate = 96000.0, int n = 1 << 17)
+{
+    if (t.freq.size() < 2 || t.hasPhase()) return;
+    Fft fft (n);
+    std::vector<cplx> d ((size_t) n);
+    for (int k = 0; k <= n / 2; ++k)
+    {
+        const double f = std::max (k * rate / n, 1e-3);
+        d[(size_t) k] = std::log (std::pow (10.0, t.dbAt (f) / 20.0));
+    }
+    for (int k = n / 2 + 1; k < n; ++k) d[(size_t) k] = d[(size_t) (n - k)];
+    fft.inverse (d.data());                       // real cepstrum
+    for (int i = 1; i < n / 2; ++i) d[(size_t) i] *= 2.0;
+    for (int i = n / 2 + 1; i < n; ++i) d[(size_t) i] = 0.0;
+    for (auto& v : d) v = cplx (v.real(), 0.0);
+    fft.forward (d.data());
+    std::vector<double> ph ((size_t) n / 2 + 1);
+    for (int k = 0; k <= n / 2; ++k) ph[(size_t) k] = d[(size_t) k].imag() * 180.0 / kPi;
+    t.phase.clear();
+    for (double f : t.freq)
+    {
+        const double x = std::clamp (f * n / rate, 0.0, n / 2.0 - 1.0);
+        const size_t k = (size_t) x;
+        double p = ph[k] + (x - (double) k) * (ph[k + 1] - ph[k]);
+        p = std::remainder (p, 360.0);
+        t.phase.push_back (p);
+    }
+}
+
+// Applies a source's processing: high-pass, low-pass, gain, delay, polarity.
+struct Processing
+{
+    Filter hp, lp;
+    double gainDb = 0.0, delayMs = 0.0;
+    bool invert = false;
+
+    cplx at (double f) const
+    {
+        cplx g = response (hp, true, f) * response (lp, false, f) * std::pow (10.0, gainDb / 20.0);
+        g *= std::polar (1.0, -2.0 * kPi * f * delayMs * 0.001);
+        return invert ? -g : g;
+    }
+};
+
+inline Response processed (const Response& r, const Processing& p)
+{
+    Response out = r;
+    for (size_t i = 0; i < r.f.size(); ++i) out.h[i] = r.h[i] * p.at (r.f[i]);
+    return out;
+}
+
+inline double median (std::vector<double> v)
+{
+    if (v.empty()) return 0.0;
+    std::nth_element (v.begin(), v.begin() + (long) v.size() / 2, v.end());
+    return v[v.size() / 2];
+}
+
+inline double medianDb (const Response& r, double fLo, double fHi)
+{
+    std::vector<double> v;
+    for (size_t i = 0; i < r.f.size(); ++i)
+        if (r.f[i] >= fLo && r.f[i] <= fHi) v.push_back (20.0 * std::log10 (std::max (std::abs (r.h[i]), 1e-9)));
+    return median (v);
+}
+
+struct Capabilities
+{
+    bool types[4] { false, true, true, false };          // Butterworth and Linkwitz-Riley by default
+    bool slopes[8] { false, true, true, true, false, true, false, true };   // 6..48 in steps of 6: 12, 18, 24, 36, 48
+};
+
+struct Options
+{
+    double fMin = 40.0, fMax = 250.0;     // search range for the crossover frequency
+    double delayMinMs = -15.0, delayMaxMs = 15.0;
+    bool matchLevels = true;
+};
+
+// Passband level of the high source of a pair, as the optimiser uses it.
+inline double passbandDb (const Response& high, const Options& opt) { return medianDb (high, opt.fMax * 1.5, opt.fMax * 6.0); }
+
+struct Result
+{
+    bool valid = false;
+    Filter filter;                // same type and slope on both sides, at the crossover frequency
+    double delayLowMs = 0.0;      // delay of the low source relative to the high one (negative: delay the high one)
+    bool invertLow = false;
+    double gainLowDb = 0.0;
+    double costDb = 0.0;          // weighted mean deviation of the sum from the ideal, in dB (lower is better)
+    double efficiency = 0.0;      // |a + b| / (|a| + |b|) through the crossover region, 0..1
+    double highUsableFrom = 0.0;  // where the high source falls 6 dB below its passband
+    double lowUsableTo = 0.0;     // where the low source falls 6 dB below its passband
+    std::string note;
+};
+
+namespace detail
+{
+struct Band { std::vector<size_t> idx; std::vector<double> w; };
+
+inline Band bandAround (const std::vector<double>& f, double fc)
+{
+    Band b;
+    for (size_t i = 0; i < f.size(); ++i)
+    {
+        if (f[i] < fc / 2.0 || f[i] > fc * 2.0) continue;
+        b.idx.push_back (i);
+        b.w.push_back (1.0);
+    }
+    return b;
+}
+
+// Smoothed level in dB on the response's grid (moving average over `octaves`), so a narrow room notch does
+// not decide where a speaker is usable.
+inline std::vector<double> smoothedDb (const Response& r, double octaves)
+{
+    std::vector<double> db (r.f.size()), out (r.f.size());
+    for (size_t i = 0; i < r.f.size(); ++i) db[i] = 20.0 * std::log10 (std::max (std::abs (r.h[i]), 1e-9));
+    for (size_t i = 0; i < r.f.size(); ++i)
+    {
+        double sum = 0.0;
+        int n = 0;
+        const double lo = r.f[i] * std::pow (2.0, -octaves / 2.0), hi = r.f[i] * std::pow (2.0, octaves / 2.0);
+        for (size_t k = i; k-- > 0 && r.f[k] >= lo;) { sum += std::pow (10.0, db[k] / 10.0); ++n; }
+        for (size_t k = i; k < r.f.size() && r.f[k] <= hi; ++k) { sum += std::pow (10.0, db[k] / 10.0); ++n; }
+        out[i] = 10.0 * std::log10 (std::max (sum / std::max (n, 1), 1e-18));
+    }
+    return out;
+}
+
+// Cost: mean |deviation| (dB) of the summed response from what the pair should give there (`ref`: the louder of
+// the two unfiltered, level-matched sources, so room effects both share do not count), over an octave each side
+// of the crossover, plus a penalty when the sources meet out of phase (a flat sum from sources in quadrature
+// wastes headroom and changes around the room). Also returns the summation efficiency |a + b| / (|a| + |b|),
+// weighted toward the overlap.
+inline double evaluate (const std::vector<double>& f, const std::vector<cplx>& a, const std::vector<cplx>& b,
+                        const std::vector<double>& ref, const Band& band, double tauMs, double pol, double& efficiency)
+{
+    double cost = 0.0, wsum = 0.0, eff = 0.0, esum = 0.0;
+    for (size_t j = 0; j < band.idx.size(); ++j)
+    {
+        const size_t i = band.idx[j];
+        if (ref[i] < 1e-9) continue;
+        const cplx bb = b[i] * std::polar (pol, -2.0 * kPi * f[i] * tauMs * 0.001);
+        const double ma = std::abs (a[i]), mb = std::abs (bb);
+        const double hi = std::max (ma, mb), lo = std::min (ma, mb);
+        const double sum = std::abs (a[i] + bb);
+        cost += std::min (std::abs (20.0 * std::log10 (std::max (sum, 1e-9) / ref[i])), 30.0);
+        wsum += 1.0;
+        if (hi > 1e-9)
+        {
+            const double overlap = lo / hi;
+            eff += overlap * sum / (ma + mb);
+            esum += overlap;
+        }
+    }
+    efficiency = esum > 0.0 ? eff / esum : 0.0;
+    return wsum > 0.0 ? cost / wsum + 1.5 * (1.0 - efficiency) : 1e9;
+}
+} // namespace detail
+
+// Finds the crossover between `high` (e.g. the top) and `low` (e.g. the sub), both on the same grid and timing.
+inline Result optimise (const Response& high, const Response& low, const Capabilities& caps, const Options& opt)
+{
+    Result best;
+    if (high.empty() || low.empty() || high.f.size() != low.f.size()) { best.note = "Both speakers need a response."; return best; }
+    const auto& f = high.f;
+
+    // where each source is usable: within 6 dB of its own passband (half-octave smoothed)
+    const double highRef = passbandDb (high, opt);
+    const double lowRef = medianDb (low, std::max (20.0, opt.fMin / 3.0), std::max (25.0, opt.fMin / 1.2));
+    const auto hs = detail::smoothedDb (high, 0.5), ls = detail::smoothedDb (low, 0.5);
+    double highFrom = f.back(), lowTo = f.front();
+    for (size_t i = f.size(); i-- > 0;)
+    {
+        if (f[i] > opt.fMax * 1.5) continue;
+        if (hs[i] < highRef - 6.0) break;
+        highFrom = f[i];
+    }
+    for (size_t i = 0; i < f.size(); ++i)
+    {
+        if (f[i] < opt.fMin / 1.2) continue;
+        if (ls[i] < lowRef - 6.0) break;
+        lowTo = f[i];
+    }
+    best.highUsableFrom = highFrom;
+    best.lowUsableTo = lowTo;
+
+    // search the overlap inside the range; with a gap, around the gap
+    double fLo, fHi;
+    std::string note;
+    if (highFrom <= lowTo) { fLo = highFrom; fHi = lowTo; }
+    else
+    {
+        fLo = lowTo;
+        fHi = highFrom;
+        note = "The two speakers barely overlap: expect a dip around the crossover.";
+    }
+    fLo = std::max (fLo, opt.fMin);
+    fHi = std::min (fHi, opt.fMax);
+    if (fLo > fHi) { fLo = opt.fMin; fHi = opt.fMax; note = "The speakers' overlap is outside the search range."; }
+    const double fMid = std::sqrt (fLo * fHi);
+    const double gainDb = opt.matchLevels ? std::clamp (highRef - lowRef, -15.0, 15.0) : 0.0;
+    const double g = std::pow (10.0, gainDb / 20.0);
+    std::vector<double> ref (f.size());
+    for (size_t i = 0; i < f.size(); ++i) ref[i] = std::max (std::abs (high.h[i]), std::abs (low.h[i]) * g);
+
+    double bestCost = 1e9;
+    for (int type = 1; type <= 3; ++type)
+    {
+        if (! caps.types[type]) continue;
+        for (int si = 0; si < 8; ++si)
+        {
+            const int slope = (si + 1) * 6;
+            if (! caps.slopes[si] || ! slopeValid (type, slope)) continue;
+            for (double fc = fLo; fc <= fHi * 1.0001; fc *= std::pow (2.0, 1.0 / 24.0))
+            {
+                const Filter flt { type, slope, fc };
+                const auto band = detail::bandAround (f, fc);
+                if (band.idx.size() < 6) continue;
+
+                std::vector<cplx> a (f.size()), b (f.size());
+                for (size_t j : band.idx)
+                {
+                    a[j] = high.h[j] * response (flt, true, f[j]);
+                    b[j] = low.h[j] * response (flt, false, f[j]) * g;
+                }
+
+                for (double pol : { 1.0, -1.0 })
+                {
+                    double localBest = 1e9, localTau = 0.0, eff = 0.0;
+                    for (double tau = opt.delayMinMs; tau <= opt.delayMaxMs + 1e-9; tau += 0.25)
+                    {
+                        const double c = detail::evaluate (f, a, b, ref, band, tau, pol, eff);
+                        if (c < localBest) { localBest = c; localTau = tau; }
+                    }
+                    for (double tau = localTau - 0.25; tau <= localTau + 0.25 + 1e-9; tau += 0.02)
+                    {
+                        const double c = detail::evaluate (f, a, b, ref, band, tau, pol, eff);
+                        if (c < localBest) { localBest = c; localTau = tau; }
+                    }
+                    // gentle preference for the middle of the usable overlap, and for less delay
+                    const double cost = localBest + 0.25 * std::abs (std::log2 (fc / fMid)) + 0.01 * std::abs (localTau);
+                    if (cost < bestCost)
+                    {
+                        bestCost = cost;
+                        best.valid = true;
+                        best.filter = flt;
+                        best.delayLowMs = localTau;
+                        best.invertLow = pol < 0.0;
+                        best.gainLowDb = gainDb;
+                        best.costDb = localBest;
+                        detail::evaluate (f, a, b, ref, band, localTau, pol, best.efficiency);
+                    }
+                }
+            }
+        }
+    }
+    if (! best.valid && note.empty()) note = "No filter type and slope is enabled for your processor.";
+    best.note = note;
+    return best;
+}
+
+// Cost and efficiency of a given (manual) setting, for the live readout.
+inline double assess (const Response& high, const Response& low, const Processing& ph, const Processing& pl, double fc, double& efficiency)
+{
+    efficiency = 0.0;
+    if (high.empty() || low.empty() || high.f.size() != low.f.size()) return 0.0;
+    const auto band = detail::bandAround (high.f, fc);
+    std::vector<cplx> a (high.f.size()), b (high.f.size());
+    std::vector<double> ref (high.f.size(), 0.0);
+    const double gh = std::pow (10.0, ph.gainDb / 20.0), gl = std::pow (10.0, pl.gainDb / 20.0);
+    for (size_t j : band.idx)
+    {
+        a[j] = high.h[j] * ph.at (high.f[j]);
+        b[j] = low.h[j] * pl.at (high.f[j]);
+        ref[j] = std::max (std::abs (high.h[j]) * gh, std::abs (low.h[j]) * gl);
+    }
+    return detail::evaluate (high.f, a, b, ref, band, 0.0, 1.0, efficiency);
+}
+} // namespace la::xo

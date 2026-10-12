@@ -8,6 +8,7 @@
 #include "UI/NavRail.h"
 #include "UI/HomePage.h"
 #include "UI/MicSetupPage.h"
+#include "UI/SpeakersPage.h"
 #include "UI/Pages.h"
 #include "UI/MeasurePane.h"
 #include "UI/SidePanels.h"
@@ -26,6 +27,7 @@ public:
 
     void showPage (int page);
     void setPaneViews (int a, int b, int c);   // used by the local screenshot tool
+    la::ui::SpeakersPage& speakersPage() { return *speakerPage; }
 
 private:
     void timerCallback() override;
@@ -39,6 +41,7 @@ private:
     void loadCalFile (int mic);
     void capture();
     void importTrace();
+    void importSpeaker (int source);
     void exportTrace (int index);
     void renameTrace (int index);
     void deleteTrace (int index);
@@ -67,7 +70,8 @@ private:
     la::ui::NavRail nav;
     std::unique_ptr<la::ui::HomePage> homePage;
     std::unique_ptr<la::ui::MicSetupPage> micPage;
-    std::unique_ptr<la::ui::PlaceholderPage> speakerPage, roomPage;
+    std::unique_ptr<la::ui::SpeakersPage> speakerPage;
+    std::unique_ptr<la::ui::PlaceholderPage> roomPage;
 
     // Monitoring page
     std::unique_ptr<la::ui::MeasurePane> panes[3];
@@ -75,7 +79,6 @@ private:
     la::ui::InputPanel inputPanel;
     la::ui::DelayPanel delayPanel;
     la::ui::TracesPanel tracesPanel;
-    juce::TextButton monitorBackButton;
     juce::ComboBox micPicker;
 
     la::ui::GeneratorStrip generator;

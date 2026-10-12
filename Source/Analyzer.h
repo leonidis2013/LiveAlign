@@ -54,6 +54,11 @@ struct Snapshot
     double leqSeconds = 0.0;
     float rawZSlowDbfs = -200;
     bool splIsSpl = false;
+
+    // Waterfall: the newest unaveraged spectrum of the selected mic (or the average) on a 1/24-octave grid.
+    std::vector<double> wfFreq;
+    std::vector<float> wfLine;
+    juce::uint64 wfFrame = 0;     // changes when there is a new spectrum frame
 };
 
 // Loopback check: the reference input compared with the generator signal that was sent out.
@@ -116,7 +121,12 @@ public:
             if (n2 > 0) std::copy (src + n1, src + n1 + n2, fifoData[(size_t) c].begin() + s2);
         }
         fifo.finishedWrite (n1 + n2);
+        written += (juce::uint64) (n1 + n2);
     }
+
+    // Samples handed to the analysis, and samples it has analysed (they differ while it catches up).
+    juce::uint64 samplesWritten() const { return written.load(); }
+    juce::uint64 samplesAnalysed() const { return analysed.load(); }
 
     void setSampleRate (double rate) { pendingRate = rate; }
 
@@ -200,18 +210,15 @@ private:
                 }
                 fifo.finishedRead (got);
                 process (buf, got);
+                analysed += (juce::uint64) got;
+                // also while catching up, so requests and the display are never starved
+                handleRequests();
+                publishIfDue();
                 if (threadShouldExit()) return;
             }
 
             handleRequests();
-
-            const auto now = juce::Time::getMillisecondCounter();
-            if (dirty && now - lastPublish >= 40)
-            {
-                publish();
-                lastPublish = now;
-                dirty = false;
-            }
+            publishIfDue();
         }
     }
 
@@ -231,6 +238,7 @@ private:
             tfSize = newFft;
             for (auto& m : chains) m.tf.prepare (sr, tfSize, 2.0);
             grid = logGrid (10.0, std::min (24000.0, sr * 0.48), 48);
+            wfGrid = logGrid (20.0, std::min (20000.0, sr * 0.45), 24);
         }
         if (rateChanged)
         {
@@ -434,6 +442,17 @@ private:
         }
     }
 
+    void publishIfDue()
+    {
+        const auto now = juce::Time::getMillisecondCounter();
+        if (dirty && now - lastPublish >= 40)
+        {
+            publish();
+            lastPublish = now;
+            dirty = false;
+        }
+    }
+
     void publish()
     {
         const int count = juce::jlimit (1, kMaxMics, settings.micCount.load());
@@ -515,6 +534,24 @@ private:
             averageInto (s, count);
         }
 
+        // Waterfall line: the latest frame, not averaged
+        {
+            s.wfFreq = wfGrid;
+            std::vector<double> sum (wfGrid.size(), 0.0);
+            const int first = average ? 0 : one, last = average ? count - 1 : one;
+            for (int m = first; m <= last; ++m)
+            {
+                auto& c = chains[(size_t) m];
+                PowerSpectrum::bands (c.rta.lastFrame(), c.rta.binHz(), wfGrid, 1.0 / 24.0, p);
+                const double gain = std::pow (10.0, offsetFor (m) / 10.0);
+                for (size_t i = 0; i < p.size(); ++i) sum[i] += p[i] * gain;
+            }
+            s.wfLine.resize (wfGrid.size());
+            const double n = (double) (last - first + 1);
+            for (size_t i = 0; i < sum.size(); ++i) s.wfLine[i] = (float) powerToDbfs (sum[i] / n);
+            s.wfFrame = (juce::uint64) chains[(size_t) first].rta.frameCount();
+        }
+
         // Impulse response: show from -5 ms
         std::vector<float> ir;
         chains[(size_t) one].tf.impulse (ir);
@@ -587,13 +624,14 @@ private:
     juce::AbstractFifo fifo { kFifoSize };
     std::array<std::vector<float>, kChannels> fifoData;
     std::atomic<bool> overflowed { false };
+    std::atomic<juce::uint64> written { 0 }, analysed { 0 };
     std::atomic<double> pendingRate { 48000.0 };
 
     double sr = 0.0;
     int tfSize = 0, rtaSpeed = -1;
     std::array<MicChain, kMaxMics> chains;
     PowerSpectrum rtaRef;
-    std::vector<double> grid;
+    std::vector<double> grid, wfGrid;
 
     std::vector<float> rawRef, rawGen;
     int rawLen = 0, rawPos = 0;

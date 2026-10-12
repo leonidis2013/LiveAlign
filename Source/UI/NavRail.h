@@ -157,12 +157,11 @@ public:
 
         // name, as in the other Live plug-ins
         g.setColour (p.text);
-        g.setFont (font (17.0f, true));
-        g.drawText ("LIVEALIGN", juce::Rectangle<int> (18, 14, getWidth() - 24, 24), juce::Justification::centredLeft);
+        g.setFont (font (16.0f, true));
+        g.drawText ("LIVEALIGN", juce::Rectangle<int> (14, 12, getWidth() - 20, 22), juce::Justification::centredLeft);
         g.setColour (p.textFaint);
         g.setFont (font (10.5f));
-        g.drawText ("v" + juce::String (JucePlugin_VersionString) + "  -  system setup and tuning",
-                    juce::Rectangle<int> (19, 36, getWidth() - 24, 14), juce::Justification::centredLeft);
+        g.drawText ("v" + juce::String (JucePlugin_VersionString), juce::Rectangle<int> (15, 32, getWidth() - 20, 14), juce::Justification::centredLeft);
 
         for (int i = 0; i < kNumPages; ++i)
         {
@@ -180,27 +179,27 @@ public:
                 g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 10.0f, 3.0f, (float) r.getHeight() - 20.0f, 1.5f);
             }
 
-            auto iconBox = juce::Rectangle<float> (24.0f, 24.0f).withCentre ({ (float) r.getX() + 26.0f, (float) r.getCentreY() });
+            auto iconBox = juce::Rectangle<float> (24.0f, 24.0f).withCentre ({ (float) r.getX() + 21.0f, (float) r.getCentreY() });
             auto icon = pageIcon (i);
             icon.applyTransform (juce::AffineTransform::translation (iconBox.getX(), iconBox.getY()));
             g.setColour (active ? p.accent : p.textDim);
             g.strokePath (icon, juce::PathStrokeType (1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
             const auto& e = entries[i];
-            auto text = r.withTrimmedLeft (50).withTrimmedRight (34);
+            auto text = r.withTrimmedLeft (40).withTrimmedRight (26);
             g.setColour (active ? p.text : shade (p.text, p.dark ? -0.15f : 0.2f));
-            g.setFont (font (14.0f, true));
+            g.setFont (font (13.0f, true));
             if (e.text.isNotEmpty())
             {
                 g.drawText (pageName (i), text.removeFromTop (r.getHeight() / 2 + 1).withTrimmedTop (3), juce::Justification::bottomLeft, true);
                 g.setColour (e.status == StepStatus::Attention ? p.warn : p.textDim);
-                g.setFont (font (11.0f));
+                g.setFont (font (10.5f));
                 g.drawText (e.text, text.withTrimmedTop (1), juce::Justification::topLeft, true);
             }
             else
                 g.drawText (pageName (i), text, juce::Justification::centredLeft, true);
 
-            drawStatusBadge (g, juce::Rectangle<float> (18.0f, 18.0f).withCentre ({ (float) r.getRight() - 18.0f, (float) r.getCentreY() }),
+            drawStatusBadge (g, juce::Rectangle<float> (15.0f, 15.0f).withCentre ({ (float) r.getRight() - 13.0f, (float) r.getCentreY() }),
                              e.status, e.fraction);
         }
 
@@ -211,7 +210,7 @@ public:
             g.setColour (p.panelRaised.withAlpha (0.6f));
             g.fillRoundedRectangle (v.toFloat(), 7.0f);
         }
-        v = v.reduced (12, 6);
+        v = v.reduced (10, 6);
         g.setColour (p.textFaint);
         g.setFont (font (10.0f, true));
         g.drawText ("VENUE", v.removeFromTop (13), juce::Justification::centredLeft);
@@ -228,7 +227,7 @@ public:
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (12, 12);
+        auto r = getLocalBounds().reduced (10, 10);
         auto bottom = r.removeFromBottom (fullScreenButton.isVisible() ? 64 : 30);
         settingsButton.setBounds (bottom.removeFromBottom (30));
         if (fullScreenButton.isVisible())
@@ -260,13 +259,13 @@ private:
     {
         int slot = 0;
         for (int k = 0; k < i; ++k) slot += visible[k] ? 1 : 0;
-        return { 8, 66 + slot * 56, getWidth() - 16, 50 };
+        return { 6, 58 + slot * 48, getWidth() - 12, 44 };
     }
 
     juce::Rectangle<int> venueBounds() const
     {
         const int top = settingsButton.getY() - (fullScreenButton.isVisible() ? 34 : 0) - 78;
-        return { 8, top, getWidth() - 16, 72 };
+        return { 6, top, getWidth() - 12, 72 };
     }
 
     int itemAt (juce::Point<int> pt) const
@@ -283,5 +282,7 @@ private:
     juce::String venueName, sessionName;
     bool dirty = false;
     juce::TextButton settingsButton { "SETTINGS" }, fullScreenButton { "FULL SCREEN" };
+public:
+    static constexpr int kWidth = 184;
 };
 } // namespace la::ui

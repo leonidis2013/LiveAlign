@@ -50,12 +50,6 @@ public:
         setupButton (renameButton, [this] { if (onRenameSession) onRenameSession (selected); }, "Rename the selected session");
         setupButton (deleteButton, [this] { if (onDeleteSession) onDeleteSession (selected); }, "Delete the selected session");
 
-        for (int i = 0; i < 4; ++i)
-        {
-            goButtons[i].setButtonText ("Open");
-            goButtons[i].onClick = [this, i] { if (onGoTo) onGoTo (i + 1); };
-            addAndMakeVisible (goButtons[i]);
-        }
         speakerChangedButton.onClick = [this]
         {
             proc.speakers.changed = ! proc.speakers.changed;
@@ -139,10 +133,28 @@ public:
         for (int i = 0; i < 4; ++i)
         {
             auto r = stepRow (i);
-            g.setColour (p.panelRaised);
+            const bool over = i == hoverStep;
+            g.setColour (over ? p.panelRaised.brighter (p.dark ? 0.05f : 0.0f) : p.panelRaised);
             g.fillRoundedRectangle (r.toFloat(), 7.0f);
-            g.setColour (steps[i].status == StepStatus::Attention ? p.warn.withAlpha (0.7f) : p.border);
-            g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 7.0f, 1.0f);
+            // required and not done yet: amber, as on the mic setup steps; needs attention: stronger amber; done: green
+            const auto st = steps[i].status;
+            const bool required = (i == 0 || i == 1) && (st == StepStatus::NotStarted || st == StepStatus::InProgress);
+            juce::Colour edge = over ? p.accent.withAlpha (0.7f) : p.border;
+            float width = over ? 1.4f : 1.0f;
+            if (st == StepStatus::Attention) { edge = p.warn.withAlpha (0.95f); width = 1.6f; }
+            else if (required) { edge = p.warn.withAlpha (over ? 0.85f : 0.6f); width = 1.4f; }
+            else if (st == StepStatus::Ready && ! over) { edge = p.good.withAlpha (0.5f); width = 1.2f; }
+            g.setColour (edge);
+            g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 7.0f, width);
+
+            // chevron: the whole card opens the step
+            juce::Path chev;
+            const float cx = (float) r.getRight() - 24.0f, cy = (float) r.getCentreY();
+            chev.startNewSubPath (cx - 3.0f, cy - 7.0f);
+            chev.lineTo (cx + 4.0f, cy);
+            chev.lineTo (cx - 3.0f, cy + 7.0f);
+            g.setColour (over ? p.accent : p.textDim);
+            g.strokePath (chev, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
             auto icon = pageIcon (i + 1);
             icon.applyTransform (juce::AffineTransform::translation ((float) r.getX() + 14.0f, (float) r.getCentreY() - 12.0f));
@@ -151,7 +163,7 @@ public:
             drawStatusBadge (g, juce::Rectangle<float> (20.0f, 20.0f).withCentre ({ (float) r.getX() + 60.0f, (float) r.getCentreY() }),
                              steps[i].status, steps[i].fraction);
 
-            auto text = r.withTrimmedLeft (82).withTrimmedRight (i == 1 ? 250 : 100);
+            auto text = r.withTrimmedLeft (82).withTrimmedRight (i == 1 ? 230 : 50);
             g.setColour (p.text);
             g.setFont (font (14.0f, true));
             g.drawText (juce::String (i + 1) + "  " + pageName (i + 1), text.removeFromTop (r.getHeight() / 2).withTrimmedTop (4),
@@ -160,6 +172,8 @@ public:
             g.setFont (font (12.0f));
             g.drawText (steps[i].detail, text.withTrimmedTop (2), juce::Justification::topLeft, true);
         }
+
+        drawSessionSummary (g);
 
         if (changedSetup)
         {
@@ -210,18 +224,29 @@ public:
         // steps card
         auto st = stepsCard.reduced (16).withTrimmedTop (30);
         changeLine = st.removeFromBottom (22);
-        const int rowH = juce::jmin (84, (st.getHeight() - 30) / 4);
+        const int rowH = 74;
         for (int i = 0; i < 4; ++i)
         {
             stepRows[i] = st.removeFromTop (rowH);
             st.removeFromTop (10);
-            goButtons[i].setBounds (stepRows[i].withTrimmedRight (14).removeFromRight (74).withSizeKeepingCentre (74, 28));
         }
-        speakerChangedButton.setBounds (stepRows[1].withTrimmedRight (96).removeFromRight (150).withSizeKeepingCentre (150, 28));
+        summaryArea = st.withTrimmedTop (6);
+        speakerChangedButton.setBounds (stepRows[1].withTrimmedRight (50).removeFromRight (160).withSizeKeepingCentre (160, 28));
     }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        int h = -1;
+        for (int i = 0; i < 4; ++i) if (stepRows[i].contains (e.getPosition())) h = i;
+        if (h != hoverStep) { hoverStep = h; setMouseCursor (h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); repaint (stepsCard); }
+    }
+
+    void mouseExit (const juce::MouseEvent&) override { if (hoverStep >= 0) { hoverStep = -1; repaint (stepsCard); } }
 
     void mouseUp (const juce::MouseEvent& e) override
     {
+        for (int i = 0; i < 4; ++i)
+            if (stepRows[i].contains (e.getPosition())) { if (onGoTo) onGoTo (i + 1); return; }
         for (int i = 0; i < visibleRows(); ++i)
             if (rowBounds (i).contains (e.getPosition()) && i + scroll < (int) proc.getSessions().size())
             {
@@ -241,6 +266,76 @@ public:
     }
 
 private:
+    // The open session at a glance: every mic's state, the loopback and the delays.
+    void drawSessionSummary (juce::Graphics& g)
+    {
+        const auto& p = pal();
+        auto r = summaryArea;
+        if (r.getHeight() < 60) return;
+        g.setColour (p.accent);
+        g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 7.0f, 3.0f, 12.0f, 1.5f);
+        g.setColour (p.text);
+        g.setFont (font (13.0f, true));
+        const auto& list = proc.getSessions();
+        const int cur = proc.currentSession();
+        g.drawText ("This session: " + (cur < (int) list.size() ? list[(size_t) cur].name : juce::String()), r.removeFromTop (26).withTrimmedLeft (10),
+                    juce::Justification::centredLeft, true);
+        g.setColour (p.border);
+        g.drawHorizontalLine (r.getY(), (float) r.getX(), (float) r.getRight());
+        r.removeFromTop (6);
+
+        const int cols[] = { 26, 150, 110, 90, 150, 110, 100 };
+        const char* heads[] = { "", "Mic", "Position", "Input", "Calibration file", "Sound level", "Delay" };
+        auto header = r.removeFromTop (20);
+        g.setFont (font (10.5f, true));
+        g.setColour (p.textDim);
+        for (int c = 0; c < 7; ++c) g.drawText (juce::String (heads[c]).toUpperCase(), header.removeFromLeft (cols[c]), juce::Justification::centredLeft);
+
+        const auto& s = proc.settings;
+        for (int m = 0; m < s.micCount.load() && r.getHeight() >= 22; ++m)
+        {
+            auto row = r.removeFromTop (22);
+            g.setColour (micColour (m));
+            g.fillEllipse (row.removeFromLeft (cols[0]).toFloat().withSizeKeepingCentre (8.0f, 8.0f));
+            g.setFont (font (12.0f));
+            g.setColour (p.text);
+            g.drawText (proc.mics.nameOf (m), row.removeFromLeft (cols[1]), juce::Justification::centredLeft, true);
+            g.setColour (p.textDim);
+            g.drawText (proc.mics.position[(size_t) m].isNotEmpty() ? proc.mics.position[(size_t) m] : juce::String ("-"), row.removeFromLeft (cols[2]), juce::Justification::centredLeft, true);
+            g.drawText ("In " + juce::String (s.micInput[m].load() + 1), row.removeFromLeft (cols[3]), juce::Justification::centredLeft);
+            const auto cal = proc.analyzer.getCalibrationName (m);
+            g.drawText (cal.isNotEmpty() ? cal : (proc.mics.noCalFile[(size_t) m] ? juce::String ("none (flat)") : juce::String ("not loaded")),
+                        row.removeFromLeft (cols[4]), juce::Justification::centredLeft, true);
+            juce::String lvl = proc.mics.noCalibrator ? "dBFS" : (! s.micSplCalibrated[m].load() ? "not calibrated"
+                                   : (proc.checks.splVerified[(size_t) m] ? "checked" : "re-check"));
+            g.setColour (lvl == "re-check" || lvl == "not calibrated" ? p.warn : p.textDim);
+            g.drawText (lvl, row.removeFromLeft (cols[5]), juce::Justification::centredLeft);
+            g.setColour (p.textDim);
+            g.drawText (juce::String (s.micDelayMs[m].load(), 2) + " ms", row.removeFromLeft (cols[6]), juce::Justification::centredLeft);
+        }
+
+        r.removeFromTop (6);
+        if (r.getHeight() >= 20)
+        {
+            const auto& c = proc.checks;
+            juce::String t = "Loopback: ";
+            if (c.loopbackDone) t << juce::String (c.loopbackLatencyMs, 1) << " ms, " << (c.loopbackInverted ? "INVERTED" : "polarity normal");
+            else t << (c.loopbackSkipped ? "skipped" : "not checked");
+            t << "     Noise floor: ";
+            if (c.noiseDone)
+            {
+                float worst = -200.0f;
+                for (int m = 0; m < c.noiseMics; ++m) worst = juce::jmax (worst, c.noiseA[(size_t) m]);
+                t << juce::String (worst, 1) << (c.noiseIsSpl[0] ? " dBA" : " dBFS(A)");
+            }
+            else t << "not measured";
+            t << "     Traces: " << traceCount (cur);
+            g.setColour (p.textDim);
+            g.setFont (font (12.0f));
+            g.drawText (t, r.removeFromTop (20), juce::Justification::centredLeft, true);
+        }
+    }
+
     void setupButton (juce::TextButton& b, std::function<void()> f, const juce::String& tip)
     {
         b.onClick = std::move (f);
@@ -283,7 +378,7 @@ private:
         return 0;
     }
 
-    void timerCallback() override { updateButtons(); repaint (sessionsCard); }
+    void timerCallback() override { updateButtons(); repaint (sessionsCard); repaint (summaryArea); }
 
     int visibleRows() const { return juce::jmax (1, listArea.getHeight() / 34); }
     juce::Rectangle<int> rowBounds (int i) const { return listArea.withHeight (30).translated (0, i * 34); }
@@ -294,11 +389,11 @@ private:
     juce::TextButton newVenueButton { "New venue" }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
         newSessionButton { "New session" }, openSessionButton { "Open" }, compareButton { "Compare" }, renameButton { "Rename" },
         deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" };
-    juce::TextButton goButtons[4];
+    juce::Rectangle<int> summaryArea;
     juce::Rectangle<int> venueCard, sessionsCard, stepsCard, venueFileLine, sessionsHint, listArea, changeLine;
     juce::Rectangle<int> stepRows[4];
     StepInfo steps[4];
     bool changedSetup = false;
-    int selected = 0, scroll = 0;
+    int selected = 0, scroll = 0, hoverStep = -1;
 };
 } // namespace la::ui

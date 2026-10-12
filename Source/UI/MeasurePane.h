@@ -9,14 +9,15 @@ class MeasurePane : public juce::Component
 {
 public:
     MeasurePane (Settings& s, TraceStore& t, int paneIndex)
-        : settings (s), index (paneIndex), transfer (s, t), rta (s, t), impulse (s)
+        : settings (s), index (paneIndex), transfer (s, t), rta (s, t), impulse (s), waterfall (s)
     {
         addChildComponent (transfer);
         addChildComponent (rta);
         addChildComponent (impulse);
+        addChildComponent (waterfall);
 
-        const char* names[] = { "RTA", "Transfer", "Impulse" };
-        for (int i = 0; i < 3; ++i)
+        const char* names[] = { "RTA", "Transfer", "Impulse", "Waterfall" };
+        for (int i = 0; i < kViews; ++i)
         {
             tabs[i].setButtonText (names[i]);
             tabs[i].setClickingTogglesState (true);
@@ -29,6 +30,7 @@ public:
             tabs[0].setTooltip ("Real-time analyser of the mic (key: 1)");
             tabs[1].setTooltip ("Transfer function: mic against reference (key: 2)");
             tabs[2].setTooltip ("Impulse response: arrival, reflections, polarity (key: 3)");
+            tabs[3].setTooltip ("Waterfall: the spectrum over time, to spot feedback building and room ringing (key: 4)");
         }
 
         centreButton.setTooltip ("Put the transfer function on the 0 dB line (or double-click the graph). Drag the graph to shift it.");
@@ -40,13 +42,14 @@ public:
     // Follows the settings (keys, state recall).
     void sync()
     {
-        const int v = juce::jlimit (0, 2, settings.paneViewRef (index).load());
+        const int v = juce::jlimit (0, kViews - 1, settings.paneViewRef (index).load());
         if (v == shown) return;
         shown = v;
-        for (int i = 0; i < 3; ++i) tabs[i].setToggleState (i == v, juce::dontSendNotification);
+        for (int i = 0; i < kViews; ++i) tabs[i].setToggleState (i == v, juce::dontSendNotification);
         rta.setVisible (v == 0);
         transfer.setVisible (v == 1);
         impulse.setVisible (v == 2);
+        waterfall.setVisible (v == 3);
         centreButton.setVisible (v == 1);
         if (last != nullptr) update (*last);
     }
@@ -54,9 +57,10 @@ public:
     void update (const Snapshot& snap)
     {
         last = &snap;
+        waterfall.update (snap);   // keeps its history even while another view is shown
         if (shown == 0) rta.update (snap);
         else if (shown == 1) transfer.update (snap);
-        else impulse.update (snap);
+        else if (shown == 2) impulse.update (snap);
     }
 
     void setStatus (const juce::String& s) { if (s != status) { status = s; repaint (0, 0, getWidth(), 30); } }
@@ -64,7 +68,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         if (status.isEmpty()) return;
-        auto head = getLocalBounds().removeFromTop (30).withTrimmedLeft (3 * 80 + 16).withTrimmedRight (centreButton.isVisible() ? 84 : 6);
+        auto head = getLocalBounds().removeFromTop (30).withTrimmedLeft (kViews * 80 + 16).withTrimmedRight (centreButton.isVisible() ? 84 : 6);
         g.setColour (status.contains ("BEHIND") ? pal().warn : pal().textDim);
         g.setFont (monoFont (11.0f));
         g.drawText (status, head, juce::Justification::centredRight, true);
@@ -80,6 +84,7 @@ public:
         transfer.setBounds (r);
         rta.setBounds (r);
         impulse.setBounds (r);
+        waterfall.setBounds (r);
     }
 
 private:
@@ -90,7 +95,9 @@ private:
     TransferView transfer;
     RtaView rta;
     ImpulseView impulse;
-    juce::TextButton tabs[3], centreButton { "Centre" };
+    WaterfallView waterfall;
+    static constexpr int kViews = 4;
+    juce::TextButton tabs[kViews], centreButton { "Centre" };
     juce::String status;
 };
 } // namespace la::ui

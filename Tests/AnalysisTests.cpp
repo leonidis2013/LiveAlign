@@ -15,6 +15,7 @@
 #include "Analysis/FreqTable.h"
 #include "Analysis/Generator.h"
 #include "Analysis/TargetCurves.h"
+#include "Analysis/Crossover.h"
 
 using namespace la;
 
@@ -386,6 +387,91 @@ static void testTargets()
         near (targets::db (id, 1000.0), 0.0, 1e-9, std::string ("Target ") + targets::list()[(size_t) id].name + " is 0 dB at 1 kHz");
 }
 
+static double magDb (cplx h) { return 20.0 * std::log10 (std::abs (h)); }
+
+static void testCrossover()
+{
+    using namespace la::xo;
+    const Filter lr24 { LinkwitzRiley, 24, 100.0 };
+    near (magDb (response (lr24, false, 100.0)), -6.02, 0.02, "LR24 low-pass -6 dB at the corner");
+    near (magDb (response (lr24, true, 100.0)), -6.02, 0.02, "LR24 high-pass -6 dB at the corner");
+    near (magDb (response (lr24, false, 400.0)), -48.2, 0.5, "LR24 low-pass 24 dB/oct two octaves up");
+    double worst = 0.0;
+    for (double f = 20.0; f < 2000.0; f *= 1.1)
+        worst = std::max (worst, std::abs (magDb (response (lr24, true, f) + response (lr24, false, f))));
+    near (worst, 0.0, 0.01, "LR24 high + low sum flat");
+
+    const Filter bw12 { Butterworth, 12, 100.0 };
+    near (magDb (response (bw12, false, 100.0)), -3.01, 0.02, "BW12 -3 dB at the corner");
+    const Filter be24 { Bessel, 24, 100.0 };
+    near (magDb (response (be24, false, 100.0)), -3.01, 0.02, "Bessel 24 -3 dB at the corner");
+    check (! slopeValid (LinkwitzRiley, 18) && slopeValid (LinkwitzRiley, 24) && ! slopeValid (Bessel, 36), "Valid slopes");
+
+    // LR12 needs one side inverted to sum flat
+    const Filter lr12 { LinkwitzRiley, 12, 100.0 };
+    near (magDb (response (lr12, true, 100.0) - response (lr12, false, 100.0)), 0.0, 0.01, "LR12 sums flat with one side inverted");
+
+    // Synthetic pair: a top that rolls off below 70 Hz and a sub that rolls off above 160 Hz, sub arriving 2 ms late.
+    const auto grid = analysisGrid();
+    Response top, sub;
+    top.f = sub.f = grid;
+    const Filter topNat { Butterworth, 12, 70.0 }, subNat { Butterworth, 24, 160.0 };
+    for (double f : grid)
+    {
+        top.h.push_back (response (topNat, true, f));
+        sub.h.push_back (response (subNat, false, f) * std::polar (2.0, -2.0 * kPi * f * 0.002));   // +6 dB, 2 ms late
+    }
+    Capabilities caps;
+    Options opt;
+    const auto r = optimise (top, sub, caps, opt);
+    check (r.valid, "Crossover found");
+    check (r.filter.freq >= 60.0 && r.filter.freq <= 160.0, "Crossover frequency in the overlap", r.filter.freq, 100.0);
+    near (r.gainLowDb, -6.0, 1.5, "Sub level matched to the top");
+    check (r.costDb < 1.0, "Summed response close to flat", r.costDb, 0.5);
+    check (r.efficiency > 0.85, "Summation efficiency high", r.efficiency, 0.95);
+
+    // The same pair in a room: a reflection 4 ms late puts notches in both responses. The crossover still lands
+    // in the overlap, not at the edge of the range.
+    Response topRoom = top, subRoom = sub;
+    for (size_t i = 0; i < grid.size(); ++i)
+    {
+        const cplx comb = 1.0 + 0.45 * std::polar (1.0, -2.0 * kPi * grid[i] * 0.004);
+        topRoom.h[i] *= comb;
+        subRoom.h[i] *= comb;
+    }
+    const auto rr = optimise (topRoom, subRoom, caps, opt);
+    check (rr.valid && rr.filter.freq >= 60.0 && rr.filter.freq <= 160.0, "Crossover in the overlap despite a room notch", rr.filter.freq, 100.0);
+    check (rr.efficiency > 0.85, "Room: sources meet in phase", rr.efficiency, 0.95);
+
+    // A measured table with delay compensation: phase must line up after fromTable
+    FreqTable t;
+    for (double f = 20.0; f <= 20000.0; f *= 1.05)
+    {
+        t.freq.push_back (f);
+        t.db.push_back (0.0);
+        double p = -360.0 * f * 0.001;   // 1 ms of residual delay, wrapped
+        p = std::fmod (p, 360.0);
+        if (p < -180.0) p += 360.0;
+        t.phase.push_back (p);
+    }
+    const auto resp = fromTable (t, 5.0, 4.0, grid);   // measured with 5 ms used, reference is 4 ms -> 2 ms total
+    size_t k = 0;
+    while (grid[k] < 125.0) ++k;
+    const double expected = -360.0 * grid[k] * 0.002;
+    double diff = std::arg (resp.h[k]) * 180.0 / kPi - expected;
+    diff = std::remainder (diff, 360.0);
+    near (diff, 0.0, 2.0, "Measured phase brought to the timing reference");
+
+    // Minimum phase from magnitude only: a 2nd-order Butterworth high-pass at 100 Hz is +90 degrees at the corner
+    FreqTable mag;
+    const Filter hp2 { Butterworth, 12, 100.0 };
+    for (double f = 5.0; f <= 24000.0; f *= 1.02) { mag.freq.push_back (f); mag.db.push_back (magDb (response (hp2, true, f))); }
+    addMinimumPhase (mag);
+    check (mag.hasPhase(), "Minimum phase added");
+    near (mag.phaseAt (100.0), 90.0, 4.0, "Minimum phase of a high-pass at its corner");
+    near (mag.phaseAt (1000.0), std::arg (response (hp2, true, 1000.0)) * 180.0 / kPi, 3.0, "Minimum phase above the corner");
+}
+
 int main()
 {
     testTargets();
@@ -399,6 +485,7 @@ int main()
     testWeightingAndSpl();
     testGenerator();
     testFreqTable();
+    testCrossover();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -318,6 +318,7 @@ void LiveAlignProcessor::resetVenue()
     mics = {};
     positions = { "FOH", "Centre", "Rear", "Balcony" };
     speakers = {};
+    system = la::SpeakerSystem::defaults();
     checks = {};
     traces.clear();
     sessions.clear();
@@ -349,6 +350,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     auto* pos = x->createNewChildElement ("Positions");
     for (const auto& p : positions) pos->createNewChildElement ("Position")->setAttribute ("name", p);
     speakers.save (*x);
+    system.save (*x);
 
     auto* list = x->createNewChildElement ("Sessions");
     list->setAttribute ("current", current);
@@ -391,6 +393,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
         for (const auto* p : pos->getChildWithTagNameIterator ("Position")) positions.add (p->getStringAttribute ("name"));
     }
     speakers.load (x);
+    system.load (x);
 
     if (const auto* list = x.getChildByName ("Sessions"))
     {

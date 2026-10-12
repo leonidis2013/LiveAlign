@@ -11,23 +11,15 @@ namespace la::ui
 class PlaceholderPage : public juce::Component
 {
 public:
-    std::function<void()> onBack, onNext;
-
     PlaceholderPage (int pageIndex, juce::String stage, juce::String introText, juce::StringArray bulletPoints)
         : page (pageIndex), stageText (std::move (stage)), intro (std::move (introText)), bullets (std::move (bulletPoints))
     {
-        backButton.setButtonText (juce::String ("Back: ") + pageName (page - 1));
-        nextButton.setButtonText (juce::String ("Next: ") + pageName (page + 1));
-        backButton.onClick = [this] { if (onBack) onBack(); };
-        nextButton.onClick = [this] { if (onNext) onNext(); };
-        addAndMakeVisible (backButton);
-        addAndMakeVisible (nextButton);
     }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
-        auto card = getLocalBounds().withTrimmedBottom (44).withSizeKeepingCentre (juce::jmin (780, getWidth()), juce::jmin (460, getHeight() - 44));
+        auto card = getLocalBounds().withSizeKeepingCentre (juce::jmin (780, getWidth()), juce::jmin (460, getHeight()));
         drawPanel (g, card.toFloat(), {});
 
         auto r = card.reduced (36, 30);
@@ -58,17 +50,9 @@ public:
         }
     }
 
-    void resized() override
-    {
-        auto bottom = getLocalBounds().removeFromBottom (34);
-        backButton.setBounds (bottom.removeFromLeft (200));
-        nextButton.setBounds (bottom.removeFromRight (200));
-    }
-
 private:
     int page;
     juce::String stageText, intro;
     juce::StringArray bullets;
-    juce::TextButton backButton, nextButton;
 };
 } // namespace la::ui

@@ -7,7 +7,7 @@
 
 namespace la
 {
-enum class View { Rta = 0, Transfer = 1, Impulse = 2 };
+enum class View { Rta = 0, Transfer = 1, Impulse = 2, Waterfall = 3 };
 
 constexpr int kMaxMics = 8;
 constexpr int kAverageMic = kMaxMics;   // "average of all mics" in the mic picker
@@ -60,6 +60,8 @@ struct Settings
     std::atomic<int> temperatureUnit { 1 };  // 0 Celsius, 1 Fahrenheit
     std::atomic<int> irMode { 0 };           // 0 linear, 1 log (ETC)
     std::atomic<int> irRange { 1 };          // 0 = 20 ms, 1 = 100 ms, 2 = 500 ms
+    std::atomic<int> wfSeconds { 1 };        // waterfall history: 0 = 10 s, 1 = 30 s, 2 = 60 s
+    std::atomic<int> wfRange { 1 };          // waterfall colour range: 0 = 40 dB, 1 = 60 dB, 2 = 80 dB
 
     // One-shot requests from the UI to the analysis thread
     std::atomic<bool> requestResetAverages { false };
@@ -124,6 +126,8 @@ struct Settings
         x.setAttribute ("distanceUnit", distanceUnit.load());
         x.setAttribute ("irMode", irMode.load());
         x.setAttribute ("irRange", irRange.load());
+        x.setAttribute ("wfSeconds", wfSeconds.load());
+        x.setAttribute ("wfRange", wfRange.load());
         x.setAttribute ("paneCount", paneCount.load());
         x.setAttribute ("currentTab", currentTab.load());
         x.setAttribute ("paneLayout", paneLayout.load());
@@ -170,17 +174,19 @@ struct Settings
         rtaSpeed = i ("rtaSpeed", 1, 0, 2);
         rtaShowRef = x.getBoolAttribute ("rtaShowRef", false);
         rtaPeakHold = x.getBoolAttribute ("rtaPeakHold", false);
-        view = i ("view", (int) View::Transfer, 0, 2);
+        view = i ("view", (int) View::Transfer, 0, 3);
         theme = i ("theme", 0, 0, 1);
         temperatureC = f ("temperatureC", 20.0f, -20.0f, 50.0f);
         distanceUnit = i ("distanceUnit", 0, 0, 1);
         irMode = i ("irMode", 0, 0, 1);
         irRange = i ("irRange", 1, 0, 2);
+        wfSeconds = i ("wfSeconds", 1, 0, 2);
+        wfRange = i ("wfRange", 1, 0, 2);
         paneCount = i ("paneCount", 1, 1, 3);
         currentTab = i ("currentTab", 0, 0, 4);
         paneLayout = i ("paneLayout", 0, 0, 1);
-        paneView2 = i ("paneView2", (int) View::Rta, 0, 2);
-        paneView3 = i ("paneView3", (int) View::Impulse, 0, 2);
+        paneView2 = i ("paneView2", (int) View::Rta, 0, 3);
+        paneView3 = i ("paneView3", (int) View::Impulse, 0, 3);
         targetCurve = i ("targetCurve", 0, 0, 20);
         temperatureUnit = i ("temperatureUnit", 1, 0, 1);
         calibratorDb = f ("calibratorDb", 94.0f, 60.0f, 140.0f);

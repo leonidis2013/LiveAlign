@@ -3,7 +3,6 @@ name: Build LiveAlign
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -103,24 +102,27 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      # Every push to main publishes (or refreshes) the release for the version in CMakeLists.txt,
+      # as a normal release marked "Latest", so it shows on the repository page.
       - name: Publish as a GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           ls -l dist
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-            gh release create "$TAG" dist/*.zip --title "LiveAlign $TAG" --notes "Windows x64 and macOS universal builds: standalone app and VST3."
-          else
-            # rolling release that always holds the newest build from main
-            gh release delete latest --cleanup-tag --yes 2>/dev/null || true
-            gh release create latest dist/*.zip --target "$GITHUB_SHA" --prerelease \
-              --title "Latest build" \
-              --notes "Newest build from main (${GITHUB_SHA::7}). Windows x64 and macOS universal (arm64 + x86_64): the standalone app and the VST3, zipped."
+          VERSION=$(sed -n 's/^project(LiveAlign VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          TAG="v${VERSION}"
+          NOTES="LiveAlign ${VERSION}, built from ${GITHUB_SHA::7}. Windows x64 and macOS universal (Apple silicon + Intel): the standalone app and the VST3, zipped. See the README for installing."
+          # remove the old rolling pre-release from earlier versions
+          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --cleanup-tag --yes
           fi
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --title "LiveAlign ${VERSION}" --notes "$NOTES" --latest

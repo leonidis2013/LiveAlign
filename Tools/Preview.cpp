@@ -51,6 +51,8 @@ public:
         paths = { { { Biquad::make (fs, 180.0, 1.2, -4.0, 1) }, 336, 192, 0.5f, 0.4f },
                   { { Biquad::make (fs, 120.0, 1.0, 5.0, 1) }, 432, 260, 0.35f, 0.3f },
                   { { Biquad::make (fs, 400.0, 1.5, -3.0, 1) }, 576, 120, 0.25f, 0.5f } };
+        top = { Biquad::make (fs, 75.0, 0.7, 0, 0), Biquad::make (fs, 2500.0, 2.0, 4.0, 1), Biquad::make (fs, 15000.0, 0.7, 0, 2) };
+        sub = { Biquad::make (fs, 110.0, 0.7, 0, 2), Biquad::make (fs, 110.0, 0.7, 0, 2), Biquad::make (fs, 28.0, 0.7, 0, 0), Biquad::make (fs, 55.0, 2.0, 3.0, 1) };
         line.assign (48000, 0.0f);
         startTimer (20);
     }
@@ -68,13 +70,20 @@ public:
             {
                 const float ref = (float) nd (rng);
                 double y = ref;
-                for (auto& f : system) y = f (y);
+                // while the Speakers page measures, only the speaker on the generator's output plays
+                const int out = proc.settings.genOn.load() ? proc.settings.genOutput.load() : 0;
+                if (out != lastOut) { std::printf ("  sim: output %d at tick %d written=%llu\n", out, ticks, (unsigned long long) proc.analyzer.samplesWritten()); lastOut = out; }
+                if (out == 1) for (auto& f : top) y = f (y);
+                else if (out == 2) { for (auto& f : sub) y = f (y); y *= 2.0; }
+                else for (auto& f : system) y = f (y);
                 line[wp % L] = (float) y;
                 const int inputs[] = { 0, 2, 3 };
                 for (size_t m = 0; m < paths.size(); ++m)
                 {
                     auto& pth = paths[m];
-                    double v = pth.gain * line[(wp - (size_t) pth.delay + L) % L] + pth.gain * pth.refl * line[(wp - (size_t) (pth.delay + pth.reflDelay) + L) % L];
+                    // the sub stands 2 ms further from the mics than the tops
+                    const size_t extra = proc.settings.genOn.load() && proc.settings.genOutput.load() == 2 ? 96 : 0;
+                    double v = pth.gain * line[(wp - (size_t) pth.delay - extra + L) % L] + pth.gain * pth.refl * line[(wp - (size_t) (pth.delay + pth.reflDelay) - extra + L) % L];
                     for (auto& f : pth.filters) v = f (v);
                     buf.setSample (inputs[m], i, (float) (v + nd (rng) * 0.01));
                 }
@@ -88,7 +97,7 @@ public:
     void timerCallback() override
     {
         ++ticks;
-        if (ticks < 300) feed (960);
+        feed (960);
         if (ticks == 60) proc.settings.requestFindDelay = true;
         if (ticks == 140)
         {
@@ -117,7 +126,7 @@ public:
         if (ticks == 201) { proc.settings.selectedMic = 1; proc.settings.paneCount = 3; editor->setPaneViews (1, 0, 2); }
         if (ticks == 218) shot ("monitor-three");
         if (ticks == 219) { proc.settings.paneCount = 1; editor->showPage (2); }
-        if (ticks == 225) shot ("speakers");
+        if (ticks == 225) shot ("speakers-empty");
         if (ticks == 226) { proc.settings.theme = 1; editor->showPage (0); }
         if (ticks == 240) shot ("home-light");
         if (ticks == 241) { editor->showPage (4); proc.settings.selectedMic = 0; }
@@ -146,7 +155,79 @@ public:
             for (int m = 0; m < d.micCount; ++m)
                 std::printf ("delay mic %d: valid=%d ms=%.3f inv=%d conf=%.1f applied=%.3f\n", m + 1, (int) d.valid[(size_t) m], d.ms[(size_t) m],
                              (int) d.inverted[(size_t) m], d.confidenceDb[(size_t) m], (double) proc.settings.micDelayMs[m].load());
+            editor->showPage (2);
+            editor->speakersPage().measure (0);
+            stage = 1;
+            stageTick = ticks;
+        }
+        if (stage > 0 && stage < 5 && editor != nullptr) speakersFlow();
+    }
+
+    // Measures the simulated top and sub through the Speakers page, finds the crossover, then ends.
+    void speakersFlow()
+    {
+        auto& page = editor->speakersPage();
+        const bool timeout = ticks - stageTick > 6000;
+        if (stage == 1 && (! page.busy() || timeout))
+        {
+            const auto& s = proc.system.sources[0];
+            std::printf ("status: %s (%d ticks, analysis behind %.1f s)\n", page.statusText().toRawUTF8(), ticks - stageTick, (double) (proc.analyzer.samplesWritten() - proc.analyzer.samplesAnalysed()) / 48000.0);
+            std::printf ("measure Main: response=%d points=%d arrival=%d %.3f ms locked=%.3f\n", (int) s.hasResponse(), (int) s.response.freq.size(),
+                         (int) s.hasArrival, s.arrivalMs, proc.system.lockedDelayMs);
+            page.measure (1);
+            stage = 2;
+            stageTick = ticks;
+        }
+        else if (stage == 1 && ticks == stageTick + 60) shot ("speakers-measuring");
+        else if (stage == 2 && (! page.busy() || timeout))
+        {
+            const auto& s = proc.system.sources[1];
+            std::printf ("status: %s (%d ticks, analysis behind %.1f s)\n", page.statusText().toRawUTF8(), ticks - stageTick, (double) (proc.analyzer.samplesWritten() - proc.analyzer.samplesAnalysed()) / 48000.0);
+            std::printf ("measure Sub: response=%d points=%d arrival=%d %.3f ms\n", (int) s.hasResponse(), (int) s.response.freq.size(), (int) s.hasArrival, s.arrivalMs);
+            for (double f : { 30.0, 60.0, 120.0, 250.0, 1000.0, 5000.0 })
+                std::printf ("  %6.0f Hz  main %6.1f dB %6.0f deg   sub %6.1f dB %6.0f deg\n", f, proc.system.sources[0].response.dbAt (f), proc.system.sources[0].response.phaseAt (f),
+                             proc.system.sources[1].response.dbAt (f), proc.system.sources[1].response.phaseAt (f));
+            page.findCrossover();
+            stage = 3;
+            stageTick = ticks;
+        }
+        else if (stage == 3 && (! page.busy() || timeout))
+        {
+            const auto& r = proc.system.lastResult;
+            std::printf ("crossover: valid=%d %s %d dB/oct at %.1f Hz, low delay %.2f ms, invert %d, gain %.1f dB, cost %.2f, eff %.2f, overlap %.0f-%.0f\n",
+                         (int) r.valid, la::xo::typeName (r.filter.type), r.filter.slope, r.filter.freq, r.delayLowMs, (int) r.invertLow, r.gainLowDb,
+                         r.costDb, r.efficiency, r.highUsableFrom, r.lowUsableTo);
+            stage = 4;
+            stageTick = ticks;
+        }
+        else if (stage == 4 && ticks == stageTick + 10)
+        {
+            shot ("speakers");
+            proc.settings.theme = 1;
+        }
+        else if (stage == 4 && ticks == stageTick + 25)
+        {
+            shot ("speakers-light");
+            proc.settings.theme = 0;
+            editor->showPage (4);
+            proc.settings.paneCount = 1;
+            proc.settings.view = 3;
+        }
+        else if (stage == 4 && ticks == stageTick + 60)
+        {
+            shot ("monitor-waterfall");
+            // the speaker system survives a venue save / open
+            const auto f = dir.getChildFile ("speakers.lavenue");
+            proc.saveProject (f);
+            const auto before = proc.system.sources[1].response.freq.size();
+            proc.newProject();
+            proc.openProject (f);
+            std::printf ("venue speakers: sources=%d subPoints=%d (was %d) lp=%d@%.1f locked=%d\n", (int) proc.system.sources.size(),
+                         (int) proc.system.sources[1].response.freq.size(), (int) before, proc.system.sources[1].proc.lp.slope,
+                         proc.system.sources[1].proc.lp.freq, (int) proc.system.timingLocked);
+            f.deleteFile();
             sessionRoundTrip();
+            stage = 5;
             editor.reset();
             juce::MessageManager::getInstance()->stopDispatchLoop();
         }
@@ -202,7 +283,9 @@ public:
     std::unique_ptr<LiveAlignEditor> editor;
     std::vector<Biquad> system;
     std::vector<MicPath> paths;
+    std::vector<Biquad> top, sub;
     std::vector<float> line;
+    int stage = 0, stageTick = 0, lastOut = 0;
     size_t wp = 0;
     int ticks = 0;
     double fs = 48000.0;

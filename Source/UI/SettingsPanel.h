@@ -128,6 +128,17 @@ public:
         irRangeBox.onChange = [this] { settings.irRange = irRangeBox.getSelectedItemIndex(); };
         row (1, "Time range", irRangeBox);
 
+        header (1, "Waterfall");
+        wfSpanBox.addItemList ({ "10 seconds", "30 seconds", "60 seconds" }, 1);
+        wfSpanBox.setSelectedItemIndex (settings.wfSeconds.load(), juce::dontSendNotification);
+        wfSpanBox.onChange = [this] { settings.wfSeconds = wfSpanBox.getSelectedItemIndex(); };
+        row (1, "History", wfSpanBox);
+        wfRangeBox.addItemList ({ "40 dB", "60 dB", "80 dB" }, 1);
+        wfRangeBox.setSelectedItemIndex (settings.wfRange.load(), juce::dontSendNotification);
+        wfRangeBox.setTooltip ("Level range from the loudest band down to the darkest colour");
+        wfRangeBox.onChange = [this] { settings.wfRange = wfRangeBox.getSelectedItemIndex(); };
+        row (1, "Colour range", wfRangeBox);
+
         header (1, "Environment");
         tempUnitBox.addItemList ({ juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "C  Celsius")),
                                    juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "F  Fahrenheit")) }, 1);
@@ -256,7 +267,7 @@ private:
 
     juce::TextButton deviceButton { "Audio device..." };
     juce::ComboBox refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,
-        themeBox, irModeBox, irRangeBox, tempUnitBox, unitBox;
+        themeBox, irModeBox, irRangeBox, wfSpanBox, wfRangeBox, tempUnitBox, unitBox;
     juce::ToggleButton refRtaToggle { "Reference" }, peakToggle { "Peak hold" };
     juce::Slider tempSlider;
     juce::String deviceText;

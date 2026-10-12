@@ -9,6 +9,7 @@
 #include "Analyzer.h"
 #include "TraceStore.h"
 #include "Checklist.h"
+#include "SpeakerSystem.h"
 #include "Analysis/Generator.h"
 
 // LiveAlign runs as a standalone app (system setup and tuning: drives the PA with the generator and measures through
@@ -89,6 +90,7 @@ public:
     la::VenueMics mics;
     juce::StringArray positions;
     la::SpeakerStatus speakers;
+    la::SpeakerSystem system;           // sources, responses and crossover (venue)
     la::SessionChecks checks;           // the open session's checks
 
     la::Settings settings;

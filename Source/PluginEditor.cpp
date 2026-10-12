@@ -68,27 +68,16 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     micPage = std::make_unique<MicSetupPage> (p);
     micPage->onCalibrate = [this] (int m) { openCalibration (m, micPage->calibrateButtonFor (m)); };
     micPage->onLoadCalFile = [this] (int m) { loadCalFile (m); };
-    micPage->onBack = [this] { showPage ((int) Page::Home); };
-    micPage->onNext = [this] { showPage ((int) Page::Speakers); };
     micPage->onChanged = [this] { pickerMics = -1; refreshMicPicker(); };
     addChildComponent (*micPage);
 
-    speakerPage = std::make_unique<PlaceholderPage> ((int) Page::Speakers, "Coming in the next stage",
-        "Measure each speaker or group on its own, compare their responses, and get crossover settings for any speaker management system.",
-        juce::StringArray { "Build the system: tops, subs, fills, delays, groups such as a line array or several subs",
-                            "Speaker library: spec sheet, built-in DSP switches, EASE / FRD / CSV / CLF data",
-                            "Measure and overlay each speaker or group",
-                            "Crossover recommendation: frequency, filter type and slope, delay, polarity",
-                            "Predicted combined response, then a settings summary for your processor",
-                            "Set up once per venue: it stays valid until you mark the system as changed" });
+    speakerPage = std::make_unique<SpeakersPage> (p);
+    speakerPage->onImport = [this] (int i) { importSpeaker (i); };
+    speakerPage->onChanged = [this] { generator.sync(); updateStatuses(); };
     roomPage = std::make_unique<PlaceholderPage> ((int) Page::Room, "Coming in a later stage",
         "Measure across the listening area, compare with a target curve and tune the system.",
         juce::StringArray { "All mic positions, averaged", "Target curve with suggested EQ cuts", "Top and sub alignment checked at the seats",
                             "Feedback ring-out for the stage mics", "Room acoustics: reverb time, clarity, room modes" });
-    speakerPage->onBack = [this] { showPage ((int) Page::Mics); };
-    speakerPage->onNext = [this] { showPage ((int) Page::Room); };
-    roomPage->onBack = [this] { showPage ((int) Page::Speakers); };
-    roomPage->onNext = [this] { showPage ((int) Page::Monitor); };
     addChildComponent (*speakerPage);
     addChildComponent (*roomPage);
 
@@ -100,9 +89,6 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     }
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel })
         addChildComponent (*c);
-    monitorBackButton.setButtonText (juce::String ("Back: ") + pageName ((int) Page::Room));
-    monitorBackButton.onClick = [this] { showPage ((int) Page::Room); };
-    addChildComponent (monitorBackButton);
 
     micPicker.setTooltip ("Which mic the graphs and sound level show, or the average of all mics");
     micPicker.onChange = [this]
@@ -127,7 +113,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     tracesPanel.onExport = [this] (int i) { exportTrace (i); };
     tracesPanel.onDelete = [this] (int i) { deleteTrace (i); };
 
-    addAndMakeVisible (generator);
+    addChildComponent (generator);   // shown on the pages that play test signals
 
     applyTheme (settings.theme.load());
     generator.setNumOutputs (p.numOutputs());
@@ -174,10 +160,12 @@ void LiveAlignEditor::showPage (int page)
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
                      (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &micPicker })
         c->setVisible (mon);
-    monitorBackButton.setVisible (mon && standalone);
+    generator.setVisible (page == (int) Page::Speakers || page == (int) Page::Room || mon);
+    if (! generator.isVisible() && page != (int) Page::Mics) { settings.genOn = false; generator.sync(); }
 
     if (page == (int) Page::Home) homePage->refresh();
     if (page == (int) Page::Mics) { micPage->refreshChoices(); if (snapSerial > 0) micPage->setSnapshot (snap); }
+    if (page == (int) Page::Speakers) { speakerPage->refreshChoices(); speakerPage->setSnapshot (snap); }
     updateStatuses();
     resized();
     repaint();
@@ -256,9 +244,23 @@ void LiveAlignEditor::updateStatuses()
     }
 
     auto& spk = steps[1];
-    if (processor.speakers.changed) { spk.status = StepStatus::Attention; spk.shortText = "Marked changed"; spk.detail = "The system was marked as changed: measure the speakers again."; }
-    else if (processor.speakers.configured) { spk.status = StepStatus::Ready; spk.shortText = "Unchanged"; spk.detail = "Set up " + processor.speakers.configuredOn + ". Nothing has changed since."; }
-    else { spk.status = StepStatus::Later; spk.shortText = "Next stage"; spk.detail = "Speaker measurement and crossover come in the next stage."; }
+    {
+        const auto& srcs = processor.system.sources;
+        int measured = 0;
+        for (const auto& src : srcs) measured += src.hasResponse() ? 1 : 0;
+        const int n = (int) srcs.size();
+        if (processor.speakers.changed) { spk.status = StepStatus::Attention; spk.shortText = "Marked changed"; spk.detail = "The system was marked as changed: measure the speakers again."; }
+        else if (processor.speakers.configured) { spk.status = StepStatus::Ready; spk.shortText = "Set up"; spk.detail = "Set up " + processor.speakers.configuredOn + ". Nothing has changed since."; }
+        else if (measured == 0) { spk.status = StepStatus::NotStarted; spk.shortText = "Not started"; spk.detail = "Measure each speaker, find the crossover, then mark the speakers as set up."; }
+        else
+        {
+            spk.status = StepStatus::InProgress;
+            spk.fraction = (float) measured / (float) juce::jmax (1, n) * 0.8f + (processor.system.lastResult.valid ? 0.2f : 0.0f);
+            spk.shortText = juce::String (measured) + " of " + juce::String (n) + " measured";
+            spk.detail = measured < n ? "Measure the remaining speakers, then find the crossover."
+                                      : "All measured: find the crossover, enter the settings, then mark the speakers as set up.";
+        }
+    }
 
     auto& room = steps[2];
     room.status = StepStatus::Later;
@@ -399,6 +401,32 @@ void LiveAlignEditor::importTrace()
     });
 }
 
+// A speaker's response from a file: manufacturer data or a measurement from another analyser.
+void LiveAlignEditor::importSpeaker (int source)
+{
+    if (source < 0 || source >= (int) processor.system.sources.size()) return;
+    chooser = std::make_unique<juce::FileChooser> ("Import the response of " + processor.system.sources[(size_t) source].name, juce::File(), "*.frd;*.txt;*.csv");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe, source] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        const auto f = fc.getResult();
+        if (f == juce::File()) return;
+        auto& sys = safe->processor.system;
+        if (source >= (int) sys.sources.size()) return;
+        auto t = la::parseFreqTable (f.loadFileAsString().toStdString());
+        if (t.freq.size() < 4) { safe->showMessage ("Import failed", "No frequency response found in " + f.getFileName() + "."); return; }
+        juce::String note;
+        if (! t.hasPhase()) { la::xo::addMinimumPhase (t); note = " (no phase in the file: minimum phase used)"; }
+        auto& s = sys.sources[(size_t) source];
+        s.response = std::move (t);
+        s.imported = true;
+        s.hasArrival = false;
+        s.source = f.getFileName() + note;
+        safe->speakerPage->sourceImported();
+    });
+}
+
 void LiveAlignEditor::exportTrace (int index)
 {
     if (! processor.traces.valid (index)) return;
@@ -526,6 +554,7 @@ void LiveAlignEditor::newSession()
 void LiveAlignEditor::afterProjectLoaded()
 {
     micPage->refreshChoices();
+    speakerPage->refreshChoices();
     homePage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
@@ -558,7 +587,7 @@ bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
     if (c == 'c') { capture(); return true; }
     if (c == 'd') { settings.requestFindDelay = true; return true; }
     if (c == 'r') { settings.requestResetAverages = true; return true; }
-    if (c == '1' || c == '2' || c == '3') { settings.view = (int) (c - '1'); panes[0]->sync(); return true; }
+    if (c >= '1' && c <= '4') { settings.view = (int) (c - '1'); panes[0]->sync(); return true; }
     return false;
 }
 
@@ -580,6 +609,8 @@ void LiveAlignEditor::timerCallback()
         }
         else if (shownPage == (int) Page::Mics)
             micPage->setSnapshot (snap);
+        else if (shownPage == (int) Page::Speakers)
+            speakerPage->setSnapshot (snap);
     }
 
     if (monitoring)
@@ -644,7 +675,7 @@ void LiveAlignEditor::paint (juce::Graphics& g)
 void LiveAlignEditor::resized()
 {
     auto r = getLocalBounds();
-    nav.setBounds (r.removeFromLeft (238));
+    nav.setBounds (r.removeFromLeft (NavRail::kWidth));
     r.reduce (12, 10);
 
     auto header = r.removeFromTop (46);
@@ -662,8 +693,11 @@ void LiveAlignEditor::resized()
     else
         titleArea = header;
 
-    generator.setBounds (r.removeFromBottom (54));
-    r.removeFromBottom (10);
+    if (generator.isVisible())
+    {
+        generator.setBounds (r.removeFromBottom (54));
+        r.removeFromBottom (10);
+    }
     pageArea = r;
 
     homePage->setBounds (r);
@@ -673,12 +707,6 @@ void LiveAlignEditor::resized()
 
     auto side = r.removeFromRight (330);
     r.removeFromRight (8);
-    if (standalone)
-    {
-        auto navRow = side.removeFromBottom (34);
-        monitorBackButton.setBounds (navRow.removeFromLeft (220));
-        side.removeFromBottom (8);
-    }
     paneArea = r;
     layoutPanes();
 

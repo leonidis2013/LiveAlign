@@ -33,36 +33,54 @@ public:
     bool isComplete() const { return state != StepState::Todo; }
     juce::Rectangle<int> controlArea() const { return getLocalBounds().reduced (12, 0).removeFromRight (kControlsW).withSizeKeepingCentre (kControlsW, 28); }
 
+    // Done: green.  Required but not done: amber border.  A problem: red.  Not used (opted out): greyed out.
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
         const auto r = getLocalBounds().toFloat();
+        const bool off = state == StepState::Skipped;
         g.setColour (p.panel);
         g.fillRoundedRectangle (r, 8.0f);
-        const bool marked = state == StepState::Done || state == StepState::Warn;
-        g.setColour (marked ? (state == StepState::Done ? p.good : p.warn).withAlpha (0.6f) : p.border);
-        g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, marked ? 1.4f : 1.0f);
+        juce::Colour edge = p.border;
+        float width = 1.0f;
+        if (state == StepState::Done) { edge = p.good.withAlpha (0.6f); width = 1.4f; }
+        else if (state == StepState::Warn) { edge = p.bad.withAlpha (0.8f); width = 1.6f; }
+        else if (state == StepState::Todo) { edge = p.warn.withAlpha (0.65f); width = 1.4f; }
+        g.setColour (edge);
+        g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, width);
 
         const auto badge = juce::Rectangle<float> (22.0f, 22.0f).withCentre ({ 26.0f, r.getCentreY() });
         if (state == StepState::Done) drawStatusBadge (g, badge, StepStatus::Ready);
-        else if (state == StepState::Warn) drawStatusBadge (g, badge, StepStatus::Attention);
+        else if (state == StepState::Warn)
+        {
+            g.setColour (p.bad);
+            g.fillEllipse (badge);
+            g.setColour (p.onAccent);
+            g.setFont (font (15.0f, true));
+            g.drawText ("!", badge, juce::Justification::centred);
+        }
         else
         {
-            g.setColour (state == StepState::Skipped ? p.textFaint : p.textDim);
-            g.drawEllipse (badge.reduced (1.0f), 1.3f);
+            g.setColour (off ? p.textFaint : p.warn);
+            g.drawEllipse (badge.reduced (1.0f), 1.4f);
             g.setFont (font (11.5f, true));
-            g.drawText (juce::String (num), badge, juce::Justification::centred);
+            g.drawText (off ? juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93")) : juce::String (num), badge, juce::Justification::centred);
         }
 
         auto text = getLocalBounds().withTrimmedLeft (48).withTrimmedRight (kControlsW + 22).reduced (0, 8);
-        g.setColour (p.text);
+        g.setColour (off ? p.textFaint : p.text);
         g.setFont (font (14.0f, true));
-        g.drawText (title + (state == StepState::Skipped ? "   (skipped)" : ""), text.removeFromTop (20), juce::Justification::centredLeft, true);
-        g.setColour (p.textDim);
+        g.drawText (title + (off ? "   (not used)" : ""), text.removeFromTop (20), juce::Justification::centredLeft, true);
+        g.setColour (off ? p.textFaint : p.textDim);
         g.setFont (font (11.5f));
         g.drawText (help, text.removeFromTop (18), juce::Justification::centredLeft, true);
-        g.setColour (state == StepState::Warn ? p.warn : (state == StepState::Done ? p.good : p.textDim));
-        g.setFont (font (11.5f, state != StepState::Todo));
+        juce::Colour rc = p.textDim;
+        if (state == StepState::Done) rc = p.good;
+        else if (state == StepState::Warn) rc = p.bad;
+        else if (state == StepState::Todo) rc = p.warn;
+        else rc = p.textFaint;
+        g.setColour (rc);
+        g.setFont (font (11.5f, state != StepState::Skipped));
         g.drawText (result, text, juce::Justification::centredLeft, true);
     }
 
@@ -223,7 +241,7 @@ class MicSetupPage : public juce::Component, private juce::Timer
 {
 public:
     std::function<void (int)> onCalibrate, onLoadCalFile;
-    std::function<void()> onNext, onBack, onChanged;
+    std::function<void()> onChanged;
 
     explicit MicSetupPage (LiveAlignProcessor& p)
         : proc (p), settings (p.settings), checks (p.checks), rta (p.settings, p.traces),
@@ -258,13 +276,20 @@ public:
         };
         cards[1].addAndMakeVisible (refBox);
 
-        noCalButton.setClickingTogglesState (true);
-        noCalButton.setTooltip ("No acoustic calibrator: levels stay in dBFS");
+        noFilesToggle.setTooltip ("None of the mics has a calibration file: they are treated as flat. "
+                                  "A single mic can also be marked from its Calibration file button in the table.");
+        noFilesToggle.onClick = [this]
+        {
+            for (int m = 0; m < kMaxMics; ++m) proc.mics.noCalFile[(size_t) m] = noFilesToggle.getToggleState();
+            changed();
+        };
+        cards[3].addAndMakeVisible (noFilesToggle);
+
+        noCalButton.setTooltip ("No acoustic calibrator: levels stay in dBFS and this step is not used");
         noCalButton.onClick = [this] { proc.mics.noCalibrator = noCalButton.getToggleState(); changed(); };
         cards[4].addAndMakeVisible (noCalButton);
 
         loopButton.onClick = [this] { startLoopbackCheck(); };
-        skipLoopButton.setClickingTogglesState (true);
         skipLoopButton.onClick = [this] { checks.loopbackSkipped = skipLoopButton.getToggleState(); changed(); };
         cards[5].addAndMakeVisible (loopButton);
         cards[5].addAndMakeVisible (skipLoopButton);
@@ -272,10 +297,6 @@ public:
         noiseButton.onClick = [this] { startNoise(); };
         cards[6].addAndMakeVisible (noiseButton);
 
-        backButton.onClick = [this] { if (onBack) onBack(); };
-        nextButton.onClick = [this] { if (onNext) onNext(); };
-        addAndMakeVisible (backButton);
-        addAndMakeVisible (nextButton);
 
         rebuildRows();
         refreshChoices();
@@ -313,6 +334,9 @@ public:
         for (int i = 0; i < nIn; ++i) refBox.addItem ("Input " + juce::String (i + 1) + " (loopback)", i + 3);
         refBox.setSelectedItemIndex (juce::jlimit (0, nIn + 1, settings.refSource.load()), juce::dontSendNotification);
         noCalButton.setToggleState (proc.mics.noCalibrator, juce::dontSendNotification);
+        bool allNoFile = true;
+        for (int m = 0; m < settings.micCount.load(); ++m) allNoFile = allNoFile && proc.mics.noCalFile[(size_t) m];
+        noFilesToggle.setToggleState (allNoFile, juce::dontSendNotification);
         skipLoopButton.setToggleState (checks.loopbackSkipped, juce::dontSendNotification);
         for (auto& r : rows) r->refresh();
         nIns = nIn;
@@ -347,10 +371,6 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
-        auto nav = r.removeFromBottom (34);
-        backButton.setBounds (nav.removeFromLeft (180));
-        nextButton.setBounds (nav.removeFromRight (220));
-        r.removeFromBottom (10);
 
         const int tableH = 36 + 24 + (int) rows.size() * 40 + 44;
         tableCard = r.removeFromTop (tableH);
@@ -424,7 +444,8 @@ private:
         {
             case 0: put (deviceButton, 150); break;
             case 1: put (refBox, 300); break;
-            case 4: put (noCalButton, 170); break;
+            case 3: put (noFilesToggle, 220); break;
+            case 4: put (noCalButton, 240); break;
             case 5: put (loopButton, 130); put (skipLoopButton, 120); break;
             case 6: put (noiseButton, 170); break;
             default: break;
@@ -488,12 +509,16 @@ private:
 
         // 4 calibration files
         {
-            int ok = 0;
+            int loaded = 0, none = 0;
             for (int m = 0; m < count; ++m)
-                ok += proc.analyzer.getCalibrationName (m).isNotEmpty() || proc.mics.noCalFile[(size_t) m] ? 1 : 0;
-            cards[3].set (ok == count ? StepState::Done : StepState::Todo,
-                          ok == count ? juce::String ("Every mic has its file (or has none).")
-                                      : juce::String (count - ok) + " mic(s) still need a file, or mark that they have none (table).");
+            {
+                if (proc.analyzer.getCalibrationName (m).isNotEmpty()) ++loaded;
+                else if (proc.mics.noCalFile[(size_t) m]) ++none;
+            }
+            if (none == count) cards[3].set (StepState::Skipped, "No calibration files: the mics are treated as flat.");
+            else if (loaded + none == count) cards[3].set (StepState::Done, juce::String (loaded) + " file(s) loaded" + (none > 0 ? ", " + juce::String (none) + " mic(s) without." : "."));
+            else cards[3].set (StepState::Todo, juce::String (count - loaded - none) + " mic(s) need a file: use the Calibration file button in the table.");
+            noFilesToggle.setToggleState (none == count, juce::dontSendNotification);
         }
 
         // 5 sound level
@@ -507,8 +532,8 @@ private:
             }
             if (proc.mics.noCalibrator) cards[4].set (StepState::Skipped, "No calibrator: levels show as dBFS.");
             else if (ok == count) cards[4].set (StepState::Done, "Every mic calibrated or confirmed this session.");
-            else if (stale > 0) cards[4].set (StepState::Todo, juce::String (stale) + " mic(s) calibrated in an earlier session: re-check the level (table).");
-            else cards[4].set (StepState::Todo, juce::String (count - ok) + " mic(s) to calibrate (table).");
+            else if (stale > 0) cards[4].set (StepState::Todo, juce::String (stale) + " mic(s) need a quick re-check: Sound level button in the table, then Still correct.");
+            else cards[4].set (StepState::Todo, juce::String (count - ok) + " mic(s) to calibrate: Sound level button in the table.");
         }
 
         // 6 loopback
@@ -550,8 +575,6 @@ private:
             noiseButton.setButtonText (noiseActive ? "Measuring..." : "Measure (5 seconds)");
         }
 
-        const int done = completedSteps();
-        nextButton.setButtonText (done == kSteps ? "Next: Speakers" : "Next: Speakers  (" + juce::String (done) + "/" + juce::String (kSteps) + ")");
     }
 
     void startLoopbackCheck()
@@ -656,9 +679,9 @@ private:
     std::vector<std::unique_ptr<MicRow>> rows;
     juce::Rectangle<int> tableCard, headerRow, tableHint;
 
-    juce::TextButton addMicButton { "+ Add mic" }, deviceButton { "Audio device..." }, noCalButton { "No calibrator" },
-        loopButton { "Run check" }, skipLoopButton { "Skip" }, noiseButton { "Measure (5 seconds)" },
-        backButton { "Back: Home" }, nextButton { "Next: Speakers" };
+    juce::TextButton addMicButton { "+ Add mic" }, deviceButton { "Audio device..." }, loopButton { "Run check" },
+        noiseButton { "Measure (5 seconds)" };
+    juce::ToggleButton noFilesToggle { "No calibration files" }, noCalButton { "No calibrator (dBFS)" }, skipLoopButton { "Skip" };
     juce::ComboBox refBox;
 
     struct SavedGen { bool on = false; int type = 0; float level = -20.0f; } saved;

@@ -467,4 +467,165 @@ private:
     Settings& settings;
     const Snapshot* data = nullptr;
 };
+//==============================================================================
+// Waterfall: the selected mic's spectrum over time as a colour map, newest at the top.
+class WaterfallView : public juce::Component
+{
+public:
+    explicit WaterfallView (Settings& s) : settings (s) {}
+
+    void update (const Snapshot& snap)
+    {
+        data = &snap;
+        if (snap.wfLine.empty()) return;
+        if (snap.wfFrame == lastFrame || ! settings.running.load()) { repaint(); return; }
+        lastFrame = snap.wfFrame;
+        if ((int) snap.wfLine.size() != bands) reset ((int) snap.wfLine.size());
+        rows[(size_t) head] = snap.wfLine;
+        head = (head + 1) % kRows;
+        filled = juce::jmin (kRows, filled + 1);
+        stamps[(size_t) ((head + kRows - 1) % kRows)] = juce::Time::getMillisecondCounter();
+        float pk = -200.0f;
+        for (float v : snap.wfLine) pk = juce::jmax (pk, v);
+        top = juce::jmax (pk, top - 0.05f);   // follows the loudest band, falls back slowly
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        drawPanel (g, getLocalBounds().toFloat(), {});
+        auto r = getLocalBounds().toFloat().reduced (10.0f, 8.0f);
+        r.removeFromTop (22.0f);
+        r.removeFromLeft (44.0f);
+        r.removeFromRight (56.0f);
+        const auto plot = r.withTrimmedBottom (16.0f);
+
+        static const float secondsOpts[] = { 10.0f, 30.0f, 60.0f };
+        static const float rangeOpts[] = { 40.0f, 60.0f, 80.0f };
+        const float span = secondsOpts[juce::jlimit (0, 2, settings.wfSeconds.load())];
+        const float range = rangeOpts[juce::jlimit (0, 2, settings.wfRange.load())];
+
+        g.setColour (p.textDim);
+        g.setFont (font (11.0f, true));
+        g.drawText ("WATERFALL   " + juce::String ((int) span) + " s   " + juce::String ((int) range) + " dB range"
+                        + (settings.running.load() ? juce::String() : juce::String ("   FROZEN")),
+                    getLocalBounds().toFloat().reduced (14.0f, 8.0f).withHeight (16.0f), juce::Justification::centredLeft);
+
+        const double fMax = data != nullptr && ! data->wfFreq.empty() ? data->wfFreq.back() : 20000.0;
+        ax = { 20.0, fMax, plot };
+        drawFreqGrid (g, ax, plot, juce::Rectangle<float> (plot.getX(), plot.getBottom() + 2.0f, plot.getWidth(), 14.0f));
+
+        if (filled == 0 || data == nullptr || data->wfFreq.size() != (size_t) bands)
+        {
+            drawWaiting (g, plot, "Waiting for signal", "The waterfall scrolls as the mic picks up sound.");
+            return;
+        }
+
+        // time axis
+        g.setFont (font (10.5f));
+        for (float t = 0.0f; t <= span + 0.01f; t += span / 5.0f)
+        {
+            const float y = plot.getY() + t / span * plot.getHeight();
+            g.setColour (p.textDim);
+            g.drawText (t < 0.01f ? juce::String ("now") : "-" + juce::String ((int) t) + " s",
+                        juce::Rectangle<float> (plot.getX() - 44.0f, y - 7.0f, 40.0f, 14.0f), juce::Justification::centredRight);
+        }
+
+        // rows, newest at the top; each row placed by its age
+        const auto now = juce::Time::getMillisecondCounter();
+        const float floorDb = top - range;
+        const auto& f = data->wfFreq;
+        std::vector<float> xs ((size_t) bands + 1);
+        for (int i = 0; i <= bands; ++i)
+        {
+            const double edge = i == 0 ? f[0] / std::pow (2.0, 1.0 / 48.0) : (i == bands ? f[(size_t) bands - 1] * std::pow (2.0, 1.0 / 48.0)
+                                                                                         : std::sqrt (f[(size_t) i - 1] * f[(size_t) i]));
+            xs[(size_t) i] = juce::jlimit (plot.getX(), plot.getRight(), ax.x (edge));
+        }
+        float prevY = plot.getY();
+        for (int k = 0; k < filled; ++k)
+        {
+            const int idx = (head - 1 - k + kRows * 2) % kRows;
+            const float age = (float) (now - stamps[(size_t) idx]) / 1000.0f;
+            if (age > span) break;
+            const float y0 = plot.getY() + age / span * plot.getHeight();
+            const int idxOlder = (idx - 1 + kRows) % kRows;
+            const float ageOlder = k + 1 < filled ? (float) (now - stamps[(size_t) idxOlder]) / 1000.0f : age + 0.05f;
+            const float y1 = juce::jmin (plot.getBottom(), plot.getY() + juce::jmin (span, ageOlder) / span * plot.getHeight());
+            const float top0 = juce::jmax (prevY, y0);
+            if (y1 - top0 < 0.25f) continue;
+            const auto& row = rows[(size_t) idx];
+            for (int i = 0; i < bands; ++i)
+            {
+                g.setColour (colourFor ((row[(size_t) i] - floorDb) / range));
+                g.fillRect (juce::Rectangle<float>::leftTopRightBottom (xs[(size_t) i], top0, xs[(size_t) i + 1] + 0.6f, y1 + 0.6f));
+            }
+            prevY = y1;
+        }
+
+        // colour scale
+        auto scale = juce::Rectangle<float> (plot.getRight() + 14.0f, plot.getY(), 10.0f, plot.getHeight());
+        for (int i = 0; i < (int) scale.getHeight(); ++i)
+        {
+            g.setColour (colourFor (1.0f - (float) i / scale.getHeight()));
+            g.fillRect (scale.getX(), scale.getY() + (float) i, scale.getWidth(), 1.0f);
+        }
+        const bool spl = data->splIsSpl;
+        g.setColour (p.textDim);
+        g.drawText (juce::String (juce::roundToInt (top)), juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getY() - 2.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+        g.drawText (juce::String (juce::roundToInt (floorDb)), juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getBottom() - 10.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+        g.drawText (spl ? "dB" : "dBFS", juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getCentreY() - 6.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+
+        if (hover.has_value() && plot.contains (*hover))
+        {
+            const double fq = ax.freqAt (hover->x);
+            const float age = (hover->y - plot.getY()) / plot.getHeight() * span;
+            const size_t bi = nearestByFreq (f, fq);
+            float level = -200.0f;
+            for (int k = 0; k < filled; ++k)
+            {
+                const int idx = (head - 1 - k + kRows * 2) % kRows;
+                if ((float) (now - stamps[(size_t) idx]) / 1000.0f >= age) { level = rows[(size_t) idx][bi]; break; }
+            }
+            drawReadout (g, plot, *hover, freqLabel (f[bi]) + " Hz   " + juce::String (age, 1) + " s ago   "
+                                               + (level > -150.0f ? juce::String (level, 1) + (spl ? " dB" : " dBFS") : juce::String ("-")));
+        }
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override { hover = e.position; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover.reset(); repaint(); }
+
+private:
+    static constexpr int kRows = 2400;
+
+    void reset (int n)
+    {
+        bands = n;
+        rows.assign ((size_t) kRows, std::vector<float> ((size_t) n, -200.0f));
+        stamps.assign ((size_t) kRows, 0);
+        head = filled = 0;
+    }
+
+    // dark background -> blue -> teal (accent) -> yellow -> red
+    static juce::Colour colourFor (float t)
+    {
+        t = juce::jlimit (0.0f, 1.0f, t);
+        const auto& p = pal();
+        const juce::Colour stops[] = { p.panel, juce::Colour (0xff1f3b73), p.accent, juce::Colour (0xfff2c94c), juce::Colour (0xffef4c4c) };
+        const float pos = t * 4.0f;
+        const int i = juce::jmin (3, (int) pos);
+        return stops[i].interpolatedWith (stops[i + 1], pos - (float) i);
+    }
+
+    Settings& settings;
+    const Snapshot* data = nullptr;
+    FreqAxis ax;
+    std::vector<std::vector<float>> rows;
+    std::vector<juce::uint32> stamps;
+    int bands = 0, head = 0, filled = 0;
+    juce::uint64 lastFrame = 0;
+    float top = -40.0f;
+    std::optional<juce::Point<float>> hover;
+};
 } // namespace la::ui

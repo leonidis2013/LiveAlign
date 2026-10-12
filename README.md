@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.4.0**: left navigation with step status, a Home page with venues and sessions, up to eight measurement mics, and the Live series look (LiveVoice, LiveMeter)
+**Version 0.5.0**: the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -19,14 +19,17 @@ LiveProfessor). Windows and macOS.
 Everything runs from the **navigation pane** on the left. Each step has its own icon and a live status: a green tick
 when it is ready, an amber `!` when it needs attention, a progress ring while it is under way, and a dash for steps
 that come in a later stage. The venue and session are at the bottom of the pane, with Settings and Full screen.
+Steps that are required but not done yet have an amber outline (on Home and on the Mic setup checklist); click
+anywhere on a step on the Home page to open it. The generator strip only appears on the pages that play test
+signals (Speakers, Room tuning, Monitoring); leaving for the other pages stops it.
 
 | Page | Status | What it does |
 |------|--------|--------------|
 | **Home** | Built | Venue name and notes, the venue's sessions, and where each step stands |
 | **1 Mic setup** | Built | Mic table and a checklist: interface, reference, mics connected, calibration files, sound level, loopback check, room noise floor |
-| **2 Speakers** | Next stage | Any speakers and any speaker management system: build the system, speaker library, measure and overlay each speaker or group, crossover recommendation, settings summary |
+| **2 Speakers** | Built | Any speakers and any speaker management system: build the system, measure (one mic) or import each speaker, overlay them with the predicted sum, crossover recommendation, settings summary |
 | **3 Room tuning** | Later | All mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
-| **4 Monitoring** | Built | RTA, transfer function, impulse response, sound level, delay finder and traces |
+| **4 Monitoring** | Built | RTA, transfer function, impulse response, waterfall, sound level, delay finder and traces |
 
 The **VST3** shows the Monitoring page only, since it runs inside a host during the event.
 
@@ -66,14 +69,46 @@ or move one mic between named positions.
 1. **Audio interface** (app only).
 2. **Reference:** the loopback input (or the generator's internal copy). Warns if a mic is on the reference input.
 3. **Mics connected:** every mic shows signal, and no two share an input.
-4. **Calibration files:** every mic has its file, or is marked as having none.
-5. **Sound level:** every mic calibrated or confirmed this session, or **No calibrator** (dBFS).
+4. **Calibration files:** every mic has its file, or switch on **No calibration files** (the step then turns grey,
+   "not used"). Single mics can be marked from their Calibration file button.
+5. **Sound level:** every mic calibrated or confirmed this session (the **Sound level** button in each mic's row),
+   or switch on **No calibrator (dBFS)**.
 6. **Loopback check:** pink noise at -20 dBFS for 2 seconds from the generator output, found on the reference input.
    Reports the interface round trip, polarity (warns if inverted) and level (warns below -36 or above -3 dBFS).
 7. **Room noise floor:** with the generator off, 5 seconds on every mic (LAeq and LCeq), how loud the test signal
    should be (15 dB above the loudest mic's noise), and each mic's spectrum kept as an RTA trace.
 
 The RTA beside the checklist shows every mic in its own colour.
+
+### 2 Speakers
+
+Set up once per venue, for any speakers and any speaker management system.
+
+- **Speakers:** up to 8 sources (a top, a sub, fills, delays, more subs ...), each with a name, a role and the
+  interface output that feeds it while it is measured. The dot at the right of a row shows or hides it on the graph.
+- **Measure** (app): pick the **one mic** used for every speaker measurement (Measurement card), then measure each
+  speaker on its own with your processor's crossover filters bypassed. LiveAlign plays pink noise from that speaker's
+  output, finds its arrival, and averages its response. The first measurement sets the timing and **locks** it, so
+  every later speaker keeps its true arrival relative to the first; keep the mic where it is. **Re-time** after moving
+  the mic, then measure every speaker again.
+- **Import response...** uses a manufacturer's or another analyser's response instead (FRD, CSV or TXT: frequency,
+  dB, optional phase). Without phase, LiveAlign uses minimum phase; enter how much later it arrives than the measured
+  speakers with **Arrival**.
+- **Graph:** each speaker's magnitude and phase in its own colour and the **predicted sum** (white), with or without
+  the suggested processing.
+- **Crossover:** pick the high and low speaker of the pair and the range to search (sub to top 40 - 250 Hz, woofer
+  to mid, mid to high). Switch on only the filter types (Butterworth, Linkwitz-Riley, Bessel) and slopes (6 to
+  48 dB/octave) your processor offers. **Find best crossover** tries each of them across the overlap where both
+  speakers are within 6 dB of their passband, with every delay (+/-15 ms) and both polarities, and level-matches the
+  low speaker to the high one. It scores how flat the sum is (against what the two speakers give on their own, so a
+  room notch both share does not count) and how much in phase they meet. **Adjust by hand** shows and edits the
+  result: frequency, filter, slope, low speaker delay, gain and polarity, with a live readout of the sum.
+- **Settings for your processor:** a table of every speaker's high-pass, low-pass, delay, polarity and gain, and for
+  fills and delays the delay that makes them arrive with the main at the mic. **Copy settings** puts it on the
+  clipboard as text. **Mark speakers set up** once the settings are in your processor: the step stays ready in later
+  sessions until **Mark as changed** on the Home page.
+
+The speakers, their responses and the settings are saved in the venue file.
 
 ## Monitoring
 
@@ -91,9 +126,10 @@ once. **Full screen** (app only, key `F`, `Esc` to leave) fills the whole displa
 | **Transfer** (key `2`) | Mic against reference: magnitude (top), phase (bottom) and coherence (pink, top third of the magnitude graph, 0 to 100 %). Points below the coherence blanking threshold are hidden. Hover for a readout; drag up and down to shift the magnitude, double-click or **Centre** to put it on 0 dB |
 | **RTA** (key `1`) | The mic in 1/1 to 1/48 octave bands, in dB SPL once calibrated (dBFS before). Optional reference overlay and peak hold |
 | **Impulse** (key `3`) | Impulse response, linear or log (ETC), 20 / 100 / 500 ms. Shows the arrival time and distance, and warns when the polarity looks inverted |
+| **Waterfall** (key `4`) | The selected mic's spectrum over time (1/24 octave, newest at the top), as colour: for feedback, ringing and changes during the event. History of 10, 30 or 60 s and a 40 / 60 / 80 dB colour range in Settings > Waterfall. Hover for frequency, level and time; it stops while Frozen |
 
 Top bar on this tab: **Running** (green) / **Frozen** (amber) with `Space` freezes the graphs (the sound level keeps
-running), **Reset avg** (`R`) restarts the averages. Keys `1`, `2`, `3` switch the top graph.
+running), **Reset avg** (`R`) restarts the averages. Keys `1` to `4` switch the top graph.
 
 ## Right-hand column
 
@@ -125,11 +161,13 @@ the PA. In the **VST3**, audio passes through untouched unless the generator is 
 
 Settings (bottom of the navigation pane) holds the options that are not part of a step:
 
-- **Inputs:** audio device (app only), reference. Mics are set up on the Mic setup page.
+- **Inputs:** audio device (app only; this replaces the app's Options menu), reference. Mics are set up on the Mic
+  setup page.
 - **Transfer function:** FFT size (8k to 64k), averaging, smoothing, coherence blanking, magnitude range.
 - **RTA:** resolution (1/1 to 1/48 octave), speed, reference overlay, peak hold.
 - **Screen:** number of graphs, stacked or side by side, theme.
 - **Impulse response:** linear or log (ETC), time range.
+- **Waterfall:** history length and colour range.
 - **Environment:** temperature (Celsius or Fahrenheit), distance in feet or metres.
 
 ## Calibration
@@ -154,13 +192,13 @@ palettes, cards with an accent bar beside the title, pill switches, slim sliders
 ## Keys
 
 `Cmd/Ctrl+S` save the venue, `G` generator, `F` full screen, `Esc` leave full screen. On the Monitoring page:
-`1` / `2` / `3` top graph view, `Space` freeze, `R` reset averages, `D` find delay, `C` capture (whatever the graphs
+`1` to `4` top graph view, `Space` freeze, `R` reset averages, `D` find delay, `C` capture (whatever the graphs
 show).
 
 ## Installing
 
-Download the latest build from the [Releases page](https://github.com/leonidis2013/LiveAlign/releases/tag/latest)
-("Latest build"): `LiveAlign-macOS-App.zip`, `LiveAlign-macOS-VST3.zip` (universal: Apple silicon and Intel),
+Download the latest version from the [Releases page](https://github.com/leonidis2013/LiveAlign/releases/latest) (each
+version is its own release, the newest marked Latest): `LiveAlign-macOS-App.zip`, `LiveAlign-macOS-VST3.zip` (universal: Apple silicon and Intel),
 `LiveAlign-Windows-App.zip` and `LiveAlign-Windows-VST3.zip`.
 
 ### macOS
@@ -209,11 +247,13 @@ g++ -std=c++17 -O2 -ISource Tests/AnalysisTests.cpp -o analysis_tests && ./analy
 They cover the FFT, RTA levels against a calibrated sine and white noise, the transfer function of a known gain and
 delay and of a Butterworth filter (magnitude and phase against theory), coherence at 0 dB signal-to-noise, the delay
 finder (full range, inverted polarity, a sub-like band-limited path, silence), A and C weighting, the sound level
-meter, generator levels and pink-noise slope, calibration / FRD / CSV file parsing, and the target curves. CI runs them with address and
+meter, generator levels and pink-noise slope, calibration / FRD / CSV file parsing, the target curves, and the
+crossover maths (Linkwitz-Riley, Butterworth and Bessel responses against theory, minimum phase from magnitude, the
+timing of measured responses, and the optimiser on a known top and sub, also with a room notch). CI runs them with address and
 undefined-behaviour sanitizers before building.
 
 `-DLA_BUILD_PREVIEW=ON` builds a local-only tool that feeds a simulated PA and room through the processor and saves
-screenshots of every view.
+screenshots of every view, including measuring a simulated top and sub and finding their crossover.
 
 ## Known limits
 
@@ -228,10 +268,8 @@ screenshots of every view.
 
 ## Roadmap
 
-- **Speakers (next):** any speakers and any speaker management system. Speaker library (spec sheet values, onboard
-  DSP settings, imported EASE metadata, FRD / CSV / CLF data and in-app measurements), measuring and overlaying each
-  speaker or group, a crossover designer that can be limited to the filter types and slopes your processor offers,
-  top / sub phase alignment, and a settings summary to enter in your processor. Set up once per venue.
-- **Room tuning:** all mic positions averaged, target curves with suggested EQ, alignment at the seats, feedback
+- **Room tuning (next):** all mic positions averaged, target curves with suggested EQ, alignment at the seats, feedback
   ring-out, room acoustics (RT60, EDT, C50/C80, room modes).
-- **Monitoring additions:** spectrogram, delay tracking, trace offsets, SPL logging with alarms, PDF reports.
+- **Speakers additions:** EQ suggestions per speaker, more than one crossover pair at a time, CLF / GLL data
+  (these formats are closed or binary; FRD / CSV exports from the manufacturer's software work today).
+- **Monitoring additions:** delay tracking, trace offsets, SPL logging with alarms, PDF reports.

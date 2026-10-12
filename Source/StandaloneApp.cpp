@@ -75,6 +75,10 @@ public:
             getApplicationName(),
             juce::LookAndFeel::getDefaultLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId),
             std::move (holder));
+        // JUCE's "Options" title-bar button is replaced by Settings (audio device) and venue files (state)
+        for (auto* c : mainWindow->getChildren())
+            if (auto* b = dynamic_cast<juce::TextButton*> (c))
+                if (b->getButtonText() == "Options") b->setVisible (false);
         mainWindow->setVisible (true);
     }
 
