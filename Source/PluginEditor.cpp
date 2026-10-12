@@ -325,8 +325,8 @@ void LiveAlignEditor::openSettings()
     auto panel = std::make_unique<SettingsPanel> (processor);
     panel->onThemeChanged = [this] { applyTheme (settings.theme.load()); };
     panel->onLayoutChanged = [this] { layoutPanes(); };
-    panel->onOpenCalibration = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<LiveAlignEditor> (this)]
-                                                                         { if (safe != nullptr) safe->openCalibration(); }); };
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    panel->onOpenCalibration = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->openCalibration(); }); };
     juce::CallOutBox::launchAsynchronously (std::move (panel), settingsButton.getBounds(), this);
 }
 
