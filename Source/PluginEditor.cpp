@@ -555,6 +555,7 @@ void LiveAlignEditor::afterProjectLoaded()
 {
     micPage->refreshChoices();
     speakerPage->refreshChoices();
+    speakerPage->chooseStep();
     homePage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
@@ -643,6 +644,18 @@ void LiveAlignEditor::timerCallback()
             s << juce::String (snap.sampleRate / 1000.0, 1) << " kHz   FFT " << snap.fftSize / 1024 << "k   "
               << juce::jmin (snap.tfFrames, settings.averages.load()) << "/" << settings.averages.load() << " avg   1/"
               << settings.smoothing.load() << " oct";
+            // signal quality: how much of the transfer function is above the minimum coherence
+            if (snap.tfFrames > 0 && snap.tfCoh.size() == snap.tfFreq.size())
+            {
+                int n = 0, good = 0;
+                for (size_t i = 0; i < snap.tfFreq.size(); ++i)
+                {
+                    if (snap.tfFreq[i] < 40.0 || snap.tfFreq[i] > 16000.0 || ! std::isfinite (snap.tfCoh[i])) continue;
+                    ++n;
+                    good += snap.tfCoh[i] >= juce::jmax (0.2f, settings.coherenceBlank.load()) ? 1 : 0;
+                }
+                if (n > 0) s << "   RELIABLE " << juce::roundToInt (100.0 * good / n) << "%";
+            }
             if (juce::Time::getMillisecondCounter() < overloadUntil) s << "   ANALYSIS BEHIND";
         }
         panes[0]->setStatus (s);

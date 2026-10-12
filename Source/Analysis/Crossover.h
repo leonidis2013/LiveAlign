@@ -119,7 +119,9 @@ struct Response
 {
     std::vector<double> f;
     std::vector<cplx> h;
+    std::vector<double> coh;   // coherence of the measurement at each point, 0..1 (empty: treated as fully reliable)
     bool empty() const { return f.empty(); }
+    double cohAt (size_t i) const { return i < coh.size() ? coh[i] : 1.0; }
 };
 
 inline std::vector<double> analysisGrid() { return [] { std::vector<double> g; for (double f = 20.0; f <= 20000.0; f *= std::pow (2.0, 1.0 / 48.0)) g.push_back (f); return g; }(); }
@@ -144,24 +146,28 @@ inline Response fromTable (const FreqTable& t, double delayUsedMs, double refMs,
     }
     r.f = grid;
     r.h.resize (grid.size());
+    const bool hasCoh = t.extra.size() == t.freq.size();
+    if (hasCoh) r.coh.resize (grid.size(), 0.0);
     const double shift = (delayUsedMs - refMs) * 0.001;
     for (size_t i = 0; i < grid.size(); ++i)
     {
         const double f = grid[i];
-        double db, p;
-        if (f <= t.freq.front()) { db = t.db.front(); p = ph.front(); }
-        else if (f >= t.freq.back()) { db = t.db.back(); p = ph.back(); }
+        double db, p, c = 0.0;
+        if (f <= t.freq.front()) { db = t.db.front(); p = ph.front(); if (hasCoh) c = t.extra.front(); }
+        else if (f >= t.freq.back()) { db = t.db.back(); p = ph.back(); if (hasCoh) c = t.extra.back(); }
         else
         {
             const size_t k = (size_t) (std::upper_bound (t.freq.begin(), t.freq.end(), f) - t.freq.begin());
             const double a = (std::log (f) - std::log (t.freq[k - 1])) / (std::log (t.freq[k]) - std::log (t.freq[k - 1]));
             db = t.db[k - 1] + a * (t.db[k] - t.db[k - 1]);
             p = ph[k - 1] + a * (ph[k] - ph[k - 1]);
+            if (hasCoh) c = t.extra[k - 1] + a * (t.extra[k] - t.extra[k - 1]);
         }
         // outside the measured range the speaker is treated as silent
         const bool inside = f >= t.freq.front() * 0.999 && f <= t.freq.back() * 1.001;
         const double mag = inside ? std::pow (10.0, db / 20.0) : 1e-6;
         r.h[i] = std::polar (mag, (p - 360.0 * f * shift) * kPi / 180.0);
+        if (hasCoh) r.coh[i] = inside ? std::clamp (c, 0.0, 1.0) : 0.0;
     }
     return r;
 }
@@ -195,6 +201,32 @@ inline void addMinimumPhase (FreqTable& t, double rate = 96000.0, int n = 1 << 1
         p = std::remainder (p, 360.0);
         t.phase.push_back (p);
     }
+}
+
+// How much of a measured speaker can be trusted: the share of the points in its useful range (within 15 dB of its
+// loudest, half-octave smoothed) measured with at least `minCoh` coherence. -1 when the table has no coherence.
+inline double usableReliability (const FreqTable& t, double minCoh)
+{
+    if (t.extra.size() != t.freq.size() || t.freq.size() < 4) return -1.0;
+    double top = -1e9;
+    std::vector<double> sm (t.freq.size());
+    for (size_t i = 0; i < t.freq.size(); ++i)
+    {
+        double sum = 0.0;
+        int n = 0;
+        for (size_t k = 0; k < t.freq.size(); ++k)
+            if (std::abs (std::log2 (t.freq[k] / t.freq[i])) <= 0.25) { sum += std::pow (10.0, t.db[k] / 10.0); ++n; }
+        sm[i] = 10.0 * std::log10 (std::max (sum / std::max (n, 1), 1e-18));
+        top = std::max (top, sm[i]);
+    }
+    int used = 0, good = 0;
+    for (size_t i = 0; i < t.freq.size(); ++i)
+    {
+        if (sm[i] < top - 15.0 || t.freq[i] < 20.0 || t.freq[i] > 18000.0) continue;
+        ++used;
+        if (t.extra[i] >= minCoh) ++good;
+    }
+    return used > 0 ? (double) good / used : -1.0;
 }
 
 // Applies a source's processing: high-pass, low-pass, gain, delay, polarity.
@@ -245,6 +277,7 @@ struct Options
     double fMin = 40.0, fMax = 250.0;     // search range for the crossover frequency
     double delayMinMs = -15.0, delayMaxMs = 15.0;
     bool matchLevels = true;
+    double minCoherence = 0.0;            // points measured with less coherence than this are not trusted
 };
 
 // Passband level of the high source of a pair, as the optimiser uses it.
@@ -261,6 +294,7 @@ struct Result
     double efficiency = 0.0;      // |a + b| / (|a| + |b|) through the crossover region, 0..1
     double highUsableFrom = 0.0;  // where the high source falls 6 dB below its passband
     double lowUsableTo = 0.0;     // where the low source falls 6 dB below its passband
+    double reliability = 1.0;     // share of the crossover region measured with enough coherence, 0..1
     std::string note;
 };
 
@@ -278,6 +312,25 @@ inline Band bandAround (const std::vector<double>& f, double fc)
         b.w.push_back (1.0);
     }
     return b;
+}
+
+// The points of `band` that can be trusted: wherever a source contributes (within 10 dB of the louder one after
+// filtering), its measurement must have at least `minCoh` coherence. Returns the share of points kept.
+inline double reliableBand (Band& band, const Response& high, const Response& low, const std::vector<cplx>& a,
+                            const std::vector<cplx>& b, double minCoh)
+{
+    if (minCoh <= 0.0 || band.idx.empty()) return 1.0;
+    std::vector<size_t> kept;
+    for (size_t i : band.idx)
+    {
+        const double ma = std::abs (a[i]), mb = std::abs (b[i]), top = std::max (ma, mb);
+        const bool needA = ma >= top * 0.316, needB = mb >= top * 0.316;
+        if ((needA && high.cohAt (i) < minCoh) || (needB && low.cohAt (i) < minCoh)) continue;
+        kept.push_back (i);
+    }
+    const double share = (double) kept.size() / (double) band.idx.size();
+    band.idx = std::move (kept);
+    return share;
 }
 
 // Smoothed level in dB on the response's grid (moving average over `octaves`), so a narrow room notch does
@@ -395,22 +448,26 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
                     a[j] = high.h[j] * response (flt, true, f[j]);
                     b[j] = low.h[j] * response (flt, false, f[j]) * g;
                 }
+                auto trusted = band;
+                const double share = detail::reliableBand (trusted, high, low, a, b, opt.minCoherence);
+                if (trusted.idx.size() < 6) continue;
 
                 for (double pol : { 1.0, -1.0 })
                 {
                     double localBest = 1e9, localTau = 0.0, eff = 0.0;
                     for (double tau = opt.delayMinMs; tau <= opt.delayMaxMs + 1e-9; tau += 0.25)
                     {
-                        const double c = detail::evaluate (f, a, b, ref, band, tau, pol, eff);
+                        const double c = detail::evaluate (f, a, b, ref, trusted, tau, pol, eff);
                         if (c < localBest) { localBest = c; localTau = tau; }
                     }
                     for (double tau = localTau - 0.25; tau <= localTau + 0.25 + 1e-9; tau += 0.02)
                     {
-                        const double c = detail::evaluate (f, a, b, ref, band, tau, pol, eff);
+                        const double c = detail::evaluate (f, a, b, ref, trusted, tau, pol, eff);
                         if (c < localBest) { localBest = c; localTau = tau; }
                     }
                     // gentle preference for the middle of the usable overlap, and for less delay
-                    const double cost = localBest + 0.25 * std::abs (std::log2 (fc / fMid)) + 0.01 * std::abs (localTau);
+                    // prefer the middle of the overlap, less delay, and a region that was measured reliably
+                    const double cost = localBest + 0.25 * std::abs (std::log2 (fc / fMid)) + 0.01 * std::abs (localTau) + 3.0 * (1.0 - share);
                     if (cost < bestCost)
                     {
                         bestCost = cost;
@@ -420,23 +477,30 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
                         best.invertLow = pol < 0.0;
                         best.gainLowDb = gainDb;
                         best.costDb = localBest;
-                        detail::evaluate (f, a, b, ref, band, localTau, pol, best.efficiency);
+                        best.reliability = share;
+                        detail::evaluate (f, a, b, ref, trusted, localTau, pol, best.efficiency);
                     }
                 }
             }
         }
     }
-    if (! best.valid && note.empty()) note = "No filter type and slope is enabled for your processor.";
+    if (! best.valid && note.empty())
+        note = opt.minCoherence > 0.0 ? "No filter type and slope is enabled, or the crossover region was not measured reliably."
+                                      : "No filter type and slope is enabled for your processor.";
+    if (best.valid && best.reliability < 0.7)
+        note += std::string (note.empty() ? "" : " ") + "Only " + std::to_string ((int) std::lround (best.reliability * 100.0))
+              + "% of the crossover region was measured reliably: measure again with more level or less noise.";
     best.note = note;
     return best;
 }
 
 // Cost and efficiency of a given (manual) setting, for the live readout.
-inline double assess (const Response& high, const Response& low, const Processing& ph, const Processing& pl, double fc, double& efficiency)
+inline double assess (const Response& high, const Response& low, const Processing& ph, const Processing& pl, double fc, double& efficiency,
+                      double minCoherence = 0.0, double* reliability = nullptr)
 {
     efficiency = 0.0;
     if (high.empty() || low.empty() || high.f.size() != low.f.size()) return 0.0;
-    const auto band = detail::bandAround (high.f, fc);
+    auto band = detail::bandAround (high.f, fc);
     std::vector<cplx> a (high.f.size()), b (high.f.size());
     std::vector<double> ref (high.f.size(), 0.0);
     const double gh = std::pow (10.0, ph.gainDb / 20.0), gl = std::pow (10.0, pl.gainDb / 20.0);
@@ -446,6 +510,9 @@ inline double assess (const Response& high, const Response& low, const Processin
         b[j] = low.h[j] * pl.at (high.f[j]);
         ref[j] = std::max (std::abs (high.h[j]) * gh, std::abs (low.h[j]) * gl);
     }
+    const double share = detail::reliableBand (band, high, low, a, b, minCoherence);
+    if (reliability != nullptr) *reliability = share;
+    if (band.idx.size() < 3) return 0.0;
     return detail::evaluate (high.f, a, b, ref, band, 0.0, 1.0, efficiency);
 }
 } // namespace la::xo

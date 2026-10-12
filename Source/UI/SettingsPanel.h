@@ -65,11 +65,13 @@ public:
         smoothBox.onChange = [this] { settings.smoothing = smooth[juce::jlimit (0, 4, smoothBox.getSelectedItemIndex())]; };
         row (0, "Smoothing", smoothBox);
 
-        blankBox.addItemList ({ "Off", "20 %", "40 %", "60 %", "80 %" }, 1);
+        blankBox.addItemList ({ "Off", "20 %", "40 % (default)", "60 %", "80 % (strict)" }, 1);
         blankBox.setSelectedItemIndex (juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)), juce::dontSendNotification);
-        blankBox.setTooltip ("Hide parts of the transfer function where coherence is below this");
+        blankBox.setTooltip ("How reliable a measurement point must be to count. Points with less coherence are hidden on the "
+                             "transfer function and are not trusted by the speaker measurements and the crossover search. "
+                             "Raise it in a noisy room to be stricter.");
         blankBox.onChange = [this] { settings.coherenceBlank = (float) blankBox.getSelectedItemIndex() / 5.0f; };
-        row (0, "Coherence blanking", blankBox);
+        row (0, "Minimum coherence", blankBox);
 
         static const float ranges[] = { 12.0f, 20.0f, 30.0f, 40.0f };
         rangeBox.addItemList ({ "+/- 12 dB", "+/- 20 dB", "+/- 30 dB", "+/- 40 dB" }, 1);

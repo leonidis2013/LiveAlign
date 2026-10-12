@@ -25,6 +25,8 @@ public:
     void setWithProcessing (bool b) { withProc = b; rebuild(); }
     void setXoMarker (double f) { xoFreq = f; repaint(); }
     void setLegendRight (int px) { legendRight = (float) px; }
+    // Faded where a measurement is below the minimum coherence; the selected speaker's coherence across the top.
+    void setReliabilityView (int selectedSource, float minCoherence) { selectedIdx = selectedSource; minCoh = minCoherence; }
 
     // Call whenever the system changes.
     void rebuild()
@@ -43,6 +45,8 @@ public:
             c.index = i;
             c.db.resize (grid.size());
             c.ph.resize (grid.size());
+            c.coh.assign (grid.size(), 1.0f);
+            for (size_t k = 0; k < grid.size() && k < r.coh.size(); ++k) c.coh[k] = (float) r.coh[k];
             for (size_t k = 0; k < grid.size(); ++k)
             {
                 const double m = std::abs (r.h[k]);
@@ -123,9 +127,41 @@ public:
             juce::Graphics::ScopedSaveState save (g);
             g.reduceClipRegion (magArea.toNearestInt());
             auto xAt = [&] (size_t k) { return ax.x (grid[k]); };
+            // coherence of the selected speaker, in the top quarter (as on the Monitoring transfer function)
             for (const auto& c : curves)
+            {
+                if (c.index != selectedIdx) continue;
+                const auto cohArea = magArea.withHeight (magArea.getHeight() * 0.25f);
+                auto yC = [&] (float v) { return cohArea.getBottom() - juce::jlimit (0.0f, 1.0f, v) * cohArea.getHeight(); };
+                if (minCoh > 0.0f)
+                {
+                    const float dashes[] = { 3.0f, 4.0f };
+                    juce::Path th, dashed;
+                    th.startNewSubPath (magArea.getX(), yC (minCoh));
+                    th.lineTo (magArea.getRight(), yC (minCoh));
+                    juce::PathStrokeType (1.0f).createDashedStroke (dashed, th, dashes, 2);
+                    g.setColour (p.reduction.withAlpha (0.5f));
+                    g.fillPath (dashed);
+                }
+                strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t k) { return yC (c.coh[k]); },
+                                           [&] (size_t k) { return std::isfinite (c.db[k]); }),
+                             p.reduction.withAlpha (0.85f), 1.3f);
+                g.setColour (p.reduction);
+                g.setFont (font (10.0f, true));
+                g.drawText ("COHERENCE: " + sys.sources[(size_t) c.index].name.toUpperCase(),
+                            cohArea.reduced (6.0f, 2.0f).removeFromTop (12.0f), juce::Justification::topLeft);
+            }
+            // each speaker: faded where its measurement is not reliable
+            for (const auto& c : curves)
+            {
+                const auto col = sourceColour (c.index);
                 strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t k) { return yDb (c.db[k]); }, [] (size_t) { return true; }),
-                             sourceColour (c.index), 1.8f);
+                             col.withAlpha (minCoh > 0.0f ? 0.3f : 1.0f), 1.6f);
+                if (minCoh > 0.0f)
+                    strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t k) { return yDb (c.db[k]); },
+                                               [&] (size_t k) { return c.coh[k] >= minCoh; }),
+                                 col, 1.8f);
+            }
             if (! sumDb.empty() && curves.size() > 1)
                 strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t k) { return yDb (sumDb[k]); }, [] (size_t) { return true; }),
                              p.text, 2.6f);
@@ -177,7 +213,7 @@ public:
     void mouseExit (const juce::MouseEvent&) override { hover = { -1.0f, -1.0f }; repaint(); }
 
 private:
-    struct Curve { int index; std::vector<float> db, ph; };
+    struct Curve { int index; std::vector<float> db, ph, coh; };
     const SpeakerSystem& sys;
     std::vector<double> grid;
     std::vector<Curve> curves;
@@ -186,7 +222,8 @@ private:
     float topDb = 6.0f;
     bool withProc = true;
     double xoFreq = 0.0;
-    float legendRight = 12.0f;
+    float legendRight = 12.0f, minCoh = 0.0f;
+    int selectedIdx = -1;
     FreqAxis ax;
     juce::Point<float> hover { -1.0f, -1.0f };
 };
@@ -202,6 +239,7 @@ public:
     explicit SourceList (const SpeakerSystem& s) : sys (s) {}
 
     void setSelected (int i) { selected = i; repaint(); }
+    void setReliability (const std::vector<double>& r) { rel = r; repaint(); }
     static constexpr int kRowH = 36;
 
     void paint (juce::Graphics& g) override
@@ -231,14 +269,25 @@ public:
             g.setColour (p.text);
             g.setFont (font (13.0f, true));
             g.drawText (s.name.isNotEmpty() ? s.name : "Speaker " + juce::String (i + 1), r.removeFromTop (row.getHeight() * 0.55f), juce::Justification::bottomLeft, true);
-            g.setFont (font (10.5f));
-            juce::String info = speakerRoleNames()[s.role] + "  -  " + speakerChannelNames()[s.channel] + "  -  "
-                                + (s.output == 0 ? juce::String ("all outs") : "out " + juce::String (s.output));
-            g.setColour (p.textDim);
-            g.drawText (info, r, juce::Justification::topLeft, true);
-            g.setColour (s.hasResponse() ? p.good : p.warn);
+            // measured: how reliable it is (share of its range above the minimum coherence)
+            const double rv = i < (int) rel.size() ? rel[(size_t) i] : -1.0;
+            juce::Colour sc = s.hasResponse() ? p.good : p.warn;
+            juce::String st = s.hasResponse() ? (s.imported ? "IMPORTED" : "MEASURED") : "TO MEASURE";
+            if (s.hasResponse() && rv >= 0.0)
+            {
+                st = juce::String (juce::roundToInt (rv * 100.0)) + "% RELIABLE";
+                sc = rv >= 0.8 ? p.good : rv >= 0.6 ? p.warn : p.bad;
+            }
+            g.setColour (sc);
             g.setFont (font (10.5f, true));
-            g.drawText (s.hasResponse() ? (s.imported ? "IMPORTED" : "MEASURED") : "TO MEASURE", r.withTrimmedRight (6.0f), juce::Justification::topRight, true);
+            g.drawText (st, r.withTrimmedRight (6.0f), juce::Justification::topRight, true);
+            const float stw = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), st) + 14.0f;
+            g.setFont (font (10.5f));
+            juce::String info = speakerRoleNames()[s.role] + "  -  " + (s.channel == 0 ? juce::String ("Mono") : speakerChannelShort (s.channel))
+                                + "  -  " + (s.output == 0 ? juce::String ("all outs") : "out " + juce::String (s.output));
+            g.setColour (p.textDim);
+            g.drawText (info, r.withTrimmedRight (stw), juce::Justification::topLeft, true);
+
         }
     }
 
@@ -259,6 +308,7 @@ public:
 
 private:
     const SpeakerSystem& sys;
+    std::vector<double> rel;
     int selected = 0, hoverRow = -1;
 };
 
@@ -482,16 +532,18 @@ public:
         invertButton.onClick = [this] { manualChanged(); };
         for (auto* c : std::initializer_list<juce::Component*> { &typeBox, &slopeBox, &invertButton }) addAndMakeVisible (*c);
 
-        // ---- right column tabs: crossover / time alignment ----
-        for (int t = 0; t < 2; ++t)
+        // ---- signal reliability: the same minimum coherence as Settings > Transfer function ----
+        minCohBox.addItemList ({ "Off", "20 %", "40 % (default)", "60 %", "80 % (strict)" }, 1);
+        minCohBox.setTooltip ("How reliable a measurement point must be to count. Points with less coherence are faded on the "
+                              "graph, hidden on the Monitoring transfer function, and not trusted by the crossover search. "
+                              "Raise it in a noisy room to be stricter.");
+        minCohBox.onChange = [this]
         {
-            tabButtons[t].setButtonText (t == 0 ? "Crossover" : "Time alignment");
-            tabButtons[t].setRadioGroupId (4711);
-            tabButtons[t].setClickingTogglesState (true);
-            tabButtons[t].onClick = [this, t] { if (tabButtons[t].getToggleState()) setRightTab (t); };
-            addAndMakeVisible (tabButtons[t]);
-        }
-        tabButtons[0].setToggleState (true, juce::dontSendNotification);
+            settings.coherenceBlank = (float) minCohBox.getSelectedItemIndex() / 5.0f;
+            sys.lastResult = {};
+            systemChanged (false);
+        };
+        addAndMakeVisible (minCohBox);
 
         // ---- time alignment ----
         alList.onSelect = [this] (int i) { selectAlignment (i); };
@@ -554,6 +606,7 @@ public:
 
         lookAndFeelChanged();
         refreshChoices();
+        chooseStep();
         startTimerHz (15);
     }
 
@@ -623,12 +676,18 @@ public:
         for (int t = 0; t < 3; ++t) typeButtons[t].setToggleState (sys.caps.types[t + 1], juce::dontSendNotification);
         for (int i = 0; i < kSlopeButtons; ++i) slopeButtons[i].setToggleState (sys.caps.slopes[kSlopes[i] / 6 - 1], juce::dontSendNotification);
 
+        minCohBox.setSelectedItemIndex (juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)), juce::dontSendNotification);
+        refreshReliability();
+        graph.setReliabilityView (selected, settings.coherenceBlank.load());
         refreshSelected();
         refreshManual();
         graph.rebuild();
         resized();
         repaint();
     }
+
+    // Opens the first step that is not done yet (after a venue is opened).
+    void chooseStep() { openStepAt (! allMeasured() ? 0 : ! crossoverSet() ? 1 : ! alignmentDone() ? 2 : openStep); }
 
     void sourceImported() { systemChanged (true); }
 
@@ -637,7 +696,7 @@ public:
     void findCrossover() { findBest(); }
     bool busy() const { return phase != Phase::Idle || searching; }
     void newAlignment() { addAlignment(); }
-    void measureAlignment (int i) { selectAlignment (i); setRightTab (1); startArrival (i); }
+    void measureAlignment (int i) { selectAlignment (i); openStepAt (2); startArrival (i); }
     void applyAlignmentNow() { applyAlignment(); }
     juce::String statusText() const { return status; }
 
@@ -646,8 +705,7 @@ public:
         const auto& p = pal();
         drawPanel (g, systemCard.toFloat(), "Speakers");
         drawPanel (g, selCard.toFloat(), "Selected speaker", current() != nullptr ? sourceColour (selected) : juce::Colour());
-        drawPanel (g, measureCard.toFloat(), "Measurement");
-        drawPanel (g, xoCard.toFloat(), {});
+        paintStepCards (g);
         drawPanel (g, summaryCard.toFloat(), "Settings for your processor");
 
         auto label = [&] (juce::Rectangle<int> r, const juce::String& t)
@@ -658,8 +716,10 @@ public:
         };
         for (int i = 0; i < (int) labels.size(); ++i)
         {
-            if (rightTab == 0 && i >= alLabelFrom && i < alLabelTo) continue;
-            if (rightTab == 1 && i >= xoLabelFrom && i < xoLabelTo) continue;
+            bool hidden = false;
+            for (int st = 0; st < 3; ++st)
+                hidden = hidden || (st != openStep && i >= labelFrom[st] && i < labelTo[st]);
+            if (hidden) continue;
             label (labels[(size_t) i].first, labels[(size_t) i].second);
         }
 
@@ -676,6 +736,7 @@ public:
         }
 
         // measurement status
+        if (openStep == 0)
         {
             juce::String t;
             juce::Colour c = p.textDim;
@@ -695,10 +756,11 @@ public:
             }
         }
 
-        if (rightTab == 1) paintAlignment (g);
+        if (openStep == 0) paintQuality (g);
+        if (openStep == 2) paintAlignment (g);
 
         // crossover result
-        if (rightTab == 0)
+        if (openStep == 1)
         {
             g.setFont (font (11.5f));
             juce::String t;
@@ -729,7 +791,8 @@ public:
                 g.setColour (qc);
                 g.setFont (font (12.0f, true));
                 g.drawText ("Sum through the crossover: " + juce::String (juce::roundToInt (q * 100.0)) + "% in phase, "
-                                + juce::String (liveDev, 1) + " dB from flat",
+                                + juce::String (liveDev, 1) + " dB from flat"
+                                + (liveReliable < 0.8 ? juce::String (" (") + juce::String (juce::roundToInt (liveReliable * 100.0)) + "% reliable)" : juce::String()),
                             liveLine, juce::Justification::centredLeft, true);
             }
         }
@@ -805,11 +868,23 @@ public:
             selInfo = c.removeFromTop (54);
         }
 
-        // ---- right: measurement and crossover ----
-        measureCard = right.removeFromTop (128);
-        right.removeFromTop (10);
+        // ---- right: guided steps (measure, crossover, time alignment); the open one gets the room ----
         {
-            auto c = measureCard.reduced (12, 0).withTrimmedTop (36);
+            auto col = right;
+            const int closedH = kHeaderH, gap = 8;
+            for (int i = 0; i < 3; ++i)
+            {
+                const int below = 2 - i;
+                const int h = i == openStep ? col.getHeight() - below * (closedH + gap) : closedH;
+                stepCard[i] = col.removeFromTop (juce::jmax (closedH, h));
+                stepHeader[i] = stepCard[i].withHeight (closedH);
+                col.removeFromTop (gap);
+            }
+        }
+        const auto content = stepCard[openStep].reduced (12, 0).withTrimmedTop (kHeaderH + 6);
+        labelFrom[0] = (int) labels.size();
+        {
+            auto c = content;
             auto row = c.removeFromTop (28);
             labels.push_back ({ row.removeFromLeft (44), "Mic" });
             relockButton.setBounds (row.removeFromRight (82));
@@ -817,20 +892,22 @@ public:
             micBox.setBounds (row);
             c.removeFromTop (10);
             measureInfo = c.removeFromTop (46);
+            c.removeFromTop (12);
+            labels.push_back ({ c.removeFromTop (16), "Signal quality" });
+            c.removeFromTop (4);
+            qualityArea = c.removeFromTop (44);
+            c.removeFromTop (8);
+            auto mr = c.removeFromTop (28);
+            labels.push_back ({ mr.removeFromLeft (130), "Minimum coherence" });
+            minCohBox.setBounds (mr);
+            c.removeFromTop (12);
+            reliabilityArea = c;
         }
-        xoCard = right;
+        labelTo[0] = labelFrom[2] = (int) labels.size();
+        layoutAlignment (content);
+        labelTo[2] = labelFrom[1] = (int) labels.size();
         {
-            auto tabs = xoCard.reduced (10, 0).withTrimmedTop (8).removeFromTop (30);
-            const int tw = (tabs.getWidth() - 6) / 2;
-            tabButtons[0].setBounds (tabs.removeFromLeft (tw));
-            tabs.removeFromLeft (6);
-            tabButtons[1].setBounds (tabs);
-            alLabelFrom = (int) labels.size();
-            layoutAlignment (xoCard.reduced (12, 0).withTrimmedTop (48));
-            alLabelTo = xoLabelFrom = (int) labels.size();
-        }
-        {
-            auto c = xoCard.reduced (12, 0).withTrimmedTop (48);
+            auto c = content;
             auto pair = c.removeFromTop (28);
             labels.push_back ({ pair.removeFromLeft (40), "High" });
             highBox.setBounds (pair.removeFromLeft (pair.getWidth() / 2 - 26));
@@ -884,9 +961,9 @@ public:
                 c.removeFromTop (6);
             }
             liveLine = c.removeFromTop (22);
-            xoLabelTo = (int) labels.size();
+            labelTo[1] = (int) labels.size();
         }
-        setRightTabVisibility();
+        setStepVisibility();
 
         // ---- middle: graph and the settings summary ----
         const int lines = (int) sys.sources.size() + 1 + arrivalLines();
@@ -927,6 +1004,8 @@ private:
     {
         selected = juce::jlimit (0, juce::jmax (0, (int) sys.sources.size() - 1), i);
         list.setSelected (selected);
+        graph.setReliabilityView (selected, settings.coherenceBlank.load());
+        graph.rebuild();
         refreshSelected();
         resized();
         repaint();
@@ -1063,7 +1142,7 @@ private:
         const auto& pl = sys.sources[(size_t) sys.xoLow].proc;
         if (! ph.hp.active()) return;
         double eff = 0.0;
-        const double cost = xo::assess (h, l, ph, pl, ph.hp.freq, eff);
+        const double cost = xo::assess (h, l, ph, pl, ph.hp.freq, eff, settings.coherenceBlank.load(), &liveReliable);
         liveEff = eff;
         liveDev = juce::jmax (0.0, cost - 1.5 * (1.0 - eff));
         liveValid = true;
@@ -1081,7 +1160,8 @@ private:
         findButton.setEnabled (false);
         repaint();
         const auto caps = sys.caps;
-        const auto opt = sys.opt;
+        auto opt = sys.opt;
+        opt.minCoherence = settings.coherenceBlank.load();
         juce::Component::SafePointer<SpeakersPage> safe (this);
         auto flag = alive;
         std::thread ([safe, flag, h = std::move (h), l = std::move (l), caps, opt]
@@ -1113,6 +1193,7 @@ private:
         refreshManual();
         graph.rebuild();
         changedOutside();
+        if (r.valid && alignmentNeeded() && ! alignmentDone()) openStepAt (2);
     }
 
     // ---- measuring one source ----
@@ -1177,6 +1258,17 @@ private:
     void timerCallback() override
     {
         if (proc.numOutputs() != nOuts) refreshChoices();
+        if (++qualityTick % 4 == 0)
+        {
+            const double before = liveQuality;
+            updateLiveQuality();
+            if (openStep == 0 && (liveQuality >= 0.0 || before >= 0.0)) repaint (stepCard[0]);
+        }
+        if (std::abs (settings.coherenceBlank.load() - shownMinCoh) > 0.001)   // changed in Settings
+        {
+            shownMinCoh = settings.coherenceBlank.load();
+            refreshChoices();
+        }
         if (phase == Phase::Idle) return;
         const double elapsed = juce::Time::getMillisecondCounterHiRes() - phaseStart;
         const int mic = juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic);
@@ -1245,6 +1337,8 @@ private:
                 settings.micDelayMs[mic] = (float) sys.lockedDelayMs;
                 settings.requestResetAverages = true;
                 sawReset = false;
+                overflowsSeen = proc.analyzer.overflowCount();
+                restarts = 0;
                 phase = Phase::Averaging;
                 phaseStart = juce::Time::getMillisecondCounterHiRes();
             }
@@ -1258,6 +1352,15 @@ private:
         {
             const int want = juce::jmax (4, settings.averages.load());
             const int frames = snap != nullptr && mic < (int) snap->mics.size() ? snap->mics[(size_t) mic].tfFrames : 0;
+            // audio was dropped (the computer could not keep up): the average is not continuous, start it again
+            if (proc.analyzer.overflowCount() != overflowsSeen)
+            {
+                overflowsSeen = proc.analyzer.overflowCount();
+                if (++restarts > 3) { cancelMeasure ("The computer could not keep up with the analysis. Close other programs or use a smaller FFT size, then measure again."); return; }
+                settings.requestResetAverages = true;
+                sawReset = false;
+                phaseStart = juce::Time::getMillisecondCounterHiRes();
+            }
             // only frames averaged after the restart count (the analysis can be behind real time)
             if (! sawReset && frames < want) sawReset = true;
             progress = 0.25f + 0.75f * (sawReset ? juce::jlimit (0.0f, 1.0f, (float) frames / (float) want) : 0.0f);
@@ -1269,7 +1372,7 @@ private:
                 return;
             }
         }
-        repaint (measureInfo.expanded (2));
+        repaint (stepCard[0]);
     }
 
     void finishMeasure (int mic)
@@ -1301,29 +1404,271 @@ private:
             if (! sys.sources[(size_t) k].hasResponse()) { selected = k; break; }
         status = who + " measured.";
         systemChanged (true);
+        {
+            const int idx = (int) (&s - sys.sources.data());
+            const double rel = idx < (int) reliability.size() ? reliability[(size_t) idx] : -1.0;
+            if (rel >= 0.0 && rel < 0.8)
+                status = who + " measured, but only " + juce::String (juce::roundToInt (rel * 100.0))
+                         + "% of it is reliable: raise the level or reduce the noise and measure again.";
+        }
+        if (allMeasured() && openStep == 0) openStepAt (1);
     }
 
-    // ---- right column tabs ----
-    void setRightTab (int t)
+    // ---- guided steps on the right ----
+    void openStepAt (int st)
     {
-        rightTab = juce::jlimit (0, 1, t);
-        for (int i = 0; i < 2; ++i) tabButtons[i].setToggleState (i == rightTab, juce::dontSendNotification);
-        setRightTabVisibility();
+        openStep = juce::jlimit (0, 2, st);
+        resized();
         repaint();
     }
 
-    void setRightTabVisibility()
+    void setStepVisibility()
     {
-        const bool xoTab = rightTab == 0;
+        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &relockButton, &minCohBox })
+            c->setVisible (openStep == 0);
+        const bool xo = openStep == 1;
         for (auto* c : std::initializer_list<juce::Component*> { &highBox, &lowBox, &rangeBox, &findButton, &freqSlider, &typeBox, &slopeBox,
                                                                  &delaySlider, &gainSlider, &invertButton })
-            c->setVisible (xoTab);
-        for (auto& b : typeButtons) b.setVisible (xoTab);
-        for (auto& b : slopeButtons) b.setVisible (xoTab);
+            c->setVisible (xo);
+        for (auto& b : typeButtons) b.setVisible (xo);
+        for (auto& b : slopeButtons) b.setVisible (xo);
         for (auto* c : std::initializer_list<juce::Component*> { &alList, &alAddButton, &alRemoveButton, &alAlignBox, &alRefBox, &alSpotBox,
                                                                  &alExtraSlider, &alMeasureButton, &alApplyButton })
-            c->setVisible (! xoTab);
+            c->setVisible (openStep == 2);
     }
+
+    bool allMeasured() const
+    {
+        if (sys.sources.empty()) return false;
+        for (const auto& src : sys.sources) if (! src.hasResponse()) return false;
+        return true;
+    }
+
+    bool crossoverSet() const { return sys.pairValid() && sys.sources[(size_t) sys.xoHigh].proc.hp.active(); }
+
+    // Time alignment is needed when there are fills or delays, or separate left and right mains.
+    bool alignmentNeeded() const
+    {
+        bool left = false, right = false, fill = false;
+        for (const auto& src : sys.sources)
+        {
+            fill = fill || src.role == (int) SpeakerRole::Fill || src.role == (int) SpeakerRole::Delay;
+            left = left || (src.role == (int) SpeakerRole::Main && src.channel == (int) SpeakerChannel::Left);
+            right = right || (src.role == (int) SpeakerRole::Main && src.channel == (int) SpeakerChannel::Right);
+        }
+        return fill || (left && right);
+    }
+
+    bool alignmentDone() const
+    {
+        if (sys.alignments.empty()) return ! alignmentNeeded();
+        for (const auto& a : sys.alignments)
+        {
+            if (! a.measured() || a.ref >= (int) sys.sources.size() || a.align >= (int) sys.sources.size()) return false;
+            const double need = a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs);
+            if (need < -0.005 || std::abs (sys.sources[(size_t) a.align].proc.delayMs - need) >= 0.01) return false;
+        }
+        return true;
+    }
+
+    // Weakest reliability among the measured speakers (-1: none known).
+    double weakestReliability() const
+    {
+        double w = 2.0;
+        for (double r : reliability) if (r >= 0.0) w = std::min (w, r);
+        return w > 1.5 ? -1.0 : w;
+    }
+
+    juce::String stepSummary (int st) const
+    {
+        if (st == 0)
+        {
+            if (phase != Phase::Idle) return phaseText();
+            int measured = 0;
+            for (const auto& src : sys.sources) measured += src.hasResponse() ? 1 : 0;
+            juce::String t = proc.mics.nameOf (sys.measureMic) + "  -  " + juce::String (measured) + " of " + juce::String ((int) sys.sources.size()) + " measured";
+            const double w = weakestReliability();
+            if (w >= 0.0) t << "  -  " << juce::roundToInt (w * 100.0) << "% reliable";
+            return t;
+        }
+        if (st == 1)
+        {
+            if (! crossoverSet()) return "Not set";
+            const auto& f = sys.sources[(size_t) sys.xoHigh].proc.hp;
+            return nameOf (sys.xoHigh) + " / " + nameOf (sys.xoLow) + "  -  " + xo::typeShort (f.type) + juce::String (f.slope) + " @ "
+                   + freqLabel (f.freq) + " Hz";
+        }
+        if (sys.alignments.empty()) return alignmentNeeded() ? "Fills, delays or L / R to line up" : "Optional";
+        int done = 0;
+        for (const auto& a : sys.alignments)
+            if (a.measured() && a.ref < (int) sys.sources.size() && a.align < (int) sys.sources.size()
+                && std::abs (sys.sources[(size_t) a.align].proc.delayMs - a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs)) < 0.01)
+                ++done;
+        return juce::String (done) + " of " + juce::String ((int) sys.alignments.size()) + " applied";
+    }
+
+    void paintStepCards (juce::Graphics& g)
+    {
+        const auto& p = pal();
+        static const char* titles[] = { "Measure", "Crossover", "Time alignment" };
+        const bool done[] = { allMeasured(), crossoverSet(), ! sys.alignments.empty() && alignmentDone() };
+        const bool required[] = { true, true, alignmentNeeded() };
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto card = stepCard[i].toFloat();
+            const bool open = i == openStep, over = i == hoverStep && ! open;
+            g.setColour (p.panel);
+            g.fillRoundedRectangle (card, 8.0f);
+            // done: green; required and not done: amber; open: accent
+            juce::Colour edge = p.border;
+            float width = 1.0f;
+            if (! done[i] && required[i]) { edge = p.warn.withAlpha (0.6f); width = 1.4f; }
+            else if (done[i]) { edge = p.good.withAlpha (0.5f); width = 1.2f; }
+            if (open || over) { edge = p.accent.withAlpha (open ? 0.9f : 0.6f); width = 1.4f; }
+            g.setColour (edge);
+            g.drawRoundedRectangle (card.reduced (0.5f), 8.0f, width);
+
+            auto h = stepHeader[i].toFloat().reduced (12.0f, 0.0f);
+            const auto badge = h.removeFromLeft (22.0f).withSizeKeepingCentre (22.0f, 22.0f);
+            if (done[i]) drawStatusBadge (g, badge, StepStatus::Ready);
+            else
+            {
+                g.setColour (required[i] ? p.warn : p.textFaint);
+                g.drawEllipse (badge.reduced (1.0f), 1.4f);
+                g.setFont (font (11.5f, true));
+                g.drawText (juce::String (i + 1), badge, juce::Justification::centred);
+            }
+            h.removeFromLeft (10.0f);
+            g.setColour (p.text);
+            g.setFont (font (14.0f, true));
+            const juce::String title = titles[i];
+            g.drawText (title, h, juce::Justification::centredLeft);
+            const float tw = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), title) + 14.0f;
+            g.setColour (i == 0 && phase != Phase::Idle ? p.accent : p.textDim);
+            g.setFont (font (11.5f, i == 0 && phase != Phase::Idle));
+            g.drawText (stepSummary (i), h.withTrimmedLeft (tw).withTrimmedRight (open ? 0.0f : 16.0f), juce::Justification::centredRight, true);
+            if (! open)
+            {
+                juce::Path chev;   // closed: a chevron says "click to open"
+                const float cx = h.getRight() - 4.0f, cy = h.getCentreY();
+                chev.startNewSubPath (cx - 4.0f, cy - 2.0f);
+                chev.lineTo (cx, cy + 2.0f);
+                chev.lineTo (cx + 4.0f, cy - 2.0f);
+                g.setColour (p.textDim);
+                g.strokePath (chev, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+            else
+            {
+                g.setColour (p.border);
+                g.drawHorizontalLine (stepHeader[i].getBottom(), card.getX() + 12.0f, card.getRight() - 12.0f);
+            }
+        }
+    }
+
+    // Live signal quality at the measurement mic, and how reliable each measured speaker is.
+    void paintQuality (juce::Graphics& g)
+    {
+        const auto& p = pal();
+        auto q = qualityArea.toFloat();
+        auto bar = q.removeFromTop (8.0f);
+        g.setColour (p.border);
+        g.fillRoundedRectangle (bar, 4.0f);
+        juce::String t;
+        juce::Colour c = p.textDim;
+        if (liveQuality >= 0.0)
+        {
+            c = liveQuality >= 0.8 ? p.good : liveQuality >= 0.6 ? p.warn : p.bad;
+            g.setColour (c);
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * (float) juce::jlimit (0.0, 1.0, liveQuality)), 4.0f);
+            t << juce::roundToInt (liveQuality * 100.0) << "% of the range is reliable right now"
+              << (liveQuality >= 0.8 ? ": good." : liveQuality >= 0.6 ? ": fair, raise the level if you can." : ": poor, raise the level or reduce the noise.");
+        }
+        else t = "Play the generator through a speaker to check the signal at the mic.";
+        q.removeFromTop (6.0f);
+        g.setColour (liveQuality >= 0.0 ? c : p.textDim);
+        g.setFont (font (11.5f, liveQuality >= 0.0));
+        g.drawFittedText (t, q.toNearestInt(), juce::Justification::topLeft, 2);
+
+        // each measured speaker
+        auto r = reliabilityArea;
+        g.setFont (font (11.0f, true));
+        g.setColour (p.textDim);
+        g.drawText ("RELIABILITY OF EACH MEASUREMENT", r.removeFromTop (16), juce::Justification::centredLeft);
+        r.removeFromTop (4);
+        for (int i = 0; i < (int) sys.sources.size() && r.getHeight() >= 18; ++i)
+        {
+            auto line = r.removeFromTop (20);
+            g.setColour (sourceColour (i));
+            g.fillRoundedRectangle (line.removeFromLeft (4).toFloat().withSizeKeepingCentre (4.0f, 14.0f), 2.0f);
+            line.removeFromLeft (8);
+            g.setColour (p.text);
+            g.setFont (font (12.0f));
+            g.drawText (nameOf (i), line, juce::Justification::centredLeft, true);
+            const double rel = i < (int) reliability.size() ? reliability[(size_t) i] : -1.0;
+            juce::String v;
+            juce::Colour vc = p.textDim;
+            if (! sys.sources[(size_t) i].hasResponse()) { v = "not measured"; vc = p.warn; }
+            else if (rel < 0.0) v = "imported (no coherence)";
+            else { v = juce::String (juce::roundToInt (rel * 100.0)) + "%"; vc = rel >= 0.8 ? p.good : rel >= 0.6 ? p.warn : p.bad; }
+            g.setColour (vc);
+            g.setFont (font (12.0f, true));
+            g.drawText (v, line, juce::Justification::centredRight, true);
+        }
+        if (r.getHeight() >= 30)
+        {
+            g.setColour (p.textFaint);
+            g.setFont (font (11.0f));
+            g.drawFittedText ("Share of each speaker's range measured with at least the minimum coherence. Below 80%, measure that "
+                              "speaker again with more level or less noise.", r.removeFromTop (44), juce::Justification::topLeft, 3);
+        }
+    }
+
+    void updateLiveQuality()
+    {
+        liveQuality = -1.0;
+        const int mic = juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic);
+        if (snap == nullptr || mic >= (int) snap->mics.size() || ! settings.genOn.load()) return;
+        const auto& m = snap->mics[(size_t) mic];
+        if (m.tfFrames <= 0 || m.tfCoh.size() != snap->tfFreq.size()) return;
+        const float minCoh = juce::jmax (0.2f, settings.coherenceBlank.load());
+        int n = 0, good = 0;
+        for (size_t i = 0; i < snap->tfFreq.size(); ++i)
+        {
+            if (snap->tfFreq[i] < 40.0 || snap->tfFreq[i] > 16000.0 || ! std::isfinite (m.tfCoh[i])) continue;
+            ++n;
+            good += m.tfCoh[i] >= minCoh ? 1 : 0;
+        }
+        if (n > 0) liveQuality = (double) good / n;
+    }
+
+    void refreshReliability()
+    {
+        reliability.assign (sys.sources.size(), -1.0);
+        const double minCoh = juce::jmax (0.2, (double) settings.coherenceBlank.load());
+        for (size_t i = 0; i < sys.sources.size(); ++i)
+            if (sys.sources[i].hasResponse()) reliability[i] = xo::usableReliability (sys.sources[i].response, minCoh);
+        list.setReliability (reliability);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        for (int i = 0; i < 3; ++i)
+            if (stepHeader[i].contains (e.getPosition()) && i != openStep) { openStepAt (i); return; }
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        int h = -1;
+        for (int i = 0; i < 3; ++i) if (stepHeader[i].contains (e.getPosition()) && i != openStep) h = i;
+        if (h != hoverStep)
+        {
+            hoverStep = h;
+            setMouseCursor (h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+            repaint();
+        }
+    }
+
+    void mouseExit (const juce::MouseEvent&) override { if (hoverStep >= 0) { hoverStep = -1; repaint(); } }
 
     // ---- time alignment ----
     Alignment* alignmentAt (int i) { return i >= 0 && i < (int) sys.alignments.size() ? &sys.alignments[(size_t) i] : nullptr; }
@@ -1372,7 +1717,7 @@ private:
         a.precedenceMs = al.role == (int) SpeakerRole::Delay ? 5.0 : 0.0;
         sys.alignments.push_back (a);
         alSelected = (int) sys.alignments.size() - 1;
-        setRightTab (1);
+        openStepAt (2);
         systemChanged (false);
     }
 
@@ -1652,18 +1997,25 @@ private:
     juce::TextButton typeButtons[3], slopeButtons[kSlopeButtons];
     juce::TextButton findButton { "Find best crossover" }, invertButton { "Low normal" };
     juce::TextButton copyButton { "Copy settings" }, doneButton { "Mark speakers set up" };
-    juce::TextButton tabButtons[2];
+    juce::ComboBox minCohBox;
     AlignmentList alList;
     juce::TextButton alAddButton { "Add alignment" }, alRemoveButton { "Remove" }, alMeasureButton { "Measure both" }, alApplyButton { "Apply delay" };
     juce::ComboBox alAlignBox, alRefBox, alSpotBox;
     juce::Slider alExtraSlider;
     juce::Rectangle<int> alHint, alInfo;
-    int alLabelFrom = 0, alLabelTo = 0, xoLabelFrom = 0, xoLabelTo = 0;
-    int rightTab = 0, alSelected = 0, arrivalAlignment = -1, arrivalWhich = 0;
+    static constexpr int kHeaderH = 46;
+    juce::Rectangle<int> stepCard[3], stepHeader[3], qualityArea, reliabilityArea;
+    int labelFrom[3] {}, labelTo[3] {};
+    int openStep = 0, hoverStep = -1;
+    double liveQuality = -1.0;
+    float shownMinCoh = -1.0f;
+    int qualityTick = 0;
+    std::vector<double> reliability;
+    int alSelected = 0, arrivalAlignment = -1, arrivalWhich = 0;
     bool arrivalMode = false;
     std::vector<std::pair<int, int>> arrivalQueue;   // (alignment, 0 = reference speaker / 1 = aligned speaker)
 
-    juce::Rectangle<int> systemCard, selCard, measureCard, xoCard, summaryCard, selInfo, measureInfo, xoInfo, liveLine, summaryArea, statusLine;
+    juce::Rectangle<int> systemCard, selCard, summaryCard, selInfo, measureInfo, xoInfo, liveLine, summaryArea, statusLine;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
 
     int selected = 0, nOuts = -1, measuring = -1;
@@ -1671,9 +2023,11 @@ private:
     double phaseStart = 0.0;
     float progress = 0.0f;
     juce::uint64 delaySerial = 0, settleUntil = 0;
+    juce::uint32 overflowsSeen = 0;
+    int restarts = 0;
     std::array<float, kMaxMics> savedDelays {};
     bool searching = false, liveValid = false, sawReset = false;
-    double liveEff = 0.0, liveDev = 0.0;
+    double liveEff = 0.0, liveDev = 0.0, liveReliable = 1.0;
     juce::String status;
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
 };

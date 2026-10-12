@@ -175,7 +175,7 @@ public:
         {
             const auto& s = proc.system.sources[0];
             std::printf ("status: %s (%d ticks, analysis behind %.1f s)\n", page.statusText().toRawUTF8(), ticks - stageTick, (double) (proc.analyzer.samplesWritten() - proc.analyzer.samplesAnalysed()) / 48000.0);
-            std::printf ("measure Main: response=%d points=%d arrival=%d %.3f ms locked=%.3f\n", (int) s.hasResponse(), (int) s.response.freq.size(),
+            std::printf ("measure Main: reliable=%.2f hf=%.1f response=%d points=%d arrival=%d %.3f ms locked=%.3f\n", la::xo::usableReliability (s.response, 0.4), s.response.dbAt (8000.0), (int) s.hasResponse(), (int) s.response.freq.size(),
                          (int) s.hasArrival, s.arrivalMs, proc.system.lockedDelayMs);
             page.measure (1);
             stage = 2;

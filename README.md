@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.6.0**: time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -82,7 +82,28 @@ The RTA beside the checklist shows every mic in its own colour.
 
 ### 2 Speakers
 
-Set up once per venue, for any speakers and any speaker management system.
+Set up once per venue, for any speakers and any speaker management system. The right-hand column walks through
+three steps: **1 Measure**, **2 Crossover** and **3 Time alignment**. The open step gets the room; the others fold to a
+one-line summary (click one to open it). Each turns green when done and amber while it is still needed; the page
+moves on by itself when all speakers are measured and when a crossover is found. Time alignment is only needed
+when there are fills, delays or separate left and right mains.
+
+**Is the signal reliable?** Coherence says how much of what the mic hears is the test signal rather than noise or
+late reflections. LiveAlign uses it everywhere in this step:
+
+- **Signal quality** (Measure step): a live bar of how much of the range is reliable at the measurement mic while a
+  speaker plays (good from 80 %, fair from 60 %, below that raise the level or reduce the noise).
+- **Minimum coherence** (Measure step, same setting as Settings > Transfer function): how reliable a point must be
+  to count. 40 % by default; raise it in a noisy room to be stricter.
+- **Reliability of each measurement:** the share of each speaker's useful range measured above the minimum, shown in
+  the speaker list and the Measure step. Below 80 % the status says to measure that speaker again.
+- **Graph:** each speaker's trace is faded where its measurement is not reliable, and the selected speaker's
+  coherence is drawn across the top (pink, with the minimum as a dashed line).
+- **Crossover search** ignores unreliable points, prefers a crossover region that was measured reliably, and warns
+  when less than 70 % of it was. The live readout says how reliable the region is when it is below 80 %.
+- **Dropped audio:** if the computer cannot keep up and audio is dropped during a measurement, the average restarts
+  (and stops with a message after three tries), so a broken average is never kept.
+- On **Monitoring**, the status line shows how much of the transfer function is reliable right now.
 
 - **Speakers:** up to 8 sources (a top, a sub, fills, delays, more subs ...), each with a name, a role, a channel
   (Mono, Left, Centre, Right, or Stereo L+R) and the interface output that feeds it while it is measured. The dot at the right of a row shows or hides it on the graph.
@@ -103,7 +124,7 @@ Set up once per venue, for any speakers and any speaker management system.
   low speaker to the high one. It scores how flat the sum is (against what the two speakers give on their own, so a
   room notch both share does not count) and how much in phase they meet. **Adjust by hand** shows and edits the
   result: frequency, filter, slope, low speaker delay, gain and polarity, with a live readout of the sum.
-- **Time alignment** (second tab beside Crossover): line up a fill, a delay or one side of a left / right pair with
+- **Time alignment** (step 3): line up a fill, a delay or one side of a left / right pair with
   another speaker where their coverage meets: the front rows for a front fill, under the balcony for a delay, the
   centre line for left / right (not FOH, which is usually off to one side). Pick the speaker to delay, the one it
   lines up to and the spot, move the measurement mic there, set both speakers' processor delays to 0, and press

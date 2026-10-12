@@ -443,6 +443,30 @@ static void testCrossover()
     check (rr.valid && rr.filter.freq >= 60.0 && rr.filter.freq <= 160.0, "Crossover in the overlap despite a room notch", rr.filter.freq, 100.0);
     check (rr.efficiency > 0.85, "Room: sources meet in phase", rr.efficiency, 0.95);
 
+    // Coherence: a stretch of the overlap measured in noise is not trusted, and the result says so
+    Response topNoisy = top, subNoisy = sub;
+    topNoisy.coh.assign (grid.size(), 0.95);
+    subNoisy.coh.assign (grid.size(), 0.95);
+    for (size_t i = 0; i < grid.size(); ++i)
+        if (grid[i] > 75.0 && grid[i] < 130.0) { topNoisy.coh[i] = 0.2; subNoisy.coh[i] = 0.2; }
+    Options strict = opt;
+    strict.minCoherence = 0.5;
+    const auto rn = optimise (topNoisy, subNoisy, caps, strict);
+    check (rn.valid, "Crossover found with a noisy stretch");
+    check (rn.reliability < 0.9, "Noisy stretch lowers the reliability", rn.reliability, 0.6);
+    check (optimise (topNoisy, subNoisy, caps, opt).reliability > 0.99, "Coherence ignored when no minimum is set");
+
+    FreqTable rel;
+    for (double f = 20.0; f <= 20000.0; f *= 1.05)
+    {
+        rel.freq.push_back (f);
+        rel.db.push_back (f < 40.0 ? -30.0 : 0.0);
+        rel.extra.push_back (f > 5000.0 ? 0.3 : 0.9);
+    }
+    const double share = usableReliability (rel, 0.5);
+    check (share > 0.6 && share < 0.85, "Usable reliability counts the trusted share of the useful range", share, 0.72);
+    check (usableReliability (FreqTable {}, 0.5) < 0.0, "No coherence data: unknown reliability");
+
     // A measured table with delay compensation: phase must line up after fromTable
     FreqTable t;
     for (double f = 20.0; f <= 20000.0; f *= 1.05)

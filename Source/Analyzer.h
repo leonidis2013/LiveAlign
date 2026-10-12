@@ -113,7 +113,7 @@ public:
     {
         int s1, n1, s2, n2;
         fifo.prepareToWrite (n, s1, n1, s2, n2);
-        if (n1 + n2 < n) overflowed = true;
+        if (n1 + n2 < n) { overflowed = true; ++overflows; }
         for (int c = 0; c < kChannels; ++c)
         {
             const float* src = c < kMaxMics ? mics[c] : (c == kMaxMics ? ref : gen);
@@ -127,6 +127,8 @@ public:
     // Samples handed to the analysis, and samples it has analysed (they differ while it catches up).
     juce::uint64 samplesWritten() const { return written.load(); }
     juce::uint64 samplesAnalysed() const { return analysed.load(); }
+    // Times audio had to be dropped because the analysis fell behind (a measurement spanning one is not continuous).
+    juce::uint32 overflowCount() const { return overflows.load(); }
 
     void setSampleRate (double rate) { pendingRate = rate; }
 
@@ -625,6 +627,7 @@ private:
     std::array<std::vector<float>, kChannels> fifoData;
     std::atomic<bool> overflowed { false };
     std::atomic<juce::uint64> written { 0 }, analysed { 0 };
+    std::atomic<juce::uint32> overflows { 0 };
     std::atomic<double> pendingRate { 48000.0 };
 
     double sr = 0.0;
