@@ -140,6 +140,12 @@ public:
             g.reduceClipRegion (phaseArea.toNearestInt());
             strokeTrace (g, phasePath (data->tfPhase, [&] (size_t i) { return axPhase.x (f[i]); }, keep, phaseArea), p.accent, 1.6f);
         }
+        if (data->shownMic >= kAverageMic)
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (12.0f));
+            g.drawText ("Phase is not averaged across mics. Pick one mic to see its phase.", phaseArea, juce::Justification::centred);
+        }
 
         // hover readout
         if (hover.has_value())
@@ -228,6 +234,9 @@ class RtaView : public juce::Component
 public:
     RtaView (Settings& s, TraceStore& t) : settings (s), traces (t) {}
 
+    // Draw every mic as its own coloured line (Mic setup page) instead of the selected mic's bars.
+    void setShowAllMics (bool b) { showAll = b; repaint(); }
+
     void update (const Snapshot& snap) { data = &snap; repaint(); }
 
     void paint (juce::Graphics& g) override
@@ -279,7 +288,18 @@ public:
         }
         const double half = std::pow (2.0, 0.5 / bands);
 
-        if (bands <= 6)
+        const bool multi = showAll && data->mics.size() > 1;
+        if (multi)
+        {
+            for (size_t m = 0; m < data->mics.size(); ++m)
+            {
+                const auto& v = data->mics[m].rta;
+                if (v.size() != f.size()) continue;
+                strokeTrace (g, tracePath (f.size(), [&] (size_t i) { return ax.x (f[i]); }, [&] (size_t i) { return y (v[i]); },
+                                           [] (size_t) { return true; }), micColour ((int) m), 1.6f);
+            }
+        }
+        else if (bands <= 6)
         {
             for (size_t i = 0; i < f.size(); ++i)
             {
@@ -321,6 +341,7 @@ private:
     const Snapshot* data = nullptr;
     juce::Rectangle<float> plot;
     FreqAxis ax;
+    bool showAll = false;
     std::optional<juce::Point<float>> hover;
 };
 
@@ -434,7 +455,7 @@ public:
             g.setColour (p.warn);
             g.drawVerticalLine ((int) x (peakMs), plot.getY(), plot.getBottom());
         }
-        const double total = settings.delayMs.load() + peakMs;
+        const double total = settings.delayMsValue() + peakMs;
         g.setColour (p.text);
         g.setFont (monoFont (12.0f));
         g.drawText ("Peak " + signedText ((float) peakMs, 2) + " ms after compensation   (arrival " + juce::String (total, 2) + " ms, "

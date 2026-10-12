@@ -54,6 +54,11 @@ public:
             return "No audio device";
         };
 
+        la::StandaloneHooks::deviceName() = [h]() -> juce::String
+        {
+            if (auto* dev = h->deviceManager.getCurrentAudioDevice()) return dev->getName();
+            return {};
+        };
         la::StandaloneHooks::toggleFullScreen() = [this]
         {
             auto& desktop = juce::Desktop::getInstance();
@@ -77,6 +82,7 @@ public:
     {
         la::StandaloneHooks::showAudioSettings() = nullptr;
         la::StandaloneHooks::deviceDescription() = nullptr;
+        la::StandaloneHooks::deviceName() = nullptr;
         la::StandaloneHooks::toggleFullScreen() = nullptr;
         la::StandaloneHooks::isFullScreen() = nullptr;
         if (juce::Desktop::getInstance().getKioskModeComponent() != nullptr)

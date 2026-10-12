@@ -92,6 +92,8 @@ class InputPanel : public juce::Component
 public:
     explicit InputPanel (Settings& s) : settings (s) {}
 
+    void setMicLabel (const juce::String& l) { if (l != micLabel) { micLabel = l; repaint(); } }
+
     void setLevels (float micPeak, float micRmsDb, float refPeak, float refRmsDb)
     {
         const auto now = juce::Time::getMillisecondCounter();
@@ -105,7 +107,7 @@ public:
         drawPanel (g, getLocalBounds().toFloat(), "Inputs");
         auto r = getLocalBounds().reduced (12, 0);
         r.removeFromTop (30);
-        drawMeter (g, r.removeFromTop (26), "Mic  In " + juce::String (settings.micChannel.load() + 1), mic, pal().accent);
+        drawMeter (g, r.removeFromTop (26), micLabel, mic, micColour (settings.focusMic()));
         r.removeFromTop (6);
         drawMeter (g, r.removeFromTop (26), "Ref  " + refSourceName (settings.refSource.load()), ref, pal().inputCol);
     }
@@ -154,6 +156,7 @@ private:
 
     Settings& settings;
     Meter mic, ref;
+    juce::String micLabel { "Mic 1" };
 };
 
 //==============================================================================
@@ -174,11 +177,11 @@ public:
             nudge[i].setButtonText (names[i]);
             nudge[i].setTooltip ("Nudge the delay compensation by " + juce::String (names[i]) + " ms");
             const double st = steps[i];
-            nudge[i].onClick = [this, st] { settings.delayMs = (float) juce::jlimit (0.0, 2000.0, settings.delayMs.load() + st); };
+            nudge[i].onClick = [this, st] { settings.delayMs() = (float) juce::jlimit (0.0, 2000.0, settings.delayMsValue() + st); };
             addAndMakeVisible (nudge[i]);
         }
         zeroButton.setTooltip ("Remove the delay compensation");
-        zeroButton.onClick = [this] { settings.delayMs = 0.0f; };
+        zeroButton.onClick = [this] { settings.delayMs() = 0.0f; };
         addAndMakeVisible (zeroButton);
     }
 
@@ -208,7 +211,7 @@ public:
         auto r = getLocalBounds().reduced (12, 0);
         r.removeFromTop (62);
 
-        const double ms = settings.delayMs.load();
+        const double ms = settings.delayMsValue();
         g.setColour (p.text);
         g.setFont (monoFont (20.0f, true));
         g.drawText (juce::String (ms, 2) + " ms", r.removeFromTop (28).removeFromLeft (140), juce::Justification::centredLeft);
@@ -221,12 +224,23 @@ public:
         juce::Colour col = p.textDim;
         if (waiting) status = "Listening...";
         else if (report.serial == 0) status = "Press Find with the signal running.";
-        else if (! report.valid) { status = "No clear arrival. Is the signal on and the mic picking it up?"; col = p.warn; }
         else
         {
-            status = "Found " + juce::String (report.ms, 2) + " ms (" + juce::String (juce::roundToInt (report.confidenceDb)) + " dB clear)";
-            if (report.inverted) { status << "   POLARITY INVERTED"; col = p.bad; }
-            else col = p.good;
+            const int m = settings.focusMic();
+            int found = 0;
+            for (int i = 0; i < report.micCount; ++i) found += report.valid[(size_t) i] ? 1 : 0;
+            if (m >= report.micCount || ! report.valid[(size_t) m])
+            {
+                status = "No clear arrival on this mic. Is the signal on?";
+                col = p.warn;
+            }
+            else
+            {
+                status = "Found " + juce::String (report.ms[(size_t) m], 2) + " ms (" + juce::String (juce::roundToInt (report.confidenceDb[(size_t) m])) + " dB clear)";
+                if (report.inverted[(size_t) m]) { status << "  POLARITY INVERTED"; col = p.bad; }
+                else col = p.good;
+            }
+            if (report.micCount > 1) status << "   " << found << "/" << report.micCount << " mics";
         }
         g.setColour (col);
         g.setFont (font (11.5f));

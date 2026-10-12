@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jerod Ulicki
+
 #pragma once
 // The Settings pop-up: every option in one place, grouped into sections in two columns.
 #include <functional>
@@ -11,25 +14,20 @@ namespace la::ui
 class SettingsPanel : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void()> onThemeChanged, onOpenCalibration, onLayoutChanged;
+    std::function<void()> onThemeChanged, onLayoutChanged;
 
     explicit SettingsPanel (LiveAlignProcessor& p) : settings (p.settings)
     {
         const int nIn = juce::jmax (1, p.numInputs());
 
         // ================= left column =================
-        header (0, "Inputs");
+        header (0, "Inputs  (mics are set up on the Mic setup page)");
         if (StandaloneHooks::showAudioSettings())
         {
             deviceButton.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
             deviceButton.setTooltip ("Choose the audio interface, sample rate, buffer size and which channels are used");
             row (0, "Audio device", deviceButton);
         }
-        for (int i = 0; i < nIn; ++i) micBox.addItem ("Input " + juce::String (i + 1), i + 1);
-        micBox.setSelectedItemIndex (juce::jlimit (0, nIn - 1, settings.micChannel.load()), juce::dontSendNotification);
-        micBox.onChange = [this] { settings.micChannel = micBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
-        row (0, "Measurement mic", micBox);
-
         refBox.addItem ("Off", 1);
         refBox.addItem ("Generator (internal copy)", 2);
         for (int i = 0; i < nIn; ++i) refBox.addItem ("Input " + juce::String (i + 1) + " (loopback)", i + 3);
@@ -38,10 +36,6 @@ public:
                            "accurate. The internal generator copy works without a cable but only with the generator.");
         refBox.onChange = [this] { settings.refSource = refBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
         row (0, "Reference", refBox);
-
-        calButton.setTooltip ("SPL calibration with an acoustic calibrator, and the mic's calibration file");
-        calButton.onClick = [this] { if (onOpenCalibration) onOpenCalibration(); };
-        row (0, "Mic calibration", calButton);
 
         header (0, "Transfer function");
         static const int sizes[] = { 8192, 16384, 32768, 65536 };
@@ -166,8 +160,8 @@ public:
         const auto& p = pal();
         g.fillAll (p.panel);
         g.setColour (p.text);
-        g.setFont (font (14.0f, true));
-        g.drawText ("Settings", kPad, 6, 200, 30, juce::Justification::centredLeft);
+        g.setFont (font (17.0f, true));
+        g.drawText ("SETTINGS", kPad, 8, 200, 30, juce::Justification::centredLeft);
 
         // divider between the columns
         g.setColour (p.border);
@@ -178,10 +172,12 @@ public:
         {
             const int x = colX (h.col);
             g.setColour (p.accent);
-            g.setFont (font (11.0f, true));
-            g.drawText (h.text.toUpperCase(), x, h.y, kColW, 22, juce::Justification::bottomLeft);
+            g.fillRoundedRectangle ((float) x, (float) h.y + 7.0f, 3.0f, 12.0f, 1.5f);
+            g.setColour (p.text);
+            g.setFont (font (13.0f, true));
+            g.drawText (h.text, x + 10, h.y, kColW - 10, 26, juce::Justification::centredLeft);
             g.setColour (p.border);
-            g.drawHorizontalLine (h.y + 24, (float) x, (float) (x + kColW));
+            g.drawHorizontalLine (h.y + 27, (float) x, (float) (x + kColW));
         }
 
         g.setFont (font (12.5f));
@@ -258,8 +254,8 @@ private:
     std::vector<Header> headers;
     int colY[2] { kTop, kTop };
 
-    juce::TextButton deviceButton { "Audio device..." }, calButton { "Calibration..." };
-    juce::ComboBox micBox, refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,
+    juce::TextButton deviceButton { "Audio device..." };
+    juce::ComboBox refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,
         themeBox, irModeBox, irRangeBox, tempUnitBox, unitBox;
     juce::ToggleButton refRtaToggle { "Reference" }, peakToggle { "Peak hold" };
     juce::Slider tempSlider;

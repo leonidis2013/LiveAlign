@@ -9,10 +9,18 @@ namespace la
 {
 enum class View { Rta = 0, Transfer = 1, Impulse = 2 };
 
+constexpr int kMaxMics = 8;
+constexpr int kAverageMic = kMaxMics;   // "average of all mics" in the mic picker
+
 struct Settings
 {
-    // Routing. Channels are 0-based input/output indices of the app / plug-in.
-    std::atomic<int> micChannel { 0 };
+    // Measurement mics. Channels are 0-based input/output indices of the app / plug-in.
+    std::atomic<int> micCount { 1 };
+    std::atomic<int> micInput[kMaxMics] { { 0 }, { 2 }, { 3 }, { 4 }, { 5 }, { 6 }, { 7 }, { 8 } };
+    std::atomic<float> micDelayMs[kMaxMics] {};           // reference delay compensation for each mic
+    std::atomic<bool> micSplCalibrated[kMaxMics] {};
+    std::atomic<float> micSplOffset[kMaxMics] { { 120.0f }, { 120.0f }, { 120.0f }, { 120.0f }, { 120.0f }, { 120.0f }, { 120.0f }, { 120.0f } };
+    std::atomic<int> selectedMic { 0 };                    // shown on the Monitoring tab; kAverageMic = average
     std::atomic<int> refSource { 3 };        // 0 = off, 1 = generator (internal copy), 2.. = input (refSource - 2); default input 2
     std::atomic<int> genOutput { 0 };        // 0 = all outputs, 1.. = output (genOutput - 1)
 
@@ -27,7 +35,6 @@ struct Settings
     std::atomic<int> fftSize { 32768 };
     std::atomic<int> averages { 8 };
     std::atomic<int> smoothing { 24 };       // 1/N octave
-    std::atomic<float> delayMs { 0.0f };     // reference delay compensation
     std::atomic<float> coherenceBlank { 0.4f };   // hide transfer points below this coherence (0 = off)
     std::atomic<float> magRange { 20.0f };   // +/- dB shown
 
@@ -37,9 +44,6 @@ struct Settings
     std::atomic<bool> rtaShowRef { false };
     std::atomic<bool> rtaPeakHold { false };
 
-    // Mic level calibration: dB SPL = dBFS + splOffset
-    std::atomic<bool> splCalibrated { false };
-    std::atomic<float> splOffset { 120.0f };
     std::atomic<float> calibratorDb { 94.0f };
 
     // Display
@@ -49,7 +53,7 @@ struct Settings
     std::atomic<int> paneLayout { 0 };       // 0 stacked (rows), 1 side by side (columns)
     std::atomic<int> paneView2 { (int) View::Rta }, paneView3 { (int) View::Impulse };
     std::atomic<int> targetCurve { 0 };      // la::targets index, 0 = none
-    std::atomic<int> currentTab { 0 };       // workflow tab: 0 mic setup, 1 speakers, 2 room tuning, 3 monitoring
+    std::atomic<int> currentTab { 0 };       // page: 0 home, 1 mic setup, 2 speakers, 3 room tuning, 4 monitoring
     std::atomic<int> theme { 0 };            // 0 dark, 1 light
     std::atomic<float> temperatureC { 20.0f };
     std::atomic<int> distanceUnit { 0 };     // 0 feet, 1 metres
@@ -62,6 +66,12 @@ struct Settings
     std::atomic<bool> requestFindDelay { false };
     std::atomic<bool> requestResetLeq { false };
     std::atomic<bool> requestClearPeak { false };
+
+    // The mic whose delay / calibration the single-mic controls act on (the average uses mic 1).
+    int focusMic() const { const int m = selectedMic.load(); return m >= kAverageMic || m >= micCount.load() ? 0 : juce::jmax (0, m); }
+    std::atomic<float>& delayMs() { return micDelayMs[focusMic()]; }
+    float delayMsValue() const { return micDelayMs[focusMic()].load(); }
+    bool splCalibrated() const { return micSplCalibrated[focusMic()].load(); }
 
     std::atomic<int>& paneViewRef (int pane) { return pane == 0 ? view : (pane == 1 ? paneView2 : paneView3); }
 
@@ -83,7 +93,16 @@ struct Settings
 
     void save (juce::XmlElement& x) const
     {
-        x.setAttribute ("micChannel", micChannel.load());
+        x.setAttribute ("micCount", micCount.load());
+        x.setAttribute ("selectedMic", selectedMic.load());
+        for (int m = 0; m < kMaxMics; ++m)
+        {
+            const juce::String k (m);
+            x.setAttribute ("micInput" + k, micInput[m].load());
+            x.setAttribute ("micDelayMs" + k, micDelayMs[m].load());
+            x.setAttribute ("micSplCalibrated" + k, micSplCalibrated[m].load());
+            x.setAttribute ("micSplOffset" + k, micSplOffset[m].load());
+        }
         x.setAttribute ("refSource", refSource.load());
         x.setAttribute ("genOutput", genOutput.load());
         x.setAttribute ("genType", genType.load());
@@ -93,15 +112,12 @@ struct Settings
         x.setAttribute ("fftSize", fftSize.load());
         x.setAttribute ("averages", averages.load());
         x.setAttribute ("smoothing", smoothing.load());
-        x.setAttribute ("delayMs", delayMs.load());
         x.setAttribute ("coherenceBlank", coherenceBlank.load());
         x.setAttribute ("magRange", magRange.load());
         x.setAttribute ("rtaBands", rtaBands.load());
         x.setAttribute ("rtaSpeed", rtaSpeed.load());
         x.setAttribute ("rtaShowRef", rtaShowRef.load());
         x.setAttribute ("rtaPeakHold", rtaPeakHold.load());
-        x.setAttribute ("splCalibrated", splCalibrated.load());
-        x.setAttribute ("splOffset", splOffset.load());
         x.setAttribute ("view", view.load());
         x.setAttribute ("theme", theme.load());
         x.setAttribute ("temperatureC", temperatureC.load());
@@ -123,8 +139,22 @@ struct Settings
     {
         auto i = [&x] (const char* k, int def, int lo, int hi) { return juce::jlimit (lo, hi, x.getIntAttribute (k, def)); };
         auto f = [&x] (const char* k, float def, float lo, float hi) { return juce::jlimit (lo, hi, (float) x.getDoubleAttribute (k, def)); };
-        micChannel = i ("micChannel", 0, 0, 7);
-        refSource = i ("refSource", 3, 0, 9);
+        micCount = i ("micCount", 1, 1, kMaxMics);
+        selectedMic = i ("selectedMic", 0, 0, kAverageMic);
+        for (int m = 0; m < kMaxMics; ++m)
+        {
+            const juce::String k (m);
+            micInput[m] = juce::jlimit (0, 15, x.getIntAttribute ("micInput" + k, m == 0 ? 0 : m + 1));
+            micDelayMs[m] = juce::jlimit (0.0f, 2000.0f, (float) x.getDoubleAttribute ("micDelayMs" + k, 0.0));
+            micSplCalibrated[m] = x.getBoolAttribute ("micSplCalibrated" + k, false);
+            micSplOffset[m] = juce::jlimit (0.0f, 200.0f, (float) x.getDoubleAttribute ("micSplOffset" + k, 120.0));
+        }
+        // version 0.1 - 0.3: a single mic
+        if (x.hasAttribute ("micChannel")) micInput[0] = juce::jlimit (0, 15, x.getIntAttribute ("micChannel"));
+        if (x.hasAttribute ("delayMs")) micDelayMs[0] = juce::jlimit (0.0f, 2000.0f, (float) x.getDoubleAttribute ("delayMs"));
+        if (x.hasAttribute ("splCalibrated")) micSplCalibrated[0] = x.getBoolAttribute ("splCalibrated");
+        if (x.hasAttribute ("splOffset")) micSplOffset[0] = juce::jlimit (0.0f, 200.0f, (float) x.getDoubleAttribute ("splOffset"));
+        refSource = i ("refSource", 3, 0, 17);
         genOutput = i ("genOutput", 0, 0, 8);
         genType = i ("genType", 0, 0, 4);
         genLevelDb = f ("genLevelDb", -20.0f, -90.0f, 0.0f);
@@ -134,15 +164,12 @@ struct Settings
         fftSize = (fs == 8192 || fs == 16384 || fs == 32768 || fs == 65536) ? fs : 32768;
         averages = i ("averages", 8, 1, 128);
         smoothing = i ("smoothing", 24, 1, 48);
-        delayMs = f ("delayMs", 0.0f, 0.0f, 2000.0f);
         coherenceBlank = f ("coherenceBlank", 0.4f, 0.0f, 0.95f);
         magRange = f ("magRange", 20.0f, 6.0f, 60.0f);
         rtaBands = i ("rtaBands", 3, 1, 48);
         rtaSpeed = i ("rtaSpeed", 1, 0, 2);
         rtaShowRef = x.getBoolAttribute ("rtaShowRef", false);
         rtaPeakHold = x.getBoolAttribute ("rtaPeakHold", false);
-        splCalibrated = x.getBoolAttribute ("splCalibrated", false);
-        splOffset = f ("splOffset", 120.0f, 0.0f, 200.0f);
         view = i ("view", (int) View::Transfer, 0, 2);
         theme = i ("theme", 0, 0, 1);
         temperatureC = f ("temperatureC", 20.0f, -20.0f, 50.0f);
@@ -150,7 +177,7 @@ struct Settings
         irMode = i ("irMode", 0, 0, 1);
         irRange = i ("irRange", 1, 0, 2);
         paneCount = i ("paneCount", 1, 1, 3);
-        currentTab = i ("currentTab", 0, 0, 3);
+        currentTab = i ("currentTab", 0, 0, 4);
         paneLayout = i ("paneLayout", 0, 0, 1);
         paneView2 = i ("paneView2", (int) View::Rta, 0, 2);
         paneView3 = i ("paneView3", (int) View::Impulse, 0, 2);

@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jerod Ulicki
+
 #pragma once
 // Saved traces: snapshots of a transfer function or RTA kept for comparison. They live in memory and are saved
 // with the app / plug-in state and inside venue project files. FRD files are used to exchange them with other software.
 // Message thread only.
+#include <algorithm>
 #include <juce_core/juce_core.h>
 #include "Analysis/FreqTable.h"
 
@@ -17,6 +21,7 @@ struct Trace
     bool visible = true;
     juce::String created;
     FreqTable data;   // freq, db, phase (transfer), extra = coherence (transfer)
+    juce::String fromSession;   // set for traces shown from another session for comparison (not saved)
 };
 
 class TraceStore
@@ -69,6 +74,34 @@ public:
 
     void clear() { traces.clear(); ++version; }
 
+    // Traces of another session, shown for comparison until removed. They are never saved.
+    void addComparison (const juce::XmlElement& sessionBody, const juce::String& sessionName)
+    {
+        TraceStore other;
+        if (! other.load (sessionBody)) return;
+        for (auto t : other.traces)
+        {
+            t.fromSession = sessionName;
+            t.name = sessionName + ": " + t.name;
+            t.colour = nextColour();
+            traces.push_back (std::move (t));
+        }
+        ++version;
+    }
+
+    void clearComparisons()
+    {
+        traces.erase (std::remove_if (traces.begin(), traces.end(), [] (const Trace& t) { return t.fromSession.isNotEmpty(); }),
+                      traces.end());
+        ++version;
+    }
+
+    bool hasComparisons() const
+    {
+        for (const auto& t : traces) if (t.fromSession.isNotEmpty()) return true;
+        return false;
+    }
+
     void rename (int i, const juce::String& newName)
     {
         if (! valid (i) || newName.trim().isEmpty()) return;
@@ -116,6 +149,7 @@ public:
         auto* list = parent.createNewChildElement ("Traces");
         for (const auto& t : traces)
         {
+            if (t.fromSession.isNotEmpty()) continue;
             auto* e = list->createNewChildElement ("Trace");
             e->setAttribute ("name", t.name);
             e->setAttribute ("kind", t.kind == Trace::Rta ? "rta" : "transfer");

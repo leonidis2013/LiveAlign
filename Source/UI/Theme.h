@@ -1,17 +1,22 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jerod Ulicki
+
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 
+// The Live series colour system (LiveVoice, LiveMeter, BroadcastMaster): same surfaces, accents, light/dark pairing,
+// rounded cards with an accent bar beside the title, pill switches and slim sliders.
 namespace la::ui
 {
 struct Palette
 {
     bool dark;
     juce::Colour bg, panel, panelRaised, border, grid, text, textDim, accent, good, warn, bad, inputCol, outputCol, onAccent;
-    juce::Colour bandCol[4];   // multiband compressor bands
-    juce::Colour reduction;    // gain reduction
+    juce::Colour bandCol[4];   // extra accents (violet, gold ...)
+    juce::Colour reduction;    // coherence
+    juce::Colour textFaint;
 };
 
-// Same surfaces, accents and light/dark pairing as the LiveVoice dynamic EQ: a softer, lighter look.
 inline const Palette& darkPalette()
 {
     static const Palette p { true,
@@ -20,10 +25,11 @@ inline const Palette& darkPalette()
         juce::Colour (0xff3ecf6e), juce::Colour (0xfff2c94c), juce::Colour (0xffef4c4c),
         juce::Colour (0xff4c8dff), juce::Colour (0xffff8a3d), juce::Colour (0xff0d1015),
         { juce::Colour (0xff2ec4b6), juce::Colour (0xff4c8dff), juce::Colour (0xffa78bfa), juce::Colour (0xfff6c453) },
-        juce::Colour (0xfff472b6) };
+        juce::Colour (0xfff472b6), juce::Colour (0xff4c5561) };
     return p;
 }
 
+// Light: soft grey page, white cards, accents darkened for contrast on white.
 inline const Palette& lightPalette()
 {
     static const Palette p { false,
@@ -32,7 +38,7 @@ inline const Palette& lightPalette()
         juce::Colour (0xff23a056), juce::Colour (0xffcf9a10), juce::Colour (0xffd63232),
         juce::Colour (0xff2563d6), juce::Colour (0xffe0661a), juce::Colour (0xffffffff),
         { juce::Colour (0xff0f9488), juce::Colour (0xff2563d6), juce::Colour (0xff7553e0), juce::Colour (0xffc98a0a) },
-        juce::Colour (0xffd2478f) };
+        juce::Colour (0xffd2478f), juce::Colour (0xff97a1ae) };
     return p;
 }
 
@@ -63,24 +69,56 @@ inline juce::Colour traceColour (int i)
     return juce::Colour (pal().dark ? darkCols[k] : lightCols[k]);
 }
 
-// Shared drawing helpers
-inline void drawPanel (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& title)
+// One colour per measurement mic (mic 1 is the accent).
+inline juce::Colour micColour (int m)
+{
+    static const juce::uint32 darkCols[]  = { 0xff2ec4b6, 0xff4c8dff, 0xffa78bfa, 0xfff6c453, 0xffff8a3d, 0xfff472b6, 0xff8bd450, 0xff9ad0ec };
+    static const juce::uint32 lightCols[] = { 0xff0f9488, 0xff2563d6, 0xff7553e0, 0xffc98a0a, 0xffe0661a, 0xffd2478f, 0xff4b9b25, 0xff3b8fb8 };
+    const int k = ((m % 8) + 8) % 8;
+    return juce::Colour (pal().dark ? darkCols[k] : lightCols[k]);
+}
+
+// Live series card: rounded panel, border, a short accent bar and the title beside it.
+inline void drawPanel (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& title, juce::Colour accent = juce::Colour())
 {
     g.setColour (pal().panel);
-    g.fillRoundedRectangle (r, 10.0f);
+    g.fillRoundedRectangle (r, 8.0f);
     g.setColour (pal().border);
-    g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
+    g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.0f);
     if (title.isNotEmpty())
     {
-        g.setColour (pal().textDim);
-        g.setFont (font (11.0f, true));
-        g.drawText (title.toUpperCase(), r.withHeight (22.0f).withTrimmedLeft (12.0f), juce::Justification::centredLeft);
+        g.setColour (accent.isTransparent() ? pal().accent : accent);
+        g.fillRoundedRectangle (r.getX() + 12.0f, r.getY() + 11.0f, 3.0f, 12.0f, 1.5f);
+        g.setColour (pal().text);
+        g.setFont (font (13.0f, true));
+        g.drawText (title, juce::Rectangle<float> (r.getX() + 22.0f, r.getY() + 5.0f, r.getWidth() - 30.0f, 24.0f),
+                    juce::Justification::centredLeft, true);
     }
+}
+
+// Rounded readout tile, as in LiveMeter.
+inline void drawTile (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& label, const juce::String& value,
+                      const juce::String& unit, juce::Colour valueColour, float valueSize)
+{
+    const auto& p = pal();
+    g.setColour (p.panelRaised);
+    g.fillRoundedRectangle (r, 7.0f);
+    g.setColour (p.border);
+    g.drawRoundedRectangle (r.reduced (0.5f), 7.0f, 1.0f);
+    g.setColour (p.textDim);
+    g.setFont (font (10.5f, true));
+    g.drawText (label, r.reduced (10.0f, 6.0f).withHeight (14.0f), juce::Justification::centredLeft);
+    g.setFont (font (10.5f));
+    g.drawText (unit, r.reduced (10.0f, 6.0f).withHeight (14.0f), juce::Justification::centredRight);
+    g.setColour (valueColour);
+    g.setFont (monoFont (valueSize, true));
+    g.drawText (value, r.reduced (10.0f, 0.0f).withTrimmedTop (18.0f).withTrimmedBottom (3.0f), juce::Justification::centredLeft);
 }
 
 inline juce::String dbText (float v, int decimals = 1, float floorDb = -119.0f)
 {
-    return v <= floorDb ? juce::String (juce::CharPointer_UTF8 ("-\xe2\x88\x9e")) : juce::String (v, decimals);
+    if (v <= floorDb) return juce::String (juce::CharPointer_UTF8 ("-\xe2\x88\x9e"));
+    return decimals <= 0 ? juce::String (juce::roundToInt (v)) : juce::String (v, decimals);
 }
 
 inline juce::String signedText (float v, int decimals = 1)

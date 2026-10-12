@@ -5,60 +5,82 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.3.0**: guided workflow tabs, the Mic setup checklist, venue project files, JUCE 9 and ASIO on Windows
+**Version 0.4.0**: left navigation with step status, a Home page with venues and sessions, up to eight measurement mics, and the Live series look (LiveVoice, LiveMeter)
 
 ## What you need
 
-- A measurement mic (flat, omni) on an audio interface input, ideally with its calibration file.
+- One or more measurement mics (flat, omni; up to eight) on audio interface inputs, ideally with their calibration files.
 - A **reference** signal. The most accurate is a loopback: split the output that feeds the PA (or your speaker processor's
   input) back into a second interface input. If you only use the generator, Settings > Reference > *Generator
   (internal copy)* works without a cable.
 
 ## Workflow
 
-LiveAlign walks through setting up and tuning a live sound system in four tabs. You can jump to any tab at any time;
-each one shows its progress and has Back / Next buttons.
+Everything runs from the **navigation pane** on the left. Each step has its own icon and a live status: a green tick
+when it is ready, an amber `!` when it needs attention, a progress ring while it is under way, and a dash for steps
+that come in a later stage. The venue and session are at the bottom of the pane, with Settings and Full screen.
 
-| Tab | Status | What it does |
-|-----|--------|--------------|
-| **1 Mic setup** | Built | A checklist: audio interface, inputs, mic calibration file, sound level calibration, reference loopback check, room noise floor |
-| **2 Speakers** | Next stage | Build the system, speaker library, measure and overlay each speaker or group, crossover recommendation, settings summary |
-| **3 Room tuning** | Later | Several mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
-| **4 Monitoring** | Built | RTA, transfer function, impulse response, sound level, delay finder and traces, for use during the event |
+| Page | Status | What it does |
+|------|--------|--------------|
+| **Home** | Built | Venue name and notes, the venue's sessions, and where each step stands |
+| **1 Mic setup** | Built | Mic table and a checklist: interface, reference, mics connected, calibration files, sound level, loopback check, room noise floor |
+| **2 Speakers** | Next stage | Any speakers and any speaker management system: build the system, speaker library, measure and overlay each speaker or group, crossover recommendation, settings summary |
+| **3 Room tuning** | Later | All mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
+| **4 Monitoring** | Built | RTA, transfer function, impulse response, sound level, delay finder and traces |
 
-The **VST3** shows the Monitoring tab only, since it runs inside a host during the event.
+The **VST3** shows the Monitoring page only, since it runs inside a host during the event.
+
+### Home: venues and sessions
+
+A **venue file** (`.lavenue`) holds what stays with the room and the system, and a list of **sessions**. A session is
+one visit.
+
+| Belongs to the venue (carries over) | Belongs to each session |
+|------|------|
+| Venue name and notes | Traces |
+| Mics: names, inputs, positions, calibration files, SPL calibration | Sound level confirmed for this session |
+| Named positions (FOH, Centre, Rear, Balcony ...) | Loopback check |
+| Speaker setup, and whether it has been marked as changed | Room noise floor |
+| Analysis settings, target curve | Delay compensation for each mic |
+
+- **New session** starts a visit: the setup carries over and the measurements start fresh. Mic setup then asks for
+  a quick re-check: confirm each mic's sound level ("Still correct" with the calibrator on, or calibrate again), rerun
+  the loopback check and the noise floor.
+- **Open** makes another session the open one. **Compare** shows the selected session's traces beside the open
+  session's (they are not copied into it). **Rename** and **Delete** do what they say.
+- **Speakers** stay "ready" from session to session unless you press **Mark as changed** on the Home page.
+- **Change detection:** if the interface, sample rate, reference or a mic's input differs from when this session's
+  checks were done, Mic setup turns amber and Home says what to re-check.
+- New venue, Open, Save (`Cmd/Ctrl+S`) and Save as are on the Home page. The pane shows "Unsaved changes" when there
+  is something to save. Files from 0.3 open as a venue with one session.
 
 ### 1 Mic setup
 
-Each step turns green when done (amber when done with a warning). Steps you cannot do can be skipped.
+**Mic table** (up to 8 mics): name, input, position (pick one or type a new name), calibration file (load, clear, or
+mark that the mic has none), sound level (Calibrate, or Re-check level when it was calibrated in an earlier session),
+and a live level meter. **+ Add mic** adds a row; the `x` removes one. Use several mics at once on separate inputs,
+or move one mic between named positions.
 
-1. **Audio interface:** pick the interface (app only).
-2. **Inputs:** mic input and reference. It checks the mic input is live and not the same input as the reference.
-3. **Mic calibration file:** load the file that came with the mic, or mark that it has none.
-4. **Sound level calibration:** 94 or 114 dB calibrator, with a live reading; or carry on in dBFS.
-5. **Reference loopback check:** plays pink noise at -20 dBFS for 2 seconds from the generator output and finds it on
-   the reference input. Reports the interface round trip, polarity (warns if inverted) and level (warns below -36
-   or above -3 dBFS). Turn the amps down if you don't want to hear it. Not needed when the reference is the
-   generator's internal copy.
-6. **Room noise floor:** with the generator off, measures 5 seconds of background noise (LAeq and LCeq), says how
-   loud the test signal should be (15 dB above it), and keeps the spectrum as the RTA trace "Room noise floor".
+**Checklist** (each turns green when done, amber when done with a warning):
 
-The RTA and input meters sit beside the checklist so you can see what the mic hears.
+1. **Audio interface** (app only).
+2. **Reference:** the loopback input (or the generator's internal copy). Warns if a mic is on the reference input.
+3. **Mics connected:** every mic shows signal, and no two share an input.
+4. **Calibration files:** every mic has its file, or is marked as having none.
+5. **Sound level:** every mic calibrated or confirmed this session, or **No calibrator** (dBFS).
+6. **Loopback check:** pink noise at -20 dBFS for 2 seconds from the generator output, found on the reference input.
+   Reports the interface round trip, polarity (warns if inverted) and level (warns below -36 or above -3 dBFS).
+7. **Room noise floor:** with the generator off, 5 seconds on every mic (LAeq and LCeq), how loud the test signal
+   should be (15 dB above the loudest mic's noise), and each mic's spectrum kept as an RTA trace.
 
-### Venue projects
+The RTA beside the checklist shows every mic in its own colour.
 
-**Project** (top bar) > New venue, Open venue, Save (`Cmd/Ctrl+S`), Save as, Venue name and notes. A `.lavenue` file
-holds the venue name and notes, the settings, the mic calibration (the data itself, so it works on another computer),
-the traces, the target curve and the checklist. The theme is not stored in projects. The top bar shows the venue name
-and "Unsaved changes" when there is something to save. The app also remembers the open project between sessions.
-
-Traces now live in the project. Traces saved by version 0.1 or 0.2 (in `LiveAlign/Traces`) are loaded once.
-
-## Monitoring tab
+## Monitoring
 
 ### Layout
 
-The Monitoring tab shows **one, two or three graphs** (Settings > Screen), stacked or side by side. Each graph has
+The **mic picker** at the top chooses which mic the graphs and the sound level show, or the **average of all mics**
+(power average of level, mean coherence; phase is not averaged). The Monitoring page shows **one, two or three graphs** (Settings > Screen), stacked or side by side. Each graph has
 its own RTA / Transfer / Impulse buttons, so the RTA, transfer function and impulse response can all be on screen at
 once. **Full screen** (app only, key `F`, `Esc` to leave) fills the whole display.
 
@@ -77,9 +99,9 @@ running), **Reset avg** (`R`) restarts the averages. Keys `1`, `2`, `3` switch t
 
 - **Sound level:** dBA slow, A fast, C slow, Z slow, LAeq, LCeq and LAF max since the last reset. A, C and Z
   weighting follow the IEC 61672 curves. **Calibrate** opens the calibration pop-up (below) so these read dB SPL.
-- **Inputs:** level of the mic and the reference, with peak hold and a clip light.
-- **Delay compensation:** **Find delay** (`D`) listens to the last ~3 seconds, finds how late the mic hears the
-  reference and sets the compensation so the phase trace flattens. It also reports polarity. Nudge by 0.1 or 1 ms.
+- **Inputs:** level of the selected mic and the reference, with peak hold and a clip light.
+- **Delay compensation:** **Find delay** (`D`) listens to the last ~3 seconds, finds how late each mic hears the
+  reference and sets each mic's own compensation so the phase trace flattens. The panel shows the selected mic. It also reports polarity. Nudge by 0.1 or 1 ms.
   Distance uses the speed of sound at the temperature set in Settings (Celsius or Fahrenheit).
 - **Traces:** **Capture** (`C`) saves the transfer function or RTA on screen. Click the colour square to show or
   hide it, double-click to rename, and the `...` menu exports it as an FRD file (for REW, VituixCAD and similar)
@@ -101,9 +123,9 @@ the PA. In the **VST3**, audio passes through untouched unless the generator is 
 
 ## Settings
 
-Everything is in one Settings window, in sections:
+Settings (bottom of the navigation pane) holds the options that are not part of a step:
 
-- **Inputs:** audio device (app only), measurement mic input, reference source, mic calibration.
+- **Inputs:** audio device (app only), reference. Mics are set up on the Mic setup page.
 - **Transfer function:** FFT size (8k to 64k), averaging, smoothing, coherence blanking, magnitude range.
 - **RTA:** resolution (1/1 to 1/48 octave), speed, reference overlay, peak hold.
 - **Screen:** number of graphs, stacked or side by side, theme.
@@ -112,17 +134,26 @@ Everything is in one Settings window, in sections:
 
 ## Calibration
 
-**Calibrate** in the Sound level box (or Settings > Mic calibration) opens the calibration pop-up:
+Each mic is calibrated on its own, from its **Sound level** button in the mic table (or **Calibrate** in the Sound level
+box on the Monitoring page, for the selected mic):
 
-- **Sound level:** fit a calibrator to the mic and switch it on, pick its level (94 dB, 114 dB or another value),
-  wait for the live reading to settle, then press **Calibrate**. The offset can also be set by hand.
+- **Calibrate:** fit the calibrator, pick its level (94 dB, 114 dB or another value), wait for the live reading to
+  settle and press Calibrate.
+- **Still correct:** in a later session, if the calibrator reads correctly with last time's calibration, confirm it.
+- The offset can also be set by hand.
 - **Mic calibration file:** plain text, one `frequency dB [phase]` per line. miniDSP UMIK files (with the
-  `Sens Factor` header), Dayton and REW-style files, comma or tab separated, and decimal-comma files all load.
-  The correction is applied to the RTA, the sound level and the transfer function.
+  `Sens Factor` header), Dayton and REW-style files, comma or tab separated, and decimal-comma files all load. The
+  correction is applied to that mic's RTA, sound level and transfer function. The file's data is stored in the venue,
+  so the venue file works on another computer.
+
+## Look
+
+LiveAlign uses the Live series look shared with LiveVoice, LiveMeter and BroadcastMaster: the same dark and light
+palettes, cards with an accent bar beside the title, pill switches, slim sliders and the capitalised product name.
 
 ## Keys
 
-`Cmd/Ctrl+S` save project, `G` generator, `F` full screen, `Esc` leave full screen. On the Monitoring tab:
+`Cmd/Ctrl+S` save the venue, `G` generator, `F` full screen, `Esc` leave full screen. On the Monitoring page:
 `1` / `2` / `3` top graph view, `Space` freeze, `R` reset averages, `D` find delay, `C` capture (whatever the graphs
 show).
 
@@ -197,10 +228,10 @@ screenshots of every view.
 
 ## Roadmap
 
-- **Tab 2, Speakers:** any speakers and any speaker management system. Speaker library (spec sheet values, onboard
+- **Speakers (next):** any speakers and any speaker management system. Speaker library (spec sheet values, onboard
   DSP settings, imported EASE metadata, FRD / CSV / CLF data and in-app measurements), measuring and overlaying each
   speaker or group, a crossover designer that can be limited to the filter types and slopes your processor offers,
-  top / sub phase alignment, and a settings summary to enter in your processor.
-- **Tab 3, Room tuning:** multi-position averaging, target curves with suggested EQ, alignment at the seats,
-  feedback ring-out, room acoustics (RT60, EDT, C50/C80, room modes).
-- **Tab 4, Monitoring additions:** spectrogram, delay tracking, trace offsets, SPL logging with alarms, PDF reports.
+  top / sub phase alignment, and a settings summary to enter in your processor. Set up once per venue.
+- **Room tuning:** all mic positions averaged, target curves with suggested EQ, alignment at the seats, feedback
+  ring-out, room acoustics (RT60, EDT, C50/C80, room modes).
+- **Monitoring additions:** spectrogram, delay tracking, trace offsets, SPL logging with alarms, PDF reports.
