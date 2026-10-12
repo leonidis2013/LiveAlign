@@ -73,7 +73,7 @@ public:
                 // while the Speakers page measures, only the speaker on the generator's output plays
                 const int out = proc.settings.genOn.load() ? proc.settings.genOutput.load() : 0;
                 if (out != lastOut) { std::printf ("  sim: output %d at tick %d written=%llu\n", out, ticks, (unsigned long long) proc.analyzer.samplesWritten()); lastOut = out; }
-                if (out == 1) for (auto& f : top) y = f (y);
+                if (out == 1 || out == 3) { for (auto& f : top) y = f (y); if (out == 3) y *= 0.5; }
                 else if (out == 2) { for (auto& f : sub) y = f (y); y *= 2.0; }
                 else for (auto& f : system) y = f (y);
                 line[wp % L] = (float) y;
@@ -82,8 +82,11 @@ public:
                 {
                     auto& pth = paths[m];
                     // the sub stands 2 ms further from the mics than the tops
-                    const size_t extra = proc.settings.genOn.load() && proc.settings.genOutput.load() == 2 ? 96 : 0;
-                    double v = pth.gain * line[(wp - (size_t) pth.delay - extra + L) % L] + pth.gain * pth.refl * line[(wp - (size_t) (pth.delay + pth.reflDelay) - extra + L) % L];
+                    // the sub stands 2 ms further away, the front fill (output 3) 3 ms closer
+                    const int go = proc.settings.genOn.load() ? proc.settings.genOutput.load() : 0;
+                    const size_t extra = go == 2 ? 96 : 0;
+                    const size_t closer = go == 3 ? 144 : 0;
+                    double v = pth.gain * line[(wp - (size_t) pth.delay - extra + closer + L) % L] + pth.gain * pth.refl * line[(wp - (size_t) (pth.delay + pth.reflDelay) - extra + closer + L) % L];
                     for (auto& f : pth.filters) v = f (v);
                     buf.setSample (inputs[m], i, (float) (v + nd (rng) * 0.01));
                 }
@@ -160,7 +163,7 @@ public:
             stage = 1;
             stageTick = ticks;
         }
-        if (stage > 0 && stage < 5 && editor != nullptr) speakersFlow();
+        if (stage > 0 && stage < 99 && editor != nullptr) speakersFlow();
     }
 
     // Measures the simulated top and sub through the Speakers page, finds the crossover, then ends.
@@ -203,7 +206,36 @@ public:
         else if (stage == 4 && ticks == stageTick + 10)
         {
             shot ("speakers");
+            // a front fill on output 3, lined up to the main
+            la::SpeakerSource fill;
+            fill.name = "Front fill";
+            fill.role = (int) la::SpeakerRole::Fill;
+            fill.output = 3;
+            proc.system.sources.push_back (fill);
+            proc.system.sources[0].channel = (int) la::SpeakerChannel::Stereo;
+            page.refreshChoices();
+            page.newAlignment();
+            page.measureAlignment (0);
+            stage = 5;
+            stageTick = ticks;
+        }
+        else if (stage == 5 && (! page.busy() || timeout))
+        {
+            const auto& a = proc.system.alignments[0];
+            std::printf ("alignment: status '%s' ref=%d align=%d measured=%d refArr=%.3f alignArr=%.3f levels %.1f / %.1f need=%.3f\n",
+                         page.statusText().toRawUTF8(), a.ref, a.align, (int) a.measured(), a.refArrivalMs, a.alignArrivalMs, (double) a.refLevelDb,
+                         (double) a.alignLevelDb, a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs));
+            page.applyAlignmentNow();
+            std::printf ("fill delay applied: %.3f ms\n", proc.system.sources[2].proc.delayMs);
+            stage = 6;
+            stageTick = ticks;
+        }
+        else if (stage == 6 && ticks == stageTick + 10)
+        {
+            shot ("speakers-alignment");
             proc.settings.theme = 1;
+            stage = 4;
+            stageTick = ticks - 15;
         }
         else if (stage == 4 && ticks == stageTick + 25)
         {
@@ -222,12 +254,13 @@ public:
             const auto before = proc.system.sources[1].response.freq.size();
             proc.newProject();
             proc.openProject (f);
-            std::printf ("venue speakers: sources=%d subPoints=%d (was %d) lp=%d@%.1f locked=%d\n", (int) proc.system.sources.size(),
+            std::printf ("venue speakers: sources=%d subPoints=%d (was %d) lp=%d@%.1f locked=%d alignments=%d measured=%d fillCh=%d\n", (int) proc.system.sources.size(),
                          (int) proc.system.sources[1].response.freq.size(), (int) before, proc.system.sources[1].proc.lp.slope,
-                         proc.system.sources[1].proc.lp.freq, (int) proc.system.timingLocked);
+                         proc.system.sources[1].proc.lp.freq, (int) proc.system.timingLocked, (int) proc.system.alignments.size(),
+                         proc.system.alignments.empty() ? -1 : (int) proc.system.alignments[0].measured(), proc.system.sources[0].channel);
             f.deleteFile();
             sessionRoundTrip();
-            stage = 5;
+            stage = 99;
             editor.reset();
             juce::MessageManager::getInstance()->stopDispatchLoop();
         }

@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.5.0**: the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.6.0**: time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -84,8 +84,8 @@ The RTA beside the checklist shows every mic in its own colour.
 
 Set up once per venue, for any speakers and any speaker management system.
 
-- **Speakers:** up to 8 sources (a top, a sub, fills, delays, more subs ...), each with a name, a role and the
-  interface output that feeds it while it is measured. The dot at the right of a row shows or hides it on the graph.
+- **Speakers:** up to 8 sources (a top, a sub, fills, delays, more subs ...), each with a name, a role, a channel
+  (Mono, Left, Centre, Right, or Stereo L+R) and the interface output that feeds it while it is measured. The dot at the right of a row shows or hides it on the graph.
 - **Measure** (app): pick the **one mic** used for every speaker measurement (Measurement card), then measure each
   speaker on its own with your processor's crossover filters bypassed. LiveAlign plays pink noise from that speaker's
   output, finds its arrival, and averages its response. The first measurement sets the timing and **locks** it, so
@@ -103,8 +103,17 @@ Set up once per venue, for any speakers and any speaker management system.
   low speaker to the high one. It scores how flat the sum is (against what the two speakers give on their own, so a
   room notch both share does not count) and how much in phase they meet. **Adjust by hand** shows and edits the
   result: frequency, filter, slope, low speaker delay, gain and polarity, with a live readout of the sum.
-- **Settings for your processor:** a table of every speaker's high-pass, low-pass, delay, polarity and gain, and for
-  fills and delays the delay that makes them arrive with the main at the mic. **Copy settings** puts it on the
+- **Time alignment** (second tab beside Crossover): line up a fill, a delay or one side of a left / right pair with
+  another speaker where their coverage meets: the front rows for a front fill, under the balcony for a delay, the
+  centre line for left / right (not FOH, which is usually off to one side). Pick the speaker to delay, the one it
+  lines up to and the spot, move the measurement mic there, set both speakers' processor delays to 0, and press
+  **Measure both**: each plays pink noise in turn and LiveAlign finds when it arrives and how loud it is there. It then
+  gives the delay (adding any delay the reference speaker already has, such as from the crossover), plus an optional
+  **Extra** few ms so the sound still seems to come from the main (often 5 - 10 ms for delay speakers, 0 for left /
+  right). **Apply** puts it in the settings table. If the speaker you picked already arrives later, it offers to swap
+  the pair. Levels at the spot are compared too; a stereo pair should match within 1 dB. Up to 8 alignments.
+- **Settings for your processor:** a table of every speaker's channel, output, high-pass, low-pass, delay, polarity
+  and gain, and each time alignment with its spot and whether it has been applied. **Copy settings** puts it on the
   clipboard as text. **Mark speakers set up** once the settings are in your processor: the step stays ready in later
   sessions until **Mark as changed** on the Home page.
 

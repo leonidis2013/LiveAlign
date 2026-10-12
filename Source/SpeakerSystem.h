@@ -16,10 +16,21 @@ enum class SpeakerRole { Main = 0, Sub, Fill, Delay, Other };
 
 inline juce::StringArray speakerRoleNames() { return { "Main / top", "Sub", "Fill", "Delay", "Other" }; }
 
+// Where a source sits in the mix: its processor output channel.
+enum class SpeakerChannel { Mono = 0, Left, Centre, Right, Stereo };
+
+inline juce::StringArray speakerChannelNames() { return { "Mono", "Left", "Centre", "Right", "Stereo (L+R)" }; }
+inline juce::String speakerChannelShort (int c)
+{
+    static const char* n[] = { "M", "L", "C", "R", "L+R" };
+    return n[juce::jlimit (0, 4, c)];
+}
+
 struct SpeakerSource
 {
     juce::String name;
     int role = (int) SpeakerRole::Main;
+    int channel = (int) SpeakerChannel::Mono;
     int output = 0;                // generator output when measuring: 0 = all outputs, 1.. = output (n - 1)
     bool show = true;
 
@@ -36,6 +47,23 @@ struct SpeakerSource
     bool hasResponse() const { return response.freq.size() > 2; }
 };
 
+// Time alignment of one speaker (`align`) to another (`ref`) at a listening spot where their coverage meets:
+// arrivals and levels measured there, and the delay that makes `align` arrive with `ref`.
+struct Alignment
+{
+    int ref = 0, align = 1;
+    juce::String spot;              // named position (Row 3, Under balcony, Centre line ...)
+    double precedenceMs = 0.0;      // extra delay so the sound still seems to come from `ref`
+    bool hasRef = false, hasAlign = false;
+    double refArrivalMs = 0.0, alignArrivalMs = 0.0;
+    float refLevelDb = -200.0f, alignLevelDb = -200.0f;   // at the spot, same generator level
+    juce::String measuredOn;
+
+    bool measured() const { return hasRef && hasAlign; }
+    // Delay to add to `align` (relative to how they were measured, both with no processor delay).
+    double neededMs (double refProcessingMs) const { return refArrivalMs + refProcessingMs - alignArrivalMs + precedenceMs; }
+};
+
 struct SpeakerSystem
 {
     static constexpr int kMaxSources = 8;
@@ -49,6 +77,8 @@ struct SpeakerSystem
     xo::Capabilities caps;
     xo::Options opt;
     xo::Result lastResult;         // shown until something changes
+    std::vector<Alignment> alignments;
+    static constexpr int kMaxAlignments = 8;
 
     static SpeakerSystem defaults()
     {
@@ -57,6 +87,7 @@ struct SpeakerSystem
         top.name = "Main";
         top.role = (int) SpeakerRole::Main;
         top.output = 1;
+        top.channel = (int) SpeakerChannel::Stereo;
         sub.name = "Sub";
         sub.role = (int) SpeakerRole::Sub;
         sub.output = 2;
@@ -118,11 +149,28 @@ struct SpeakerSystem
         e->setAttribute ("types", types);
         e->setAttribute ("slopes", slopes);
 
+        for (const auto& a : alignments)
+        {
+            auto* c = e->createNewChildElement ("Alignment");
+            c->setAttribute ("ref", a.ref);
+            c->setAttribute ("align", a.align);
+            c->setAttribute ("spot", a.spot);
+            c->setAttribute ("precedenceMs", a.precedenceMs);
+            c->setAttribute ("hasRef", a.hasRef);
+            c->setAttribute ("hasAlign", a.hasAlign);
+            c->setAttribute ("refArrivalMs", a.refArrivalMs);
+            c->setAttribute ("alignArrivalMs", a.alignArrivalMs);
+            c->setAttribute ("refLevelDb", a.refLevelDb);
+            c->setAttribute ("alignLevelDb", a.alignLevelDb);
+            c->setAttribute ("measuredOn", a.measuredOn);
+        }
+
         for (const auto& s : sources)
         {
             auto* c = e->createNewChildElement ("Source");
             c->setAttribute ("name", s.name);
             c->setAttribute ("role", s.role);
+            c->setAttribute ("channel", s.channel);
             c->setAttribute ("output", s.output);
             c->setAttribute ("show", s.show);
             c->setAttribute ("imported", s.imported);
@@ -174,6 +222,7 @@ struct SpeakerSystem
             SpeakerSource s;
             s.name = c->getStringAttribute ("name");
             s.role = juce::jlimit (0, 4, c->getIntAttribute ("role"));
+            s.channel = juce::jlimit (0, 4, c->getIntAttribute ("channel", 0));
             s.output = juce::jlimit (0, 8, c->getIntAttribute ("output"));
             s.show = c->getBoolAttribute ("show", true);
             s.imported = c->getBoolAttribute ("imported");
@@ -207,6 +256,33 @@ struct SpeakerSystem
             }
             sources.push_back (std::move (s));
         }
+
+        for (const auto* c : e->getChildWithTagNameIterator ("Alignment"))
+        {
+            if ((int) alignments.size() >= kMaxAlignments) break;
+            Alignment a;
+            a.ref = c->getIntAttribute ("ref");
+            a.align = c->getIntAttribute ("align", 1);
+            if (a.ref < 0 || a.align < 0 || a.ref >= (int) sources.size() || a.align >= (int) sources.size()) continue;
+            a.spot = c->getStringAttribute ("spot");
+            a.precedenceMs = juce::jlimit (0.0, 30.0, c->getDoubleAttribute ("precedenceMs"));
+            a.hasRef = c->getBoolAttribute ("hasRef");
+            a.hasAlign = c->getBoolAttribute ("hasAlign");
+            a.refArrivalMs = c->getDoubleAttribute ("refArrivalMs");
+            a.alignArrivalMs = c->getDoubleAttribute ("alignArrivalMs");
+            a.refLevelDb = (float) c->getDoubleAttribute ("refLevelDb", -200.0);
+            a.alignLevelDb = (float) c->getDoubleAttribute ("alignLevelDb", -200.0);
+            a.measuredOn = c->getStringAttribute ("measuredOn");
+            alignments.push_back (a);
+        }
+    }
+
+    // After source `i` is removed: drop its alignments and renumber the rest.
+    void sourceRemoved (int i)
+    {
+        alignments.erase (std::remove_if (alignments.begin(), alignments.end(), [i] (const Alignment& a) { return a.ref == i || a.align == i; }),
+                          alignments.end());
+        for (auto& a : alignments) { if (a.ref > i) --a.ref; if (a.align > i) --a.align; }
     }
 };
 } // namespace la
