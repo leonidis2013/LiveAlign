@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -26,6 +26,7 @@ signals (Speakers, Room tuning, Monitoring); leaving for the other pages stops i
 | Page | Status | What it does |
 |------|--------|--------------|
 | **Home** | Built | Venue name and notes, the venue's sessions, and where each step stands |
+| **Venue plan** | Built | A sketch of the setup (not to scale): speakers, mics with their aim, areas, mic positions, notes; saved as a picture |
 | **1 Mic setup** | Built | Mic table and a checklist: interface, reference, mics connected, calibration files, sound level, loopback check, room noise floor |
 | **2 Speakers** | Built | Any speakers and any speaker management system: build the system, measure (one mic) or import each speaker, overlay them with the predicted sum, crossover recommendation, settings summary |
 | **3 Room tuning** | Later | All mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
@@ -56,6 +57,22 @@ one visit.
   checks were done, Mic setup turns amber and Home says what to re-check.
 - New venue, Open, Save (`Cmd/Ctrl+S`) and Save as are on the Home page. The pane shows "Unsaved changes" when there
   is something to save. Files from 0.3 open as a venue with one session.
+
+### Venue plan
+
+A simple drawing of how the setup is laid out, seen from above, **not to scale**. It is kept with the venue, and
+**Save as picture...** writes it as a PNG (white page, title block and legend) to print or share.
+
+- **Speakers** come from the Speakers step, each tagged with its name, channel, output and delay, drawn as a cabinet
+  (a square for subs) with an arrow for the way it faces.
+- **Mics** come from the Mic setup table, numbered in their colour and tagged with name, position and input. A mic
+  aimed at the speaker shows an arrow; a mic pointing up shows a dot in the circle. Selecting a mic also lets you
+  change its aim (the same setting as on Mic setup), which picks its 0 or 90 degree calibration.
+- **Area...** adds a stage, FOH, seating, balcony, choir ... (resize from the corner), **Mic position...** a named
+  position (one of the venue's positions, a time alignment spot, or a new one) and **Note...** a note.
+- Drag to move, drag the small dot to turn (15 degree steps; hold Alt for any angle, or use `[` and `]`),
+  double-click to rename, Delete to remove. New speakers and mics are placed for you; **Place missing speakers and
+  mics** puts back any that are not on the drawing.
 
 ### 1 Mic setup
 

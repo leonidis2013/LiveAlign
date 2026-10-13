@@ -9,14 +9,16 @@
 
 namespace la::ui
 {
-enum class Page { Home = 0, Mics = 1, Speakers = 2, Room = 3, Monitor = 4 };
-constexpr int kNumPages = 5;
+enum class Page { Home = 0, Mics = 1, Speakers = 2, Room = 3, Monitor = 4, Plan = 5 };
+constexpr int kNumPages = 6;
+// Order in the navigation pane: the venue plan sits under Home.
+constexpr int kPageOrder[kNumPages] = { 0, 5, 1, 2, 3, 4 };
 
 enum class StepStatus { Ready, InProgress, Attention, NotStarted, Later, None };
 
 inline const char* pageName (int i)
 {
-    static const char* names[] = { "Home", "Mic setup", "Speakers", "Room tuning", "Monitoring" };
+    static const char* names[] = { "Home", "Mic setup", "Speakers", "Room tuning", "Monitoring", "Venue plan" };
     return names[juce::jlimit (0, kNumPages - 1, i)];
 }
 
@@ -51,6 +53,12 @@ inline juce::Path pageIcon (int page)
             p.addRoundedRectangle (3.5f, 13.0f, 5.0f, 3.5f, 1.2f);
             p.addRoundedRectangle (9.5f, 6.0f, 5.0f, 3.5f, 1.2f);
             p.addRoundedRectangle (15.5f, 10.0f, 5.0f, 3.5f, 1.2f);
+            break;
+        case 5:   // venue plan: room outline with a speaker and a mic
+            p.addRoundedRectangle (3.0f, 3.5f, 18.0f, 17.0f, 2.0f);
+            p.addRectangle (7.0f, 6.5f, 4.0f, 3.0f);
+            p.addRectangle (13.0f, 6.5f, 4.0f, 3.0f);
+            p.addEllipse (10.0f, 14.0f, 4.0f, 4.0f);
             break;
         default:  // monitoring: graph with a trace
             p.startNewSubPath (3.0f, 3.0f); p.lineTo (3.0f, 21.0f); p.lineTo (21.0f, 21.0f);
@@ -273,7 +281,7 @@ private:
     juce::Rectangle<int> itemBounds (int i) const
     {
         int slot = 0;
-        for (int k = 0; k < i; ++k) slot += visible[k] ? 1 : 0;
+        for (int o = 0; o < kNumPages && kPageOrder[o] != i; ++o) slot += visible[kPageOrder[o]] ? 1 : 0;
         return { 6, 58 + slot * 48, getWidth() - 12, 44 };
     }
 
@@ -291,7 +299,7 @@ private:
     }
 
     Entry entries[kNumPages];
-    bool visible[kNumPages] { true, true, true, true, true };
+    bool visible[kNumPages] { true, true, true, true, true, true };
     int current = 0, hover = -1;
     juce::Point<int> hoverPoint;
     juce::String venueName, sessionName;

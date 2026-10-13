@@ -1042,6 +1042,7 @@ private:
             auto& system = safe->sys;
             system.sources.erase (system.sources.begin() + i);
             system.sourceRemoved (i);
+            safe->proc.plan.speakerRemoved (i);
             auto fix = [i] (int& k) { if (k == i) k = 0; else if (k > i) --k; };
             fix (system.xoHigh);
             fix (system.xoLow);

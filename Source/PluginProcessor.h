@@ -12,6 +12,7 @@
 #include "SpeakerSystem.h"
 #include "MicLocker.h"
 #include "MicCalibration.h"
+#include "VenuePlan.h"
 #include "UpdateChecker.h"
 #include "Analysis/Generator.h"
 
@@ -110,7 +111,8 @@ public:
     la::VenueMics mics;
     juce::StringArray positions;
     la::SpeakerStatus speakers;
-    la::SpeakerSystem system;           // sources, responses and crossover (venue)
+    la::SpeakerSystem system;
+    la::VenuePlan plan;                 // sketch of the setup (venue)           // sources, responses and crossover (venue)
     la::SessionChecks checks;           // the open session's checks
 
     la::Settings settings;

@@ -18,7 +18,8 @@ const char* pageSubtitle (int page)
         "Mics, inputs, calibration, loopback and room noise",
         "Measure each speaker or group and work out the crossover",
         "Measure across the room and tune toward a target",
-        "RTA, transfer function, impulse response and sound level" };
+        "RTA, transfer function, impulse response and sound level",
+        "A sketch of where the speakers and mics are (not to scale)" };
     return subs[juce::jlimit (0, kNumPages - 1, page)];
 }
 } // namespace
@@ -40,7 +41,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     processor.updates.onResult = [this] { refreshUpdate(); };
     nav.setFullScreenAvailable ((bool) la::StandaloneHooks::toggleFullScreen());
     if (! standalone)
-        for (int i = 0; i < 4; ++i) nav.setPageVisible (i, false);   // the VST3 shows Monitoring only
+        for (int i = 0; i < kNumPages; ++i) nav.setPageVisible (i, i == (int) Page::Monitor);   // the VST3 shows Monitoring only
 
     // ---- pages ----
     homePage = std::make_unique<HomePage> (p);
@@ -90,6 +91,15 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         juce::StringArray { "All mic positions, averaged", "Target curve with suggested EQ cuts", "Top and sub alignment checked at the seats",
                             "Feedback ring-out for the stage mics", "Room acoustics: reverb time, clarity, room modes" });
     addChildComponent (*speakerPage);
+
+    planPage = std::make_unique<PlanPage> (p);
+    planPage->onChanged = [this] { updateStatuses(); };
+    planPage->onExport = [this] { exportPlan(); };
+    planPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
+    {
+        askText (title, {}, initial, std::move (done));
+    };
+    addChildComponent (*planPage);
     addChildComponent (*roomPage);
 
     // ---- monitoring page ----
@@ -169,6 +179,8 @@ void LiveAlignEditor::showPage (int page)
     micPage->setVisible (page == (int) Page::Mics);
     speakerPage->setVisible (page == (int) Page::Speakers);
     roomPage->setVisible (page == (int) Page::Room);
+    planPage->setVisible (page == (int) Page::Plan);
+    if (page == (int) Page::Plan) planPage->refresh();
     const bool mon = page == (int) Page::Monitor;
     for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
@@ -286,6 +298,7 @@ void LiveAlignEditor::updateStatuses()
     else { mon.status = StepStatus::InProgress; mon.fraction = mic.fraction; mon.shortText = "Usable"; mon.detail = "Works now; finish the mic setup for calibrated, aligned readings."; }
 
     for (int i = 0; i < 4; ++i) nav.setStatus (i + 1, steps[i].status, steps[i].shortText, steps[i].fraction);
+    nav.setStatus ((int) Page::Plan, StepStatus::None, processor.plan.drawn() ? "Sketched" : "Optional sketch");
     homePage->setSteps (steps, setupChanged);
 
     const auto& list = processor.getSessions();
@@ -320,6 +333,27 @@ void LiveAlignEditor::showUpdate()
     juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::InfoIcon, "Update available", msg,
                                                                                 "Download", "Later", this),
                                   [safe] (int r) { if (safe != nullptr && r == 1) safe->processor.updates.openReleasePage(); });
+}
+
+// The venue plan as a PNG picture, to print or share.
+void LiveAlignEditor::exportPlan()
+{
+    const auto name = juce::File::createLegalFileName (processor.venueName + " plan");
+    chooser = std::make_unique<juce::FileChooser> ("Save the venue plan as a picture",
+                                                   juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name + ".png"), "*.png");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        auto f = fc.getResult();
+        if (f == juce::File()) return;
+        f = f.withFileExtension ("png");
+        const auto img = safe->planPage->getCanvas().exportImage();
+        f.deleteFile();
+        juce::FileOutputStream os (f);
+        juce::PNGImageFormat png;
+        if (! os.openedOk() || ! png.writeImageToStream (img, os)) safe->showMessage ("Not saved", "Could not write " + f.getFullPathName());
+    });
 }
 
 void LiveAlignEditor::openMicLocker()
@@ -638,6 +672,7 @@ void LiveAlignEditor::afterProjectLoaded()
     micPage->refreshChoices();
     speakerPage->refreshChoices();
     speakerPage->chooseStep();
+    planPage->refresh();
     homePage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
@@ -806,6 +841,7 @@ void LiveAlignEditor::resized()
     micPage->setBounds (r);
     speakerPage->setBounds (r);
     roomPage->setBounds (r);
+    planPage->setBounds (r);
 
     auto side = r.removeFromRight (330);
     r.removeFromRight (8);

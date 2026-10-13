@@ -9,6 +9,7 @@
 #include "UI/HomePage.h"
 #include "UI/MicSetupPage.h"
 #include "UI/SpeakersPage.h"
+#include "UI/PlanPage.h"
 #include "UI/Pages.h"
 #include "UI/MeasurePane.h"
 #include "UI/SidePanels.h"
@@ -28,6 +29,7 @@ public:
     void showPage (int page);
     void setPaneViews (int a, int b, int c);   // used by the local screenshot tool
     la::ui::SpeakersPage& speakersPage() { return *speakerPage; }
+    la::ui::PlanPage& planPageForPreview() { return *planPage; }
 
 private:
     void timerCallback() override;
@@ -40,6 +42,7 @@ private:
     void refreshUpdate();
     void showUpdate();
     void openMicLocker();
+    void exportPlan();
     void openCalibration (int mic, juce::Component* anchor);
     void loadCalFile (int mic, int angle = -1);
     void capture();
@@ -75,6 +78,7 @@ private:
     std::unique_ptr<la::ui::MicSetupPage> micPage;
     std::unique_ptr<la::ui::SpeakersPage> speakerPage;
     std::unique_ptr<la::ui::PlaceholderPage> roomPage;
+    std::unique_ptr<la::ui::PlanPage> planPage;
 
     // Monitoring page
     std::unique_ptr<la::ui::MeasurePane> panes[3];

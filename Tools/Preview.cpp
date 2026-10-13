@@ -248,6 +248,21 @@ public:
         else if (stage == 4 && ticks == stageTick + 60)
         {
             shot ("monitor-waterfall");
+            // venue plan: mics 1 and 3 aimed at the speakers, a named position and a note
+            proc.mics.position[1] = "Balcony";
+            proc.setMicAim (0, 0);
+            proc.plan.items.push_back ({ la::PlanItem::Marker, "Row 3 (alignment)", 0.36f, 0.42f, 0.0f, 0.0f });
+            proc.plan.items.push_back ({ la::PlanItem::Note, "Sub under stage lip", 0.82f, 0.12f, 0.0f, 0.0f });
+            proc.plan.edited = true;
+            editor->showPage (5);
+        }
+        else if (stage == 4 && ticks == stageTick + 75)
+        {
+            shot ("plan");
+            save (editor->planPageForPreview().getCanvas().exportImage (1600), "plan-export");
+        }
+        else if (stage == 4 && ticks == stageTick + 80)
+        {
             // the speaker system survives a venue save / open
             const auto f = dir.getChildFile ("speakers.lavenue");
             proc.saveProject (f);

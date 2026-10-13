@@ -235,6 +235,7 @@ void LiveAlignProcessor::removeMic (int mic)
         cals[(size_t) m] = cals[(size_t) m + 1];
         applyCalibration (m);
     }
+    plan.micRemoved (mic);
     cals[(size_t) n - 1].clearAll();
     applyCalibration (n - 1);
     mics.lockerId[(size_t) n - 1].clear();
@@ -459,6 +460,7 @@ void LiveAlignProcessor::resetVenue()
     positions = { "FOH", "Centre", "Rear", "Balcony" };
     speakers = {};
     system = la::SpeakerSystem::defaults();
+    plan = la::VenuePlan::defaults();
     checks = {};
     traces.clear();
     sessions.clear();
@@ -491,6 +493,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     for (const auto& p : positions) pos->createNewChildElement ("Position")->setAttribute ("name", p);
     speakers.save (*x);
     system.save (*x);
+    plan.save (*x);
 
     auto* list = x->createNewChildElement ("Sessions");
     list->setAttribute ("current", current);
@@ -534,6 +537,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     }
     speakers.load (x);
     system.load (x);
+    plan.load (x);
     // mics linked to the locker pick up their latest calibration from it
     for (int m = 0; m < la::kMaxMics; ++m)
         if (const auto* e = locker.find (mics.lockerId[(size_t) m]))
@@ -628,7 +632,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
     {
         if (! x->hasTagName ("LiveAlign")) return;
         settings.theme = juce::jlimit (0, 1, x->getIntAttribute ("theme", 0));
-        settings.currentTab = juce::jlimit (0, 4, x->getIntAttribute ("currentTab", 0));
+        settings.currentTab = juce::jlimit (0, 5, x->getIntAttribute ("currentTab", 0));
         if (const auto* project = x->getChildByName ("LiveAlignProject"))
         {
             loadProjectXml (*project);
