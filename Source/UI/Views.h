@@ -104,10 +104,15 @@ public:
             }
         }
 
-        // target curve, lined up with the live trace's 500 Hz to 2 kHz average
+        // target curve: lined up once with the live trace's 500 Hz to 2 kHz average, then it stays put (Re-level moves it)
         {
             float level = centreDb;
-            if (data != nullptr && data->tfFrames > 0) bandAverage (data->tfFreq, data->tfMag, 500.0, 2000.0, level);
+            if ((settings.targetAnchorMask.load() & 1) != 0) level = settings.targetTfLevelDb.load();
+            else if (data != nullptr && data->tfFrames >= juce::jmax (2, settings.averages.load()) && bandAverage (data->tfFreq, data->tfMag, 500.0, 2000.0, level))
+            {
+                settings.targetTfLevelDb = level;
+                settings.targetAnchorMask = settings.targetAnchorMask.load() | 1;
+            }
             drawTarget (g, settings.targetCurve.load(), axMag, magArea, yMag, level);
         }
 
@@ -282,9 +287,15 @@ public:
         if (data == nullptr || data->rtaFreq.empty()) return;
         const auto& f = data->rtaFreq;
         {
+            // lined up once with the live RTA (when there is real sound), then it stays put
             float level = 0.0f;
-            if (bandAverage (f, data->rtaMic, 500.0, 2000.0, level))
+            if ((settings.targetAnchorMask.load() & 2) != 0) drawTarget (g, settings.targetCurve.load(), ax, plot, y, settings.targetRtaLevelDb.load());
+            else if (bandAverage (f, data->rtaMic, 500.0, 2000.0, level) && level > (spl ? 50.0f : -70.0f))
+            {
+                settings.targetRtaLevelDb = level;
+                settings.targetAnchorMask = settings.targetAnchorMask.load() | 2;
                 drawTarget (g, settings.targetCurve.load(), ax, plot, y, level);
+            }
         }
         const double half = std::pow (2.0, 0.5 / bands);
 

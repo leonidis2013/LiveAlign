@@ -17,14 +17,16 @@ enum class SpeakerRole { Main = 0, Sub, Fill, Delay, Other };
 
 inline juce::StringArray speakerRoleNames() { return { "Main / top", "Sub", "Fill", "Delay", "Other" }; }
 
-// Where a source sits in the mix: its processor output channel.
-enum class SpeakerChannel { Mono = 0, Left, Centre, Right, Stereo };
+// Where a source sits in the mix: its processor output channel. Left and right are separate speakers (a pair
+// shares its settings); there is no combined L+R channel.
+enum class SpeakerChannel { Mono = 0, Left, Centre, Right };
+constexpr int kNumSpeakerChannels = 4;
 
-inline juce::StringArray speakerChannelNames() { return { "Mono", "Left", "Centre", "Right", "Stereo (L+R)" }; }
+inline juce::StringArray speakerChannelNames() { return { "Mono", "Left", "Centre", "Right" }; }
 inline juce::String speakerChannelShort (int c)
 {
-    static const char* n[] = { "M", "L", "C", "R", "L+R" };
-    return n[juce::jlimit (0, 4, c)];
+    static const char* n[] = { "M", "L", "C", "R" };
+    return n[juce::jlimit (0, kNumSpeakerChannels - 1, c)];
 }
 
 struct SpeakerSource
@@ -45,6 +47,7 @@ struct SpeakerSource
     double offsetMs = 0.0;         // imported only: extra arrival time the user enters
     bool hasArrival = false;
     double arrivalMs = 0.0;        // measured arrival at the mic (from the reference)
+    bool nearField = false;        // measured close to the speaker: its own response, timed to its own arrival
 
     xo::Processing proc;           // suggested settings for the speaker processor
 
@@ -62,10 +65,68 @@ struct Alignment
     double refArrivalMs = 0.0, alignArrivalMs = 0.0;
     float refLevelDb = -200.0f, alignLevelDb = -200.0f;   // at the spot, same generator level
     juce::String measuredOn;
+    // The crossover's own offset of `align` against `ref` (low minus high delay), when the two are the crossover pair
+    // measured close to each speaker: the arrivals at the spot line them up, this adds what the crossover needs.
+    double xoOffsetMs = 0.0;
+    // For the crossover pair: both transfer functions at the spot (same timing), and the delay of `align` that makes
+    // them add up best through the crossover region. Used instead of the arrivals when found.
+    FreqTable refTf, alignTf;   // not saved
+    double lockMs = 0.0;        // the mic delay both were measured with
+    bool phaseValid = false;
+    double phaseDelayMs = 0.0;
+    // the delays each speaker had (in the processor, as set here) while it was measured
+    double refDelayAtMeasure = 0.0, alignDelayAtMeasure = 0.0;
+    // Check: the level in the band where they overlap with each alone and with both playing (dB, -200 = not measured)
+    double checkFreq = 0.0;
+    float refBandDb = -200.0f, alignBandDb = -200.0f, sumBandDb = -200.0f;
+    juce::String checkedOn;
 
     bool measured() const { return hasRef && hasAlign; }
+    bool checked() const { return sumBandDb > -150.0f && refBandDb > -150.0f && alignBandDb > -150.0f; }
     // Delay to add to `align` (relative to how they were measured, both with no processor delay).
-    double neededMs (double refProcessingMs) const { return refArrivalMs + refProcessingMs - alignArrivalMs + precedenceMs; }
+    double neededMs (double refProcessingMs) const
+    {
+        if (phaseValid) return phaseDelayMs + alignDelayAtMeasure - refDelayAtMeasure + refProcessingMs + precedenceMs;
+        return (refArrivalMs - refDelayAtMeasure) + refProcessingMs - (alignArrivalMs - alignDelayAtMeasure) + precedenceMs + xoOffsetMs;
+    }
+
+    // The delay of `align` (ms, may be negative) that makes the two transfer functions add up best between fLo and fHi.
+    static bool phaseMatch (const FreqTable& a, const FreqTable& b, double fLo, double fHi, double& bestMs)
+    {
+        if (! a.hasPhase() || ! b.hasPhase()) return false;
+        struct Bin { double w, ma, mb, pa, pb; };
+        std::vector<Bin> bins;
+        for (size_t i = 0; i < a.freq.size(); ++i)
+        {
+            const double f = a.freq[i];
+            if (f < fLo || f > fHi) continue;
+            if (a.extra.size() == a.freq.size() && a.extra[i] < 0.4) continue;
+            const double db = b.dbAt (f), ph = b.phaseAt (f);
+            if (! std::isfinite (db) || ! std::isfinite (ph)) continue;
+            bins.push_back ({ f, std::pow (10.0, a.db[i] / 20.0), std::pow (10.0, db / 20.0), a.phase[i] * 3.14159265358979 / 180.0, ph * 3.14159265358979 / 180.0 });
+        }
+        if (bins.size() < 4) return false;
+        double best = -1.0;
+        for (double d = -20.0; d <= 20.0; d += 0.02)
+        {
+            double sum = 0.0;
+            for (const auto& x : bins)
+            {
+                const double ph = x.pb - 2.0 * 3.14159265358979 * x.w * d * 0.001;
+                const double re = x.ma * std::cos (x.pa) + x.mb * std::cos (ph), im = x.ma * std::sin (x.pa) + x.mb * std::sin (ph);
+                sum += (re * re + im * im) / ((x.ma + x.mb) * (x.ma + x.mb) + 1e-30);
+            }
+            if (sum > best) { best = sum; bestMs = d; }
+        }
+        return true;
+    }
+    // In phase, the two add up to this much more than the louder one alone.
+    double idealSumGainDb() const
+    {
+        const double a = std::pow (10.0, refBandDb / 20.0), b = std::pow (10.0, alignBandDb / 20.0);
+        return 20.0 * std::log10 ((a + b) / std::max (a, b));
+    }
+    double sumGainDb() const { return sumBandDb - std::max (refBandDb, alignBandDb); }
 };
 
 struct SpeakerSystem
@@ -79,6 +140,8 @@ struct SpeakerSystem
 
     int xoHigh = 0, xoLow = 1;     // crossover pair (indices into sources)
     bool xoChosen = false;         // the user picked the pair; otherwise it follows the speakers' roles
+    int placement = 0;             // speaker response: 0 = close to each speaker, 1 = one spot for all of them
+    double xoRelDelayMs = 0.0;     // the crossover's delay of the low speaker against the high one (low minus high)
     xo::Capabilities caps;
     xo::Options opt;
     xo::Result lastResult;         // shown until something changes
@@ -111,7 +174,8 @@ struct SpeakerSystem
     {
         if (i < 0 || i >= (int) sources.size() || ! sources[(size_t) i].hasResponse()) return {};
         const auto& s = sources[(size_t) i];
-        const double used = s.imported ? lockedDelayMs + s.offsetMs : s.delayUsedMs;
+        // close-up measurements keep their own timing: no shift to the common reference
+        const double used = s.nearField ? lockedDelayMs : s.imported ? lockedDelayMs + s.offsetMs : s.delayUsedMs;
         return xo::fromTable (s.response, used, lockedDelayMs, grid);
     }
 
@@ -184,6 +248,27 @@ struct SpeakerSystem
     {
         std::swap (xoHigh, xoLow);
         xoChosen = true;
+        xoRelDelayMs = -xoRelDelayMs;
+    }
+
+    // Both speakers of the crossover were measured close up, so their timing comes from a time alignment.
+    bool pairNearField() const
+    {
+        return pairValid() && sources[(size_t) xoHigh].nearField && sources[(size_t) xoLow].nearField
+               && sources[(size_t) xoHigh].hasResponse() && sources[(size_t) xoLow].hasResponse();
+    }
+
+    // The frequency where two speakers overlap, for the alignment check: the crossover for the pair, else 500 Hz.
+    double overlapFreq (int a, int b) const
+    {
+        if (! pairValid()) return 500.0;
+        if ((a == xoHigh && b == xoLow) || (a == xoLow && b == xoHigh))
+        {
+            const auto& f = sources[(size_t) xoHigh].proc.hp.active() ? sources[(size_t) xoHigh].proc.hp : sources[(size_t) xoLow].proc.lp;
+            if (f.active()) return f.freq;
+            return std::sqrt (opt.fMin * opt.fMax);
+        }
+        return 500.0;
     }
 
     // ---- XML ----
@@ -212,6 +297,8 @@ struct SpeakerSystem
         e->setAttribute ("xoHigh", xoHigh);
         e->setAttribute ("xoLow", xoLow);
         e->setAttribute ("xoChosen", xoChosen);
+        e->setAttribute ("placement", placement);
+        e->setAttribute ("xoRelDelayMs", xoRelDelayMs);
         e->setAttribute ("fMin", opt.fMin);
         e->setAttribute ("fMax", opt.fMax);
         juce::String types, slopes;
@@ -234,6 +321,16 @@ struct SpeakerSystem
             c->setAttribute ("refLevelDb", a.refLevelDb);
             c->setAttribute ("alignLevelDb", a.alignLevelDb);
             c->setAttribute ("measuredOn", a.measuredOn);
+            c->setAttribute ("xoOffsetMs", a.xoOffsetMs);
+            c->setAttribute ("phaseValid", a.phaseValid);
+            c->setAttribute ("phaseDelayMs", a.phaseDelayMs);
+            c->setAttribute ("refDelayAtMeasure", a.refDelayAtMeasure);
+            c->setAttribute ("alignDelayAtMeasure", a.alignDelayAtMeasure);
+            c->setAttribute ("checkFreq", a.checkFreq);
+            c->setAttribute ("refBandDb", a.refBandDb);
+            c->setAttribute ("alignBandDb", a.alignBandDb);
+            c->setAttribute ("sumBandDb", a.sumBandDb);
+            c->setAttribute ("checkedOn", a.checkedOn);
         }
 
         for (const auto& s : sources)
@@ -253,6 +350,7 @@ struct SpeakerSystem
             c->setAttribute ("offsetMs", s.offsetMs);
             c->setAttribute ("hasArrival", s.hasArrival);
             c->setAttribute ("arrivalMs", s.arrivalMs);
+            c->setAttribute ("nearField", s.nearField);
             saveFilter (*c, "hp", s.proc.hp);
             saveFilter (*c, "lp", s.proc.lp);
             c->setAttribute ("gainDb", s.proc.gainDb);
@@ -292,6 +390,8 @@ struct SpeakerSystem
         xoHigh = e->getIntAttribute ("xoHigh", 0);
         xoLow = e->getIntAttribute ("xoLow", 1);
         xoChosen = e->getBoolAttribute ("xoChosen", false);   // earlier versions picked the pair by list position
+        placement = juce::jlimit (0, 1, e->getIntAttribute ("placement", 1));   // earlier venues measured from one spot
+        xoRelDelayMs = e->getDoubleAttribute ("xoRelDelayMs");
         opt.fMin = juce::jlimit (20.0, 2000.0, e->getDoubleAttribute ("fMin", 40.0));
         opt.fMax = juce::jlimit (opt.fMin, 5000.0, e->getDoubleAttribute ("fMax", 250.0));
         const auto types = e->getStringAttribute ("types", "0110"), slopes = e->getStringAttribute ("slopes", "01110101");
@@ -304,7 +404,8 @@ struct SpeakerSystem
             SpeakerSource s;
             s.name = c->getStringAttribute ("name");
             s.role = juce::jlimit (0, 4, c->getIntAttribute ("role"));
-            s.channel = juce::jlimit (0, 4, c->getIntAttribute ("channel", 0));
+            s.channel = c->getIntAttribute ("channel", 0);
+            if (s.channel < 0 || s.channel >= kNumSpeakerChannels) s.channel = 0;   // the old "L+R" channel is mono
             s.model = c->getStringAttribute ("model");
             s.count = juce::jlimit (1, 16, c->getIntAttribute ("count", 1));
             s.linkTo = c->getIntAttribute ("linkTo", -1);
@@ -316,6 +417,7 @@ struct SpeakerSystem
             s.offsetMs = c->getDoubleAttribute ("offsetMs");
             s.hasArrival = c->getBoolAttribute ("hasArrival");
             s.arrivalMs = c->getDoubleAttribute ("arrivalMs");
+            s.nearField = c->getBoolAttribute ("nearField");
             s.proc.hp = loadFilter (*c, "hp");
             s.proc.lp = loadFilter (*c, "lp");
             s.proc.gainDb = c->getDoubleAttribute ("gainDb");
@@ -361,6 +463,16 @@ struct SpeakerSystem
             a.refLevelDb = (float) c->getDoubleAttribute ("refLevelDb", -200.0);
             a.alignLevelDb = (float) c->getDoubleAttribute ("alignLevelDb", -200.0);
             a.measuredOn = c->getStringAttribute ("measuredOn");
+            a.xoOffsetMs = c->getDoubleAttribute ("xoOffsetMs");
+            a.phaseValid = c->getBoolAttribute ("phaseValid");
+            a.phaseDelayMs = c->getDoubleAttribute ("phaseDelayMs");
+            a.refDelayAtMeasure = c->getDoubleAttribute ("refDelayAtMeasure");
+            a.alignDelayAtMeasure = c->getDoubleAttribute ("alignDelayAtMeasure");
+            a.checkFreq = c->getDoubleAttribute ("checkFreq");
+            a.refBandDb = (float) c->getDoubleAttribute ("refBandDb", -200.0);
+            a.alignBandDb = (float) c->getDoubleAttribute ("alignBandDb", -200.0);
+            a.sumBandDb = (float) c->getDoubleAttribute ("sumBandDb", -200.0);
+            a.checkedOn = c->getStringAttribute ("checkedOn");
             alignments.push_back (a);
         }
         ensurePair();   // an unset or invalid pair comes from the roles

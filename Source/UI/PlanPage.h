@@ -15,7 +15,7 @@ namespace la::ui
 class PlanCanvas : public juce::Component
 {
 public:
-    enum class Sel { None, Speaker, Mic, Item };
+    enum class Sel { None, Speaker, Mic, Item, MonitorMic };
     std::function<void()> onSelectionChanged, onChanged;
     std::function<void (int item)> onEditItem;     // double-click on an area, marker or note
 
@@ -26,7 +26,11 @@ public:
     void select (Sel t, int i) { selType_ = t; selIndex_ = i; repaint(); if (onSelectionChanged) onSelectionChanged(); }
 
     int numSpeakers() const { return juce::jmin ((int) proc.system.sources.size(), VenuePlan::kMaxSpeakers); }
-    int numMics() const { return proc.settings.micCount.load(); }
+    int numMics() const { return layer == 0 ? proc.tuningMicCount() : 0; }
+
+    // The plan has two layers over the same speakers and room: the tuning mics, or the monitoring mic.
+    void setLayer (int l) { layer = juce::jlimit (0, 1, l); if (selType_ == Sel::Mic || selType_ == Sel::MonitorMic) select (Sel::None, -1); repaint(); }
+    int getLayer() const { return layer; }
 
     // The drawing area, kept at 16:10 inside the component.
     juce::Rectangle<float> sheet() const
@@ -73,6 +77,7 @@ public:
             juce::PathStrokeType (sel ? 1.6f : 1.1f).createDashedStroke (dashed, outline, dashes, 2);
             g.setColour (sel ? p.accent : inkDim.withAlpha (0.8f));
             g.fillPath (dashed);
+            if (it.seating != PlanItem::Plain) drawChairs (g, r.withTrimmedTop (20.0f).reduced (8.0f, 4.0f), it.seating, inkDim);
             g.setColour (inkDim);
             g.setFont (font (12.0f, true));
             g.drawText (it.text.toUpperCase(), r.reduced (8.0f, 5.0f), juce::Justification::topLeft, true);
@@ -104,6 +109,7 @@ public:
 
         for (int i = 0; i < numSpeakers(); ++i) drawSpeaker (g, i, forExport, ink);
         for (int m = 0; m < numMics(); ++m) drawMic (g, m, forExport, ink);
+        if (layer == 1) drawMonitorMic (g, forExport, ink);
 
         // title block
         g.setColour (line);
@@ -118,7 +124,8 @@ public:
         g.drawText (left, title, juce::Justification::topLeft, true);
         g.setColour (inkDim);
         g.setFont (font (11.0f));
-        g.drawText ("Venue plan (not to scale)   " + LiveAlignProcessor::today(), title, juce::Justification::topRight, true);
+        g.drawText (juce::String (layer == 0 ? "Venue plan, tuning mics" : "Venue plan, monitoring mic") + " (not to scale)   " + LiveAlignProcessor::today(),
+                    title, juce::Justification::topRight, true);
         if (forExport)
         {
             g.drawText (legendText(), title.withTrimmedTop (22.0f), juce::Justification::topLeft, true);
@@ -127,8 +134,11 @@ public:
 
     void paint (juce::Graphics& g) override { render (g, sheet(), false); }
 
-    juce::Image exportImage (int width = 2000) const
+    // `forLayer`: 0 tuning mics, 1 monitoring mic, -1 the layer shown.
+    juce::Image exportImage (int width = 2000, int forLayer = -1) const
     {
+        const int keepLayer = layer;
+        if (forLayer >= 0) layer = forLayer;
         auto s = sheet();
         if (s.getWidth() < 100.0f || s.getHeight() < 100.0f) s = { 0.0f, 0.0f, 1000.0f, 640.0f };   // not shown yet
         const int height = (int) ((float) width * s.getHeight() / juce::jmax (1.0f, s.getWidth()));
@@ -140,6 +150,7 @@ public:
         const auto saved = drawArea;
         render (g, juce::Rectangle<float> (0.0f, 0.0f, (float) width / scale, (float) height / scale), true);
         drawArea = saved;
+        layer = keepLayer;
         return img;
     }
 
@@ -152,11 +163,12 @@ public:
         if (selType_ == Sel::Item && selIndex_ < (int) plan.items.size() && plan.items[(size_t) selIndex_].kind == PlanItem::Area
             && resizeHandle (plan.items[(size_t) selIndex_]).expanded (4.0f).contains (pt))
         { drag = Drag::Resize; return; }
-        if ((selType_ == Sel::Speaker || selType_ == Sel::Mic) && rotateHandle (selType_, selIndex_).getDistanceFrom (pt) < 9.0f)
+        if ((selType_ == Sel::Speaker || selType_ == Sel::Mic || selType_ == Sel::MonitorMic) && rotateHandle (selType_, selIndex_).getDistanceFrom (pt) < 9.0f)
         { drag = Drag::Rotate; return; }
 
         Sel t = Sel::None;
         int idx = -1;
+        if (layer == 1 && plan.monitorMic.placed && toPx (plan.monitorMic.x, plan.monitorMic.y).getDistanceFrom (pt) < 16.0f) { t = Sel::MonitorMic; idx = 0; }
         for (int m = numMics(); --m >= 0 && t == Sel::None;) if (toPx (plan.mics[(size_t) m].x, plan.mics[(size_t) m].y).getDistanceFrom (pt) < 16.0f) { t = Sel::Mic; idx = m; }
         for (int i = numSpeakers(); --i >= 0 && t == Sel::None;) if (toPx (plan.speakers[(size_t) i].x, plan.speakers[(size_t) i].y).getDistanceFrom (pt) < 20.0f) { t = Sel::Speaker; idx = i; }
         for (int i = (int) plan.items.size(); --i >= 0 && t == Sel::None;)
@@ -193,6 +205,7 @@ public:
             const auto n = toNorm ({ pt.x - grabOffset.x, pt.y - grabOffset.y });
             if (selType_ == Sel::Speaker) { auto& s = plan.speakers[(size_t) selIndex_]; s.x = n.x; s.y = n.y; }
             else if (selType_ == Sel::Mic) { auto& s = plan.mics[(size_t) selIndex_]; s.x = n.x; s.y = n.y; }
+            else if (selType_ == Sel::MonitorMic) { plan.monitorMic.x = n.x; plan.monitorMic.y = n.y; }
             else if (selType_ == Sel::Item) { auto& it = plan.items[(size_t) selIndex_]; it.x = n.x; it.y = n.y; }
         }
         else if (drag == Drag::Rotate)
@@ -251,7 +264,7 @@ public:
             removeSelectedItem();
             return true;
         }
-        if ((k.getTextCharacter() == '[' || k.getTextCharacter() == ']') && (selType_ == Sel::Speaker || selType_ == Sel::Mic))
+        if ((k.getTextCharacter() == '[' || k.getTextCharacter() == ']') && (selType_ == Sel::Speaker || selType_ == Sel::Mic || selType_ == Sel::MonitorMic))
         {
             symbol (selType_, selIndex_).angle += k.getTextCharacter() == ']' ? 15.0f : -15.0f;
             plan.edited = true;
@@ -271,7 +284,7 @@ public:
         if (onChanged) onChanged();
     }
 
-    PlanSymbol& symbol (Sel t, int i) { return t == Sel::Speaker ? plan.speakers[(size_t) i] : plan.mics[(size_t) i]; }
+    PlanSymbol& symbol (Sel t, int i) { return t == Sel::Speaker ? plan.speakers[(size_t) i] : t == Sel::MonitorMic ? plan.monitorMic : plan.mics[(size_t) i]; }
 
     juce::String legendText() const
     {
@@ -301,13 +314,14 @@ private:
     {
         if (selType_ == Sel::Speaker) return toPx (plan.speakers[(size_t) selIndex_].x, plan.speakers[(size_t) selIndex_].y);
         if (selType_ == Sel::Mic) return toPx (plan.mics[(size_t) selIndex_].x, plan.mics[(size_t) selIndex_].y);
+        if (selType_ == Sel::MonitorMic) return toPx (plan.monitorMic.x, plan.monitorMic.y);
         if (selType_ == Sel::Item) return toPx (plan.items[(size_t) selIndex_].x, plan.items[(size_t) selIndex_].y);
         return {};
     }
 
     juce::Point<float> rotateHandle (Sel t, int i) const
     {
-        const auto& s = t == Sel::Speaker ? plan.speakers[(size_t) i] : plan.mics[(size_t) i];
+        const auto& s = t == Sel::Speaker ? plan.speakers[(size_t) i] : t == Sel::MonitorMic ? plan.monitorMic : plan.mics[(size_t) i];
         const float r = t == Sel::Speaker ? 34.0f : 28.0f;
         const float a = juce::degreesToRadians (s.angle);
         return toPx (s.x, s.y) + juce::Point<float> (std::cos (a) * r, std::sin (a) * r);
@@ -431,6 +445,96 @@ private:
             drawSelection (g, c, 17.0f, up ? juce::Point<float>() : rotateHandle (Sel::Mic, m));
     }
 
+    void drawMonitorMic (juce::Graphics& g, bool forExport, juce::Colour ink) const
+    {
+        const auto& s = plan.monitorMic;
+        if (! s.placed) return;
+        const auto& mm = proc.monitorMic;
+        const auto col = forExport ? juce::Colour (0xffc2410c) : juce::Colour (0xfff97316);
+        const auto c = toPx (s.x, s.y);
+        const bool up = mm.aim == Cal90;
+        g.setColour (col.withAlpha (0.2f));
+        g.fillEllipse (juce::Rectangle<float> (24.0f, 24.0f).withCentre (c));
+        g.setColour (col);
+        g.drawEllipse (juce::Rectangle<float> (24.0f, 24.0f).withCentre (c), 2.0f);
+        if (up) g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre (c));
+        else
+        {
+            juce::Path arrow;
+            arrow.startNewSubPath (12.0f, 0.0f);
+            arrow.lineTo (23.0f, 0.0f);
+            arrow.startNewSubPath (18.0f, -4.0f);
+            arrow.lineTo (23.0f, 0.0f);
+            arrow.lineTo (18.0f, 4.0f);
+            arrow.applyTransform (juce::AffineTransform::rotation (juce::degreesToRadians (s.angle)).translated (c));
+            g.strokePath (arrow, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setFont (font (9.5f, true));
+        g.drawText ("M", juce::Rectangle<float> (14.0f, 12.0f).withCentre (c.translated (0.0f, up ? -18.0f : 0.0f)), juce::Justification::centred);
+        juce::String l1 = mm.name + (mm.position.isNotEmpty() ? "  -  " + mm.position : juce::String());
+        juce::String l2 = "Monitoring  -  In " + juce::String (mm.input + 1) + "  -  " + (up ? "pointing up" : "at the speaker");
+        if (const auto* e = proc.locker.find (mm.lockerId)) if (e->modelSerial().isNotEmpty()) l2 << "  -  " << e->modelSerial();
+        drawTag (g, c, l1, l2, col, ink, up ? -90.0f : s.angle);
+        if (! forExport && selType_ == Sel::MonitorMic) drawSelection (g, c, 18.0f, up ? juce::Point<float>() : rotateHandle (Sel::MonitorMic, 0));
+    }
+
+    // Chairs seen from above, to show where in the seating a mic is.
+    static void drawChairs (juce::Graphics& g, juce::Rectangle<float> r, int style, juce::Colour ink)
+    {
+        if (r.getWidth() < 30.0f || r.getHeight() < 16.0f) return;
+        g.setColour (ink.withAlpha (0.2f));
+        const float cw = 8.0f, ch = 6.0f, pitchX = 13.0f, pitchY = 18.0f;
+        auto chair = [&] (float x, float y, float angle)
+        {
+            juce::Path p;
+            p.addRoundedRectangle (-cw * 0.5f, -ch * 0.5f, cw, ch, 1.5f);
+            p.applyTransform (juce::AffineTransform::rotation (angle).translated (x, y));
+            g.fillPath (p);
+        };
+        if (style == PlanItem::Curved)
+        {
+            // rows on arcs around a point above the area (the stage), widest at the back
+            const float cx = r.getCentreX(), cy = r.getY() - r.getHeight() * 0.6f;
+            for (float rad = (r.getY() - cy) + 6.0f; rad < (r.getBottom() - cy); rad += pitchY)
+            {
+                const float span = std::asin (juce::jlimit (0.0f, 1.0f, (r.getWidth() * 0.5f - 4.0f) / rad));
+                const float aisle = 12.0f / rad;   // a centre aisle
+                for (float a = -span; a <= span; a += pitchX / rad)
+                {
+                    if (std::abs (a) < aisle) continue;
+                    const float x = cx + rad * std::sin (a), y = cy + rad * std::cos (a);
+                    if (r.contains (x, y)) chair (x, y, -a);
+                }
+            }
+            return;
+        }
+        if (style == PlanItem::Blocks)
+        {
+            // four square blocks with a cross aisle
+            const float aisleW = 18.0f;
+            const auto top = r.removeFromTop ((r.getHeight() - aisleW) * 0.5f);
+            r.removeFromTop (aisleW);
+            for (auto half : { top, r })
+            {
+                auto left = half.removeFromLeft ((half.getWidth() - aisleW) * 0.5f);
+                half.removeFromLeft (aisleW);
+                for (auto block : { left, half })
+                    for (float y = block.getY() + ch; y <= block.getBottom() - ch * 0.5f; y += pitchY)
+                        for (float x = block.getX() + cw; x <= block.getRight() - cw * 0.5f; x += pitchX)
+                            chair (x, y, 0.0f);
+            }
+            return;
+        }
+        // rows with a centre aisle
+        const float aisleW = 18.0f;
+        auto left = r.removeFromLeft ((r.getWidth() - aisleW) * 0.5f);
+        r.removeFromLeft (aisleW);
+        for (auto side : { left, r })
+            for (float y = side.getY() + ch; y <= side.getBottom() - ch * 0.5f; y += pitchY)
+                for (float x = side.getX() + cw; x <= side.getRight() - cw * 0.5f; x += pitchX)
+                    chair (x, y, 0.0f);
+    }
+
     void drawSelection (juce::Graphics& g, juce::Point<float> c, float r, juce::Point<float> handle) const
     {
         const auto& p = pal();
@@ -455,6 +559,7 @@ private:
     Drag drag = Drag::None;
     juce::Point<float> grabOffset;
     mutable juce::Rectangle<float> drawArea;
+    mutable int layer = 0;
 };
 
 //==============================================================================
@@ -534,6 +639,28 @@ public:
         rotRightButton.onClick = [this] { turn (15.0f); };
         resetButton.onClick = [this] { proc.plan.placeMissing (canvas.numSpeakers(), canvas.numMics()); changed(); };
 
+        for (int i = 0; i < 2; ++i)
+        {
+            layerButtons[i].setButtonText (i == 0 ? "Tuning mics" : "Monitoring mic");
+            layerButtons[i].setRadioGroupId (8401);
+            layerButtons[i].setClickingTogglesState (true);
+            layerButtons[i].onClick = [this, i] { if (layerButtons[i].getToggleState()) { canvas.setLayer (i); refreshSelection(); } };
+            layerButtons[i].setTooltip (i == 0 ? "Show where the tuning mics were (the tuning report uses this)"
+                                               : "Show where the monitoring mic is (the monitoring report uses this)");
+            addAndMakeVisible (layerButtons[i]);
+        }
+        layerButtons[0].setToggleState (true, juce::dontSendNotification);
+        seatingBox.addItemList (PlanItem::seatingNames(), 1);
+        seatingBox.setTooltip ("Chairs drawn in this area, to show where a seat or mic is");
+        seatingBox.onChange = [this]
+        {
+            const int i = canvas.selIndex();
+            if (canvas.selType() != PlanCanvas::Sel::Item || i < 0 || i >= (int) proc.plan.items.size()) return;
+            proc.plan.items[(size_t) i].seating = seatingBox.getSelectedItemIndex();
+            changed();
+        };
+        addChildComponent (seatingBox);
+
         positionBox.setEditableText (true);
         positionBox.setTextWhenNothingSelected ("Position");
         positionBox.setTooltip ("Where this mic is (the same as Position on Mic setup). Dropping a mic on a named position also sets it.");
@@ -550,6 +677,7 @@ public:
         aimBox.onChange = [this]
         {
             if (canvas.selType() == PlanCanvas::Sel::Mic) { proc.setMicAim (canvas.selIndex(), aimBox.getSelectedItemIndex()); changed(); }
+            if (canvas.selType() == PlanCanvas::Sel::MonitorMic) { proc.monitorMic.aim = aimBox.getSelectedItemIndex() == 0 ? Cal0 : Cal90; proc.applyMonitorMic(); changed(); }
         };
         addAndMakeVisible (aimBox);
 
@@ -558,6 +686,7 @@ public:
     }
 
     PlanCanvas& getCanvas() { return canvas; }
+    void setLayer (int l) { layerButtons[juce::jlimit (0, 1, l)].setToggleState (true, juce::dontSendNotification); canvas.setLayer (l); refreshSelection(); }
 
     // After a venue is opened, or speakers or mics changed.
     void refresh()
@@ -594,6 +723,13 @@ public:
         canvas.setBounds (r);
 
         auto c = side.reduced (14, 0).withTrimmedTop (36);
+        {
+            auto lr = c.removeFromTop (28);
+            layerButtons[0].setBounds (lr.removeFromLeft ((lr.getWidth() - 6) / 2));
+            lr.removeFromLeft (6);
+            layerButtons[1].setBounds (lr);
+            c.removeFromTop (10);
+        }
         helpArea = c.removeFromTop (78);
         c.removeFromTop (8);
         addLabel = c.removeFromTop (18);
@@ -618,14 +754,15 @@ public:
         aimBox.setBounds (c.removeFromTop (30));
         c.removeFromTop (6);
         positionBox.setBounds (c.removeFromTop (30));
+        seatingBox.setBounds (aimBox.getBounds());
         const auto itemRow = rotLeftButton.getBounds().getUnion (rotRightButton.getBounds());
         renameButton.setBounds (itemRow.withWidth ((itemRow.getWidth() - 8) / 2));
         deleteButton.setBounds (itemRow.withTrimmedLeft ((itemRow.getWidth() + 8) / 2));
 
         auto bottom = side.reduced (14, 14).removeFromBottom (30);
-        reportButton.setBounds (bottom);
-        exportButton.setBounds (bottom.translated (0, -38));
-        resetButton.setBounds (bottom.translated (0, -76));
+        reportButton.setVisible (false);   // the reports have their own pages now
+        exportButton.setBounds (bottom);
+        resetButton.setBounds (bottom.translated (0, -38));
     }
 
 private:
@@ -656,7 +793,7 @@ private:
         it.kind = kind;
         it.text = text;
         it.x = 0.5f; it.y = 0.45f;
-        if (kind == PlanItem::Area) { it.w = 0.25f; it.h = 0.14f; }
+        if (kind == PlanItem::Area) { it.w = 0.25f; it.h = 0.14f; if (text.containsIgnoreCase ("seat") || text.containsIgnoreCase ("balcony") || text.containsIgnoreCase ("overflow")) it.seating = PlanItem::Rows; }
         proc.plan.items.push_back (it);
         canvas.select (PlanCanvas::Sel::Item, (int) proc.plan.items.size() - 1);
         changed();
@@ -674,7 +811,7 @@ private:
     void turn (float deg)
     {
         const auto t = canvas.selType();
-        if (t != PlanCanvas::Sel::Speaker && t != PlanCanvas::Sel::Mic) return;
+        if (t != PlanCanvas::Sel::Speaker && t != PlanCanvas::Sel::Mic && t != PlanCanvas::Sel::MonitorMic) return;
         canvas.symbol (t, canvas.selIndex()).angle += deg;
         changed();
     }
@@ -683,11 +820,15 @@ private:
     {
         const auto t = canvas.selType();
         const int i = canvas.selIndex();
-        const bool sym = t == PlanCanvas::Sel::Speaker || t == PlanCanvas::Sel::Mic;
+        const bool sym = t == PlanCanvas::Sel::Speaker || t == PlanCanvas::Sel::Mic || t == PlanCanvas::Sel::MonitorMic;
         const bool item = t == PlanCanvas::Sel::Item && i >= 0 && i < (int) proc.plan.items.size();
         rotLeftButton.setVisible (sym);
         rotRightButton.setVisible (sym);
-        aimBox.setVisible (t == PlanCanvas::Sel::Mic);
+        aimBox.setVisible (t == PlanCanvas::Sel::Mic || t == PlanCanvas::Sel::MonitorMic);
+        const bool area = item && proc.plan.items[(size_t) i].kind == PlanItem::Area;
+        seatingBox.setVisible (area);
+        if (area) seatingBox.setSelectedItemIndex (proc.plan.items[(size_t) i].seating, juce::dontSendNotification);
+        if (t == PlanCanvas::Sel::MonitorMic) aimBox.setSelectedItemIndex (proc.monitorMic.aim == Cal0 ? 0 : 1, juce::dontSendNotification);
         positionBox.setVisible (t == PlanCanvas::Sel::Mic);
         if (t == PlanCanvas::Sel::Mic && ! positionBox.hasKeyboardFocus (true))
         {
@@ -705,6 +846,7 @@ private:
             selectionText = (s.name.isNotEmpty() ? s.name : "Speaker " + juce::String (i + 1)) + "\n" + speakerRoleNames()[s.role] + ", "
                             + speakerChannelNames()[s.channel];
         }
+        else if (t == PlanCanvas::Sel::MonitorMic) selectionText = proc.monitorMic.name + "\nMonitoring mic" + (proc.monitorMic.position.isNotEmpty() ? ", " + proc.monitorMic.position : juce::String());
         else if (t == PlanCanvas::Sel::Mic) selectionText = proc.mics.nameOf (i) + (proc.mics.position[(size_t) i].isNotEmpty() ? "\n" + proc.mics.position[(size_t) i] : juce::String());
         else if (item)
         {
@@ -721,7 +863,8 @@ private:
     juce::TextButton reportButton { "Tuning report (PDF)..." }, exportButton { "Save as picture..." }, resetButton { "Place missing speakers and mics" };
     juce::TextButton renameButton { "Rename" }, deleteButton { "Remove" };
     juce::TextButton rotLeftButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x9f\xb2  Turn left")) }, rotRightButton { juce::String (juce::CharPointer_UTF8 ("Turn right  \xe2\x9f\xb3")) };
-    juce::ComboBox aimBox, positionBox;
+    juce::ComboBox aimBox, positionBox, seatingBox;
+    juce::TextButton layerButtons[2];
     juce::Rectangle<int> side, helpArea, addLabel, selLabel, selArea;
     juce::String selectionText;
     int lastSig = -1;

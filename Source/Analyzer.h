@@ -30,6 +30,8 @@ struct MicResult
     float splAS = -200, splAF = -200, splCS = -200, splZS = -200, leqA = -200, leqC = -200, maxAF = -200;
     float rawZSlowDbfs = -200;   // uncalibrated Z slow, used by the calibrate button
     bool isSpl = false;
+    std::vector<float> ir;       // impulse response, only while Settings::captureAllIr is on (room acoustics)
+    int irZero = 0;
 };
 
 struct Snapshot
@@ -562,6 +564,18 @@ private:
         s.ir.resize ((size_t) n);
         for (int i = 0; i < n; ++i) s.ir[(size_t) i] = ir[(size_t) ((i - pre + n) % n)];
         s.irZero = pre;
+        // every mic's impulse response, while the room is measured for its acoustics
+        if (settings.captureAllIr.load())
+            for (int m = 0; m < count; ++m)
+            {
+                std::vector<float> h;
+                chains[(size_t) m].tf.impulse (h);
+                const int hn = (int) h.size();
+                auto& dst = s.mics[(size_t) m].ir;
+                dst.resize ((size_t) hn);
+                for (int i = 0; i < hn; ++i) dst[(size_t) i] = h[(size_t) ((i - pre + hn) % hn)];
+                s.mics[(size_t) m].irZero = pre;
+            }
 
         const std::lock_guard<std::mutex> lock (snapMutex);
         s.serial = published.serial + 1;

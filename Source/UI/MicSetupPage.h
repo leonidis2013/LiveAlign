@@ -787,6 +787,7 @@ private:
             checks.noiseA[(size_t) m] = rep.laeq[(size_t) m];
             checks.noiseC[(size_t) m] = rep.lceq[(size_t) m];
             checks.noiseIsSpl[(size_t) m] = rep.isSpl[(size_t) m];
+            if (m < (int) rep.bandDb.size()) checks.setNoiseOctaves (m, rep.bandFreq, rep.bandDb[(size_t) m]);
 
             // keep each mic's noise spectrum as an RTA trace (replacing an older one)
             const auto name = "Noise floor: " + proc.mics.nameOf (m);

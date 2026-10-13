@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// Home: the venue, its sessions, and where each step of the setup stands.
+// Home: the venue, its sessions, and where each step stands, laid out the same way as the navigation pane
+// (Setup, Tuning in order, Monitoring, Reports).
+#include <array>
 #include <functional>
 #include "NavRail.h"
 #include "../PluginProcessor.h"
@@ -55,8 +57,6 @@ public:
         setupButton (openButton, [this] { if (onOpenVenue) onOpenVenue(); }, "Open a venue file");
         setupButton (saveButton, [this] { if (onSave) onSave(); }, "Save the venue and all its sessions (Cmd/Ctrl+S)");
         setupButton (saveAsButton, [this] { if (onSaveAs) onSaveAs(); }, "Save under a new name");
-        setupButton (reportButton, [this] { if (onReport) onReport(); },
-                     "A PDF of this session's tuning: venue plan, speakers and processor settings, mics with serials, checks and measurements");
 
         setupButton (newSessionButton, [this] { if (onNewSession) onNewSession(); },
                      "Start a new visit to this venue. The mics, positions and speaker setup carry over; measurements start fresh.");
@@ -77,13 +77,15 @@ public:
         startTimerHz (4);
     }
 
-    void setSteps (const StepInfo (&s)[4], bool setupChanged)
+    // Status of every page (indexed by la::ui::Page).
+    void setSteps (const std::array<StepInfo, kNumPages>& s, bool setupChanged)
     {
         bool diff = setupChanged != changedSetup;
-        for (int i = 0; i < 4; ++i)
-            diff = diff || s[i].status != steps[i].status || s[i].detail != steps[i].detail;
+        for (int i = 0; i < kNumPages; ++i)
+            diff = diff || s[(size_t) i].status != steps[(size_t) i].status || s[(size_t) i].detail != steps[(size_t) i].detail
+                   || std::abs (s[(size_t) i].fraction - steps[(size_t) i].fraction) > 0.01f;
         if (! diff) return;
-        for (int i = 0; i < 4; ++i) steps[i] = s[i];
+        steps = s;
         changedSetup = setupChanged;
         repaint();
     }
@@ -103,7 +105,7 @@ public:
         const auto& p = pal();
         drawPanel (g, venueCard.toFloat(), "Venue");
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
-        drawPanel (g, stepsCard.toFloat(), "Setup and tuning");
+        drawPanel (g, stepsCard.toFloat(), "Where this venue stands");
         {
             // what the outlines mean
             auto key = stepsCard.toFloat().reduced (14.0f, 0.0f).withTrimmedTop (9.0f).withHeight (16.0f);
@@ -162,48 +164,49 @@ public:
                         right.withTrimmedRight (8), juce::Justification::centredRight, true);
         }
 
-        // steps
-        for (int i = 0; i < 4; ++i)
+        // the workflow, grouped as in the navigation pane
+        for (const auto& h : headings)
         {
-            auto r = stepRow (i);
+            g.setColour (p.textFaint);
+            g.setFont (font (10.5f, true));
+            g.drawText (navHeading (h.first), h.second, juce::Justification::centredLeft);
+            g.setColour (p.border);
+            g.drawHorizontalLine (h.second.getCentreY(), (float) h.second.getX() + juce::GlyphArrangement::getStringWidth (font (10.5f, true), navHeading (h.first)) + 8.0f,
+                                  (float) h.second.getRight());
+        }
+        for (const auto& row : rows)
+        {
+            const int i = row.first;
+            auto r = row.second;
+            const auto& st = steps[(size_t) i];
             const bool over = i == hoverStep;
             g.setColour (over ? p.panelRaised.brighter (p.dark ? 0.05f : 0.0f) : p.panelRaised);
             g.fillRoundedRectangle (r.toFloat(), 7.0f);
-            // required and not done yet: amber, as on the mic setup steps; needs attention: stronger amber; done: green
-            const auto st = steps[i].status;
-            const bool required = (i == 0 || i == 1) && (st == StepStatus::NotStarted || st == StepStatus::InProgress);
+            const bool required = (i == (int) Page::Mics || i == (int) Page::Response || i == (int) Page::Crossover || i == (int) Page::Room)
+                                  && (st.status == StepStatus::NotStarted || st.status == StepStatus::InProgress);
             juce::Colour edge = over ? p.accent.withAlpha (0.7f) : p.border;
             float width = over ? 1.4f : 1.0f;
-            if (st == StepStatus::Attention) { edge = p.warn.withAlpha (0.95f); width = 1.6f; }
-            else if (required) { edge = p.warn.withAlpha (over ? 0.85f : 0.6f); width = 1.4f; }
-            else if (st == StepStatus::Ready && ! over) { edge = p.good.withAlpha (0.5f); width = 1.2f; }
+            if (st.status == StepStatus::Attention) { edge = p.warn.withAlpha (0.95f); width = 1.6f; }
+            else if (required) { edge = p.warn.withAlpha (over ? 0.85f : 0.55f); width = 1.3f; }
+            else if (st.status == StepStatus::Ready && ! over) { edge = p.good.withAlpha (0.5f); width = 1.2f; }
             g.setColour (edge);
             g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 7.0f, width);
 
-            // chevron: the whole card opens the step
-            juce::Path chev;
-            const float cx = (float) r.getRight() - 24.0f, cy = (float) r.getCentreY();
-            chev.startNewSubPath (cx - 3.0f, cy - 7.0f);
-            chev.lineTo (cx + 4.0f, cy);
-            chev.lineTo (cx - 3.0f, cy + 7.0f);
-            g.setColour (over ? p.accent : p.textDim);
-            g.strokePath (chev, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-            auto icon = pageIcon (i + 1);
-            icon.applyTransform (juce::AffineTransform::translation ((float) r.getX() + 14.0f, (float) r.getCentreY() - 12.0f));
+            auto icon = pageIcon (i);
+            icon.applyTransform (juce::AffineTransform::translation ((float) r.getX() + 12.0f, (float) r.getCentreY() - 12.0f));
             g.setColour (p.accent);
-            g.strokePath (icon, juce::PathStrokeType (1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            drawStatusBadge (g, juce::Rectangle<float> (20.0f, 20.0f).withCentre ({ (float) r.getX() + 60.0f, (float) r.getCentreY() }),
-                             steps[i].status, steps[i].fraction);
+            g.strokePath (icon, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            drawStatusBadge (g, juce::Rectangle<float> (16.0f, 16.0f).withCentre ({ (float) r.getRight() - 18.0f, (float) r.getCentreY() }), st.status, st.fraction);
 
-            auto text = r.withTrimmedLeft (82).withTrimmedRight (i == 1 ? 230 : 50);
+            auto text = r.withTrimmedLeft (48).withTrimmedRight (i == (int) Page::Speakers ? 180 : 36);
+            juce::String name = pageName (i);
+            if (isTuningStep (i)) name = juce::String (tuningStepNumber (i)) + "  " + name;
             g.setColour (p.text);
-            g.setFont (font (14.0f, true));
-            g.drawText (juce::String (i + 1) + "  " + pageName (i + 1), text.removeFromTop (r.getHeight() / 2).withTrimmedTop (4),
-                        juce::Justification::bottomLeft, true);
-            g.setColour (steps[i].status == StepStatus::Attention ? p.warn : p.textDim);
-            g.setFont (font (12.0f));
-            g.drawText (steps[i].detail, text.withTrimmedTop (2), juce::Justification::topLeft, true);
+            g.setFont (font (13.5f, true));
+            g.drawText (name, text.removeFromTop (r.getHeight() / 2).withTrimmedTop (3), juce::Justification::bottomLeft, true);
+            g.setColour (st.status == StepStatus::Attention ? p.warn : p.textDim);
+            g.setFont (font (11.5f));
+            g.drawText (st.detail.isNotEmpty() ? st.detail : st.shortText, text.withTrimmedTop (1), juce::Justification::topLeft, true);
         }
 
         drawSessionSummary (g);
@@ -254,24 +257,48 @@ public:
         s.removeFromBottom (8);
         listArea = s;
 
-        // steps card
+        // steps card: two columns, the tuning steps on the right
         auto st = stepsCard.reduced (16).withTrimmedTop (30);
         changeLine = st.removeFromBottom (22);
-        const int rowH = 74;
-        for (int i = 0; i < 4; ++i)
+        rows.clear();
+        headings.clear();
+        const int rowH = 50, gap = 6, headH = 24;
+        auto colA = st.removeFromLeft ((st.getWidth() - 12) / 2);
+        st.removeFromLeft (12);
+        auto colB = st;
+        auto column = [&] (juce::Rectangle<int>& col, std::initializer_list<int> order)
         {
-            stepRows[i] = st.removeFromTop (rowH);
-            st.removeFromTop (10);
-        }
-        summaryArea = st.withTrimmedTop (6);
-        reportButton.setBounds (summaryArea.getRight() - 200, summaryArea.getY() + 2, 200, 26);
-        speakerChangedButton.setBounds (stepRows[1].withTrimmedRight (50).removeFromRight (160).withSizeKeepingCentre (160, 28));
+            for (int k : order)
+            {
+                if (k < 0) { headings.push_back ({ k, col.removeFromTop (headH) }); continue; }
+                rows.push_back ({ k, col.removeFromTop (rowH) });
+                col.removeFromTop (gap);
+            }
+            return col;
+        };
+        auto restA = column (colA, { -1, (int) Page::Mics, (int) Page::Speakers, (int) Page::Plan, -3, (int) Page::MonitorMic, (int) Page::Monitor });
+        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Crossover, (int) Page::Align, (int) Page::Room, (int) Page::Feedback, (int) Page::Acoustics });
+        auto bottom = colA.getBottom() > colB.getBottom() ? restA : restB;
+        juce::ignoreUnused (bottom);
+        // reports along the bottom of both columns
+        auto reports = juce::Rectangle<int>::leftTopRightBottom (stepsCard.getX() + 16, juce::jmax (restA.getY(), restB.getY()), stepsCard.getRight() - 16,
+                                                                 changeLine.getY());
+        headings.push_back ({ -4, reports.removeFromTop (headH) });
+        auto rr = reports.removeFromTop (rowH);
+        rows.push_back ({ (int) Page::TuningReport, rr.removeFromLeft ((rr.getWidth() - 12) / 2) });
+        rr.removeFromLeft (12);
+        rows.push_back ({ (int) Page::MonitorReport, rr });
+        reports.removeFromTop (gap + 6);
+        summaryArea = reports;
+        for (const auto& row : rows)
+            if (row.first == (int) Page::Speakers)
+                speakerChangedButton.setBounds (row.second.withTrimmedRight (40).removeFromRight (130).withSizeKeepingCentre (130, 26));
     }
 
     void mouseMove (const juce::MouseEvent& e) override
     {
         int h = -1;
-        for (int i = 0; i < 4; ++i) if (stepRows[i].contains (e.getPosition())) h = i;
+        for (const auto& row : rows) if (row.second.contains (e.getPosition()) && ! speakerChangedButton.getBounds().contains (e.getPosition())) h = row.first;
         if (h != hoverStep) { hoverStep = h; setMouseCursor (h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); repaint (stepsCard); }
     }
 
@@ -279,8 +306,8 @@ public:
 
     void mouseUp (const juce::MouseEvent& e) override
     {
-        for (int i = 0; i < 4; ++i)
-            if (stepRows[i].contains (e.getPosition())) { if (onGoTo) onGoTo (i + 1); return; }
+        for (const auto& row : rows)
+            if (row.second.contains (e.getPosition())) { if (onGoTo) onGoTo (row.first); return; }
         for (int i = 0; i < visibleRows(); ++i)
             if (rowBounds (i).contains (e.getPosition()) && i + scroll < (int) proc.getSessions().size())
             {
@@ -416,17 +443,16 @@ private:
 
     int visibleRows() const { return juce::jmax (1, listArea.getHeight() / 34); }
     juce::Rectangle<int> rowBounds (int i) const { return listArea.withHeight (30).translated (0, i * 34); }
-    juce::Rectangle<int> stepRow (int i) const { return stepRows[i]; }
 
     LiveAlignProcessor& proc;
     juce::TextEditor nameEditor, notesEditor;
     juce::TextButton newVenueButton { "New venue..." }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
         newSessionButton { "New session" }, openSessionButton { "Open" }, compareButton { "Compare" }, renameButton { "Rename" },
-        deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" }, reportButton { "Tuning report (PDF)..." };
+        deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" };
     juce::Rectangle<int> summaryArea;
     juce::Rectangle<int> venueCard, sessionsCard, stepsCard, venueFileLine, sessionsHint, listArea, changeLine;
-    juce::Rectangle<int> stepRows[4];
-    StepInfo steps[4];
+    std::vector<std::pair<int, juce::Rectangle<int>>> rows, headings;   // (page or heading, bounds)
+    std::array<StepInfo, kNumPages> steps {};
     bool changedSetup = false;
     int selected = 0, scroll = 0, hoverStep = -1;
 };

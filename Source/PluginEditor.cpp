@@ -5,7 +5,7 @@
 #include "UI/SettingsPanel.h"
 #include "UI/CalibrationPanel.h"
 #include "StandaloneHooks.h"
-#include "Report/TuningReport.h"
+#include "Report/MonitoringReport.h"
 
 using namespace la::ui;
 
@@ -15,11 +15,19 @@ const char* pageSubtitle (int page)
 {
     static const char* subs[] = {
         "The venue, its sessions, and where each step stands",
-        "Mics, inputs, calibration, loopback and room noise",
-        "Measure each speaker or group and work out the crossover",
-        "Measure across the room and tune toward a target",
-        "RTA, transfer function, impulse response and sound level",
+        "The tuning mics: inputs, calibration, loopback and room noise",
+        "The speakers in the system: roles, channels, outputs and the settings for your processor",
         "A sketch of where the speakers and mics are (not to scale)",
+        "Tuning step 1: measure each speaker on its own",
+        "Tuning step 2: the crossover between the top and the sub",
+        "Tuning step 3: line the speakers up in time where they meet",
+        "Tuning step 4: measure the listening positions and EQ toward a target",
+        "Tuning step 5: ring out the stage mics",
+        "Tuning step 6: what the room does: reverberation, clarity, intelligibility, modes and noise",
+        "The mic for monitoring the event, kept apart from the tuning mics",
+        "RTA, transfer function, impulse response, waterfall and sound level, with the monitor mic",
+        "A PDF of this session's tuning",
+        "A PDF of the event: sound level against the limit, the monitor mic and the traces",
         "The measurement mics you own: model, serial number, calibration files and sound level" };
     return subs[juce::jlimit (0, kNumPages - 1, page)];
 }
@@ -42,7 +50,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     processor.updates.onResult = [this] { refreshUpdate(); };
     nav.setLockerAvailable (standalone);
     if (! standalone)
-        for (int i = 0; i < kNumPages; ++i) nav.setPageVisible (i, i == (int) Page::Monitor);   // the VST3 shows Monitoring only
+        for (int i = 0; i < kNumPages; ++i) nav.setPageVisible (i, i == (int) Page::Monitor || i == (int) Page::MonitorMic);   // the VST3 only monitors
 
     // ---- pages ----
     homePage = std::make_unique<HomePage> (p);
@@ -63,7 +71,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     homePage->onOpenVenue = [this] { confirmDiscard ([this] { openProject(); }); };
     homePage->onSave = [this] { saveProject (false); };
     homePage->onSaveAs = [this] { saveProject (true); };
-    homePage->onReport = [this] { exportReport(); };
+    homePage->onReport = [this] { showPage ((int) Page::TuningReport); };
     homePage->onNewSession = [this] { newSession(); };
     homePage->onChanged = [this] { afterProjectLoaded(); };
     homePage->onRenameSession = [this] (int i)
@@ -111,7 +119,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     planPage = std::make_unique<PlanPage> (p);
     planPage->onChanged = [this] { if (roomPage != nullptr) roomPage->refresh(); updateStatuses(); };
     planPage->onExport = [this] { exportPlan(); };
-    planPage->onReport = [this] { exportReport(); };
+    planPage->onReport = [this] { showPage ((int) Page::TuningReport); };
     planPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
     {
         askText (title, {}, initial, std::move (done));
@@ -124,13 +132,32 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     addChildComponent (*lockerPage);
     addChildComponent (*roomPage);
 
+    feedbackPage = std::make_unique<FeedbackPage> (p);
+    feedbackPage->onChanged = [this] { updateStatuses(); };
+    addChildComponent (*feedbackPage);
+    acousticsPage = std::make_unique<AcousticsPage> (p);
+    acousticsPage->onChanged = [this] { updateStatuses(); };
+    addChildComponent (*acousticsPage);
+    monitorMicPage = std::make_unique<MonitorMicPage> (p);
+    monitorMicPage->onChanged = [this] { updateStatuses(); tracesPanel.syncTarget(); for (auto& pane : panes) pane->sync(); };
+    monitorMicPage->onCalibrate = [this] { openCalibration (kMonitorMic, nullptr); };
+    monitorMicPage->onLoadCal = [this] (int angle) { loadCalFile (kMonitorMic, angle); };
+    addChildComponent (*monitorMicPage);
+    tuningReportPage = std::make_unique<ReportPage> (p, false);
+    tuningReportPage->onExport = [this] { exportReport (false); };
+    addChildComponent (*tuningReportPage);
+    monitorReportPage = std::make_unique<ReportPage> (p, true);
+    monitorReportPage->onExport = [this] { exportReport (true); };
+    addChildComponent (*monitorReportPage);
+
     // ---- monitoring page ----
     for (int i = 0; i < 3; ++i)
     {
         panes[i] = std::make_unique<MeasurePane> (p.settings, p.traces, i);
         addChildComponent (*panes[i]);
     }
-    for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel })
+    for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
+                     (juce::Component*) &eventPanel })
         addChildComponent (*c);
 
     micPicker.setTooltip ("Which mic the graphs and sound level show, or the average of all mics");
@@ -150,7 +177,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     resetButton.onClick = [this] { settings.requestResetAverages = true; };
     addChildComponent (resetButton);
 
-    splPanel.onCalibrate = [this] { openCalibration (settings.focusMic(), &splPanel.calibrateButton()); };
+    splPanel.onCalibrate = [this] { openCalibration (processor.isMonitorMode() ? kMonitorMic : settings.focusMic(), &splPanel.calibrateButton()); };
     tracesPanel.onCapture = [this] { capture(); };
     tracesPanel.onImport = [this] { importTrace(); };
     tracesPanel.onRename = [this] (int i) { renameTrace (i); };
@@ -245,32 +272,51 @@ void LiveAlignEditor::showPage (int page)
     shownPage = page;
     nav.setCurrent (page);
 
+    const bool spk = page == (int) Page::Speakers || page == (int) Page::Response || page == (int) Page::Crossover || page == (int) Page::Align;
+    const bool mon = page == (int) Page::Monitor;
+    // monitoring uses its own mic: switch the analysis over on the monitoring pages, back on the others
+    const bool monitoringPage = mon || page == (int) Page::MonitorMic;
+    if (monitoringPage != processor.isMonitorMode())
+    {
+        processor.setMonitorMode (monitoringPage);
+        pickerMics = -1;
+        refreshMicPicker();
+    }
+    if (page != (int) Page::Feedback) feedbackPage->stopListening();
+
     homePage->setVisible (page == (int) Page::Home);
     micPage->setVisible (page == (int) Page::Mics);
-    speakerPage->setVisible (page == (int) Page::Speakers);
+    speakerPage->setVisible (spk);
+    if (spk) speakerPage->setMode (page == (int) Page::Speakers ? 0 : page == (int) Page::Response ? 1 : page == (int) Page::Crossover ? 2 : 3);
     roomPage->setVisible (page == (int) Page::Room);
     planPage->setVisible (page == (int) Page::Plan);
     lockerPage->setVisible (page == (int) Page::Locker);
+    feedbackPage->setVisible (page == (int) Page::Feedback);
+    acousticsPage->setVisible (page == (int) Page::Acoustics);
+    monitorMicPage->setVisible (page == (int) Page::MonitorMic);
+    tuningReportPage->setVisible (page == (int) Page::TuningReport);
+    monitorReportPage->setVisible (page == (int) Page::MonitorReport);
     nav.setLockerActive (page == (int) Page::Locker);
     if (page == (int) Page::Locker) lockerPage->refresh();
     if (page == (int) Page::Plan) planPage->refresh();
-    const bool mon = page == (int) Page::Monitor;
     for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &micPicker })
+                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel })
         c->setVisible (mon);
+    micPicker.setVisible (false);   // monitoring has one mic
     // the generator is for tuning; monitoring listens to the programme
-    generator.setVisible (page == (int) Page::Speakers || page == (int) Page::Room);
+    generator.setVisible (page == (int) Page::Response || page == (int) Page::Crossover || page == (int) Page::Align || page == (int) Page::Room);
     if (! generator.isVisible() && page != (int) Page::Mics) { settings.genOn = false; generator.sync(); }
 
-    // live monitoring follows the FOH mic unless another one has been picked
-    if (mon && ! monitorMicChosen && settings.selectedMic.load() < la::kAverageMic)
-        for (int m = 0; m < settings.micCount.load(); ++m)
-            if (processor.mics.position[(size_t) m].containsIgnoreCase ("FOH")) { settings.selectedMic = m; refreshMicPicker(); break; }
     if (page == (int) Page::Home) homePage->refresh();
     if (page == (int) Page::Mics) { micPage->refreshChoices(); if (snapSerial > 0) micPage->setSnapshot (snap); }
-    if (page == (int) Page::Speakers) { speakerPage->refreshChoices(); speakerPage->setSnapshot (snap); }
+    if (spk) speakerPage->setSnapshot (snap);
     if (page == (int) Page::Room) { roomPage->refresh(); roomPage->setSnapshot (snap); }
+    if (page == (int) Page::Feedback) { feedbackPage->refresh(); feedbackPage->setSnapshot (snap); }
+    if (page == (int) Page::Acoustics) acousticsPage->refresh();
+    if (page == (int) Page::MonitorMic) { monitorMicPage->refresh(); monitorMicPage->setSnapshot (snap); }
+    if (page == (int) Page::TuningReport) tuningReportPage->refresh();
+    if (page == (int) Page::MonitorReport) monitorReportPage->refresh();
     updateStatuses();
     resized();
     repaint();
@@ -323,6 +369,13 @@ void LiveAlignEditor::refreshMicPicker()
     }
     const int sel = settings.selectedMic.load();
     micPicker.setSelectedId (sel >= la::kAverageMic && n > 1 ? 100 : juce::jlimit (0, n - 1, sel) + 1, juce::dontSendNotification);
+    if (processor.isMonitorMode())
+    {
+        const auto& mm = processor.monitorMic;
+        inputPanel.setMicLabel (mm.name + "  In " + juce::String (mm.input + 1));
+        splPanel.setMicName ("From " + mm.name + (mm.position.isNotEmpty() ? "  -  " + mm.position : juce::String()) + "  (Monitor mic page)");
+        return;
+    }
     inputPanel.setMicLabel (processor.mics.nameOf (settings.focusMic()) + "  In " + juce::String (settings.micInput[settings.focusMic()].load() + 1));
     {
         const int fm = settings.focusMic();
@@ -336,65 +389,93 @@ void LiveAlignEditor::refreshMicPicker()
 // Readiness of each step, for the navigation pane and the home page.
 void LiveAlignEditor::updateStatuses()
 {
-    StepInfo steps[4];
+    std::array<StepInfo, kNumPages> steps {};
+    for (auto& st : steps) st.status = StepStatus::None;
     const int done = micPage->completedSteps(), total = MicSetupPage::kSteps;
     const bool setupChanged = processor.checks.setup.isNotEmpty() && processor.checks.setup != processor.setupFingerprint();
     bool everCalibrated = false;
-    for (int m = 0; m < settings.micCount.load(); ++m) everCalibrated = everCalibrated || settings.micSplCalibrated[m].load();
-
-    auto& mic = steps[0];
-    if (setupChanged) { mic.status = StepStatus::Attention; mic.shortText = "Wiring changed"; mic.detail = "The interface or mic wiring changed since this session's checks."; }
-    else if (done == total && ! micPage->hasWarning()) { mic.status = StepStatus::Ready; mic.shortText = "Ready"; mic.detail = "All " + juce::String (total) + " checks done for this session."; }
-    else if (micPage->hasWarning()) { mic.status = StepStatus::Attention; mic.shortText = juce::String (done) + " of " + juce::String (total) + ", warning"; mic.detail = "A check needs attention."; }
-    else
+    for (int m = 0; m < processor.tuningMicCount(); ++m) everCalibrated = everCalibrated || (! processor.isMonitorMode() || m > 0 ? settings.micSplCalibrated[m].load() : false);
+    auto set = [&steps] (Page pg, StepStatus s, const juce::String& shortText, const juce::String& detail, float fraction = 0.0f)
     {
-        mic.status = done == 0 ? StepStatus::NotStarted : StepStatus::InProgress;
-        mic.fraction = (float) done / (float) total;
-        mic.shortText = juce::String (done) + " of " + juce::String (total) + " done";
-        mic.detail = everCalibrated ? "Set up before: re-check the sound level, loopback and noise for this session."
-                                    : "Not set up yet: mics, calibration, loopback and room noise.";
-    }
+        auto& st = steps[(size_t) pg];
+        st.status = s; st.shortText = shortText; st.detail = detail; st.fraction = fraction;
+    };
 
-    auto& spk = steps[1];
+    // ---- setup ----
+    if (setupChanged) set (Page::Mics, StepStatus::Attention, "Wiring changed", "The interface or mic wiring changed since this session's checks.");
+    else if (done == total && ! micPage->hasWarning()) set (Page::Mics, StepStatus::Ready, "Ready", "All " + juce::String (total) + " checks done for this session.");
+    else if (micPage->hasWarning()) set (Page::Mics, StepStatus::Attention, juce::String (done) + " of " + juce::String (total) + ", warning", "A check needs attention.");
+    else set (Page::Mics, done == 0 ? StepStatus::NotStarted : StepStatus::InProgress, juce::String (done) + " of " + juce::String (total) + " done",
+              everCalibrated ? "Set up before: re-check the sound level, loopback and noise for this session." : "Mics, calibration, loopback and room noise.",
+              (float) done / (float) total);
+
+    const auto& sys = processor.system;
+    int measured = 0;
+    for (int i = 0; i < (int) sys.sources.size(); ++i) measured += sys.covered (i) ? 1 : 0;
+    const int nSrc = (int) sys.sources.size();
+    if (processor.speakers.changed) set (Page::Speakers, StepStatus::Attention, "Marked changed", "The system was marked as changed: measure the speakers again.");
+    else if (processor.speakers.configured) set (Page::Speakers, StepStatus::Ready, "Set up", "Set up " + processor.speakers.configuredOn + ". Nothing has changed since.");
+    else set (Page::Speakers, StepStatus::None, juce::String (nSrc) + (nSrc == 1 ? " speaker" : " speakers"),
+              juce::String (nSrc) + (nSrc == 1 ? " speaker" : " speakers") + " in the system. Mark them as set up once tuned.");
+    set (Page::Plan, StepStatus::None, processor.plan.drawn() ? "Sketched" : "Optional sketch", processor.plan.drawn() ? "Sketched." : "An optional sketch of the setup.");
+
+    // ---- tuning ----
+    if (measured == 0) set (Page::Response, StepStatus::NotStarted, "Not started", "Measure each speaker on its own.");
+    else if (measured < nSrc) set (Page::Response, StepStatus::InProgress, juce::String (measured) + " of " + juce::String (nSrc), "Measure the remaining speakers.",
+                                   (float) measured / (float) juce::jmax (1, nSrc));
+    else set (Page::Response, StepStatus::Ready, "All measured", "Every speaker measured.");
+
+    if (sys.pairValid() && sys.pairInverted()) set (Page::Crossover, StepStatus::Attention, "Pair upside down", "HIGH is a sub and LOW a top: swap them.");
+    else if (speakerPage->crossoverDone()) set (Page::Crossover, StepStatus::Ready, speakerPage->stepSummaryText (1), "Crossover set: " + speakerPage->stepSummaryText (1) + ".");
+    else set (Page::Crossover, measured == nSrc && nSrc > 0 ? StepStatus::InProgress : StepStatus::NotStarted, "Not set", "Find the crossover between the top and the sub.", 0.3f);
+
+    if (speakerPage->alignmentRequired())
     {
-        const auto& srcs = processor.system.sources;
-        int measured = 0;
-        for (int i = 0; i < (int) srcs.size(); ++i) measured += processor.system.covered (i) ? 1 : 0;
-        const int n = (int) srcs.size();
-        if (processor.speakers.changed) { spk.status = StepStatus::Attention; spk.shortText = "Marked changed"; spk.detail = "The system was marked as changed: measure the speakers again."; }
-        else if (processor.speakers.configured) { spk.status = StepStatus::Ready; spk.shortText = "Set up"; spk.detail = "Set up " + processor.speakers.configuredOn + ". Nothing has changed since."; }
-        else if (measured == 0) { spk.status = StepStatus::NotStarted; spk.shortText = "Not started"; spk.detail = "Measure each speaker, find the crossover, then mark the speakers as set up."; }
-        else
-        {
-            spk.status = StepStatus::InProgress;
-            spk.fraction = (float) measured / (float) juce::jmax (1, n) * 0.8f + (processor.system.lastResult.valid ? 0.2f : 0.0f);
-            spk.shortText = juce::String (measured) + " of " + juce::String (n) + " measured";
-            spk.detail = measured < n ? "Measure the remaining speakers, then find the crossover."
-                                      : "All measured: find the crossover, enter the settings, then mark the speakers as set up.";
-        }
+        if (speakerPage->alignmentsDone()) set (Page::Align, StepStatus::Ready, "Lined up", speakerPage->stepSummaryText (2) + ".");
+        else set (Page::Align, sys.alignments.empty() ? StepStatus::NotStarted : StepStatus::InProgress, speakerPage->stepSummaryText (2),
+                  "Line the speakers up where they meet.", 0.5f);
     }
+    else set (Page::Align, sys.alignments.empty() ? StepStatus::None : speakerPage->alignmentsDone() ? StepStatus::Ready : StepStatus::InProgress,
+              sys.alignments.empty() ? "Optional" : speakerPage->stepSummaryText (2), "Optional: left / right, fills and delays.");
 
-    auto& room = steps[2];
     {
         const auto& rt = processor.room;
         const int before = rt.count (false), after = rt.count (true);
-        if (rt.tuned) { room.status = StepStatus::Ready; room.shortText = "Tuned"; room.detail = "Room tuned " + rt.tunedOn + "."; }
-        else if (before == 0) { room.status = StepStatus::NotStarted; room.shortText = "Not started"; room.detail = "Measure the system at the listening positions, then compare with the target."; }
+        if (rt.tuned) set (Page::Room, StepStatus::Ready, "Tuned", "Room tuned " + rt.tunedOn + ".");
+        else if (before == 0) set (Page::Room, StepStatus::NotStarted, "Not started", "Measure the listening positions, then compare with the target.");
+        else set (Page::Room, StepStatus::InProgress, juce::String (before) + (before == 1 ? " position" : " positions") + (after > 0 ? ", checking" : ""),
+                  roomPage->nextHint(), after > 0 ? 0.85f : (rt.suggested.empty() ? 0.4f : 0.6f));
+    }
+    {
+        const auto& fb = processor.feedback;
+        if (fb.done) set (Page::Feedback, StepStatus::Ready, "Rung out", juce::String ((int) fb.rings.size()) + " rings on " + fb.micName + ".");
+        else if (fb.rings.empty()) set (Page::Feedback, StepStatus::None, "Optional", "Ring out the stage mics.");
+        else set (Page::Feedback, StepStatus::InProgress, juce::String ((int) fb.rings.size()) + " rings", "Rings found on " + fb.micName + ".", 0.5f);
+    }
+    {
+        const int n = processor.room.acousticsCount();
+        if (n == 0) set (Page::Acoustics, StepStatus::None, "From Room EQ", "Worked out from the Room EQ measurements.");
         else
         {
-            room.status = StepStatus::InProgress;
-            room.fraction = after > 0 ? 0.85f : (rt.suggested.empty() ? 0.4f : 0.6f);
-            room.shortText = juce::String (before) + (before == 1 ? " position" : " positions") + (after > 0 ? ", checking" : "");
-            room.detail = roomPage->nextHint();
+            const auto a = processor.room.acousticsAverage();
+            set (Page::Acoustics, StepStatus::Ready, "RT " + juce::String (a.rtMid(), 1) + " s, STI " + juce::String (a.sti, 2),
+                 "Reverberation " + juce::String (a.rtMid(), 2) + " s, speech " + la::acoustics::stiRating (a.sti) + " (STI " + juce::String (a.sti, 2) + ").");
         }
     }
 
-    auto& mon = steps[3];
-    if (mic.status == StepStatus::Ready) { mon.status = StepStatus::Ready; mon.shortText = "Ready"; mon.detail = "Mics checked: ready to monitor."; }
-    else { mon.status = StepStatus::InProgress; mon.fraction = mic.fraction; mon.shortText = "Usable"; mon.detail = "Works now; finish the mic setup for calibrated, aligned readings."; }
+    // ---- monitoring (no ticks: it runs during the event) ----
+    {
+        const auto& mm = processor.monitorMic;
+        const bool calOk = mm.cal.any() || mm.noCalFile;
+        set (Page::MonitorMic, calOk && mm.splCalibrated ? StepStatus::Ready : StepStatus::None, mm.name,
+             mm.name + (mm.position.isNotEmpty() ? " at " + mm.position : juce::String()) + (mm.splCalibrated ? ", calibrated." : ", sound level not calibrated."));
+        set (Page::Monitor, StepStatus::None, processor.splLog.empty() ? "" : "Logging", "Live RTA, transfer function and sound level.");
+    }
+    // ---- reports ----
+    set (Page::TuningReport, StepStatus::None, "", "The tuning as a PDF.");
+    set (Page::MonitorReport, StepStatus::None, "", processor.splLog.empty() ? "The event as a PDF." : "The event as a PDF, with the sound level log.");
 
-    for (int i = 0; i < 4; ++i) nav.setStatus (i + 1, steps[i].status, steps[i].shortText, steps[i].fraction);
-    nav.setStatus ((int) Page::Plan, StepStatus::None, processor.plan.drawn() ? "Sketched" : "Optional sketch");
+    for (int i = 0; i < kNumPages; ++i) nav.setStatus (i, steps[(size_t) i].status, steps[(size_t) i].shortText, steps[(size_t) i].fraction);
     homePage->setSteps (steps, setupChanged);
 
     const auto& list = processor.getSessions();
@@ -408,46 +489,66 @@ void LiveAlignEditor::refreshNext()
 {
     juce::String text;
     std::function<void()> action;
-    auto goTo = [this] (int pg) { return [this, pg] { showPage (pg); }; };
+    auto goTo = [this] (Page pg) { return [this, pg] { showPage ((int) pg); }; };
+    auto cont = [&] (Page pg) { text = "Continue to " + juce::String (pageName ((int) pg)); action = goTo (pg); };
     switch ((Page) shownPage)
     {
         case Page::Home:
         {
-            const auto m = micPage->nextHint(), s = speakerPage->nextHint();
-            if (m.isNotEmpty()) { text = "Start: Mic setup"; action = goTo ((int) Page::Mics); }
-            else if (s.isNotEmpty()) { text = "Next: Speakers"; action = goTo ((int) Page::Speakers); }
-            else if (! processor.room.tuned) { text = "Next: Room tuning"; action = goTo ((int) Page::Room); }
-            else { text = "Export the tuning report"; action = [this] { exportReport(); }; }
+            if (micPage->nextHint().isNotEmpty()) { text = "Start: Mics"; action = goTo (Page::Mics); }
+            else if (! speakerPage->responsesDone()) { text = "Next: Speaker response"; action = goTo (Page::Response); }
+            else if (! speakerPage->crossoverDone()) { text = "Next: Crossover"; action = goTo (Page::Crossover); }
+            else if (speakerPage->alignmentRequired() && ! speakerPage->alignmentsDone()) { text = "Next: Time alignment"; action = goTo (Page::Align); }
+            else if (! processor.room.tuned) { text = "Next: Room EQ"; action = goTo (Page::Room); }
+            else { text = "Tuning report"; action = goTo (Page::TuningReport); }
             break;
         }
         case Page::Mics:
         {
             const auto h = micPage->nextHint();
             if (h.isNotEmpty()) { text = "Next: " + h; action = [this] { micPage->showNextStep(); }; }
-            else { text = "Continue to Speakers"; action = goTo ((int) Page::Speakers); }
+            else cont (Page::Speakers);
             break;
         }
-        case Page::Speakers:
-        {
-            const auto h = speakerPage->nextHint();
-            if (h.isNotEmpty()) { text = "Next: " + h; action = [this] { speakerPage->chooseStep(); }; }
-            else { text = "Continue to Room tuning"; action = goTo ((int) Page::Room); }
+        case Page::Speakers: cont (processor.plan.drawn() ? Page::Response : Page::Plan); break;
+        case Page::Plan: cont (Page::Response); break;
+        case Page::Response: if (speakerPage->busy()) text = "Measuring..."; else if (! speakerPage->responsesDone()) { text = "Next: measure each speaker"; } else cont (Page::Crossover); break;
+        case Page::Crossover:
+            if (speakerPage->busy()) text = "Searching...";
+            else if (! speakerPage->crossoverDone()) { text = "Next: Find the best crossover"; action = [this] { speakerPage->findCrossover(); }; }
+            else cont (speakerPage->alignmentRequired() ? Page::Align : Page::Room);
             break;
-        }
+        case Page::Align: if (speakerPage->busy()) text = "Measuring..."; else cont (Page::Room); break;
         case Page::Room:
         {
             const auto h = roomPage->nextHint();
             if (roomPage->busy()) text = "Measuring...";
             else if (h.isNotEmpty()) { text = "Next: " + (h.startsWith ("Enter") ? juce::String ("Measure after EQ") : h); action = [this] { roomPage->doNext(); }; }
-            else { text = "Continue to the Venue plan"; action = goTo ((int) Page::Plan); }
+            else cont (Page::Feedback);
             break;
         }
-        case Page::Plan: text = "Export the tuning report"; action = [this] { exportReport(); }; break;
+        case Page::Feedback:
+        {
+            const auto h = feedbackPage->nextHint();
+            if (h.isNotEmpty() && ! feedbackPage->isListening()) { text = "Next: " + h; action = [this] { feedbackPage->doNext(); }; }
+            else if (! feedbackPage->isListening()) cont (Page::Acoustics);
+            break;
+        }
+        case Page::Acoustics: text = "Tuning report"; action = goTo (Page::TuningReport); break;
+        case Page::MonitorMic:
+        {
+            const auto h = monitorMicPage->nextHint();
+            if (h.isNotEmpty()) { text = "Next: " + h; action = [this] { monitorMicPage->doNext(); }; }
+            else cont (Page::Monitor);
+            break;
+        }
+        case Page::TuningReport: text = "Export the PDF"; action = [this] { exportReport (false); }; break;
+        case Page::MonitorReport: text = "Export the PDF"; action = [this] { exportReport (true); }; break;
         case Page::Monitor:
         case Page::Locker:
         default: break;
     }
-    if (text.isNotEmpty() && text != "Measuring...") text << juce::String (juce::CharPointer_UTF8 ("  \xe2\x86\x92"));
+    if (text.isNotEmpty() && action != nullptr) text << juce::String (juce::CharPointer_UTF8 ("  \xe2\x86\x92"));
     nextAction = std::move (action);
     const bool show = standalone && text.isNotEmpty();
     const bool layout = show != nextButton.isVisible() || text != nextButton.getButtonText();
@@ -455,8 +556,8 @@ void LiveAlignEditor::refreshNext()
     nextButton.setEnabled (nextAction != nullptr);
     nextButton.setTooltip (shownPage == (int) Page::Room ? roomPage->nextHint() : juce::String());
     nextButton.setVisible (show);
-    nextButton.setColour (juce::TextButton::buttonColourId, pal().accent);
-    nextButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
+    nextButton.setColour (juce::TextButton::buttonColourId, nextAction != nullptr ? pal().accent : pal().panelRaised);
+    nextButton.setColour (juce::TextButton::textColourOffId, nextAction != nullptr ? pal().onAccent : pal().textDim);
     if (layout) resized();
 }
 
@@ -511,27 +612,40 @@ void LiveAlignEditor::exportPlan()
 }
 
 // The tuning report as a PDF, opened when written.
-void LiveAlignEditor::exportReport()
+// The venue plan picture for a report: the tuning layer or the monitoring layer.
+juce::Image LiveAlignEditor::planImage (int layer)
+{
+    processor.plan.placeMissing (juce::jmin ((int) processor.system.sources.size(), la::VenuePlan::kMaxSpeakers), processor.tuningMicCount());
+    return planPage->getCanvas().exportImage (2200, layer);
+}
+
+void LiveAlignEditor::exportReportTo (bool monitoring, const juce::File& f)
+{
+    processor.syncMonitorFromSlot();
+    const auto opt = (monitoring ? monitorReportPage : tuningReportPage)->options();
+    const auto err = monitoring ? la::report::writeMonitoringReport (processor, f, planImage (1), opt)
+                                : la::report::writeTuningReport (processor, f, planImage (0), opt);
+    if (err.isNotEmpty()) showMessage ("Report not saved", err);
+}
+
+void LiveAlignEditor::exportReport (bool monitoring)
 {
     const auto& sessions = processor.getSessions();
     const int cur = processor.currentSession();
     const auto name = juce::File::createLegalFileName (processor.venueName + " - " + (cur < (int) sessions.size() ? sessions[(size_t) cur].name : juce::String ("session"))
-                                                       + " - tuning report");
+                                                       + (monitoring ? " - monitoring report" : " - tuning report"));
     auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory()
                                                      : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
-    chooser = std::make_unique<juce::FileChooser> ("Save the tuning report", dir.getChildFile (name + ".pdf"), "*.pdf");
+    chooser = std::make_unique<juce::FileChooser> (monitoring ? "Save the monitoring report" : "Save the tuning report", dir.getChildFile (name + ".pdf"), "*.pdf");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
-    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe] (const juce::FileChooser& fc)
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe, monitoring] (const juce::FileChooser& fc)
     {
         if (safe == nullptr) return;
         auto f = fc.getResult();
         if (f == juce::File()) return;
         f = f.withFileExtension ("pdf");
-        safe->processor.plan.placeMissing (juce::jmin ((int) safe->processor.system.sources.size(), la::VenuePlan::kMaxSpeakers), safe->settings.micCount.load());
-        const auto plan = safe->planPage->getCanvas().exportImage (1800);
-        const auto err = la::report::writeTuningReport (safe->processor, f, plan, la::UserPrefs::get ("reportAuthor"));
-        if (err.isNotEmpty()) { safe->showMessage ("Report not saved", err); return; }
-        f.startAsProcess();
+        safe->exportReportTo (monitoring, f);
+        if (f.existsAsFile()) f.startAsProcess();
     });
 }
 
@@ -578,16 +692,42 @@ void LiveAlignEditor::loadLockerCal (const juce::String& id, int angle)
 
 void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
 {
-    auto panel = std::make_unique<CalibrationPanel> (settings, mic, processor.mics.nameOf (mic),
-        [this, mic] { return mic < (int) snap.mics.size() ? snap.mics[(size_t) mic].rawZSlowDbfs : -200.0f; },
-        [this, mic]
+    std::unique_ptr<CalibrationPanel> panel;
+    if (mic == kMonitorMic)
+    {
+        // the monitoring mic: analysis slot 1 while monitoring
+        if (! processor.isMonitorMode()) processor.setMonitorMode (true);
+        panel = std::make_unique<CalibrationPanel> (settings, 0, processor.monitorMic.name,
+            [this] { return ! snap.mics.empty() ? snap.mics[0].rawZSlowDbfs : -200.0f; },
+            [this]
+            {
+                const auto& c = processor.monitorMic.cal;
+                const int a = c.pick (processor.monitorMic.aim);
+                return a < 0 ? juce::String() : la::calAngleName (a) + ": " + c.name[a];
+            });
+        panel->onLoadFile = [this] { loadCalFile (kMonitorMic); };
+        panel->onClearFile = [this] { processor.monitorMic.cal.clearAll(); processor.applyMonitorMic(); monitorMicPage->refresh(); };
+        panel->onVerified = [this]
         {
-            const int a = processor.activeCalAngle (mic);
-            return a < 0 ? juce::String() : la::calAngleName (a) + ": " + processor.calibrations (mic).name[a];
-        });
-    panel->onLoadFile = [this, mic] { loadCalFile (mic); };
-    panel->onClearFile = [this, mic] { processor.clearCalibration (mic); };
-    panel->onVerified = [this, mic] { processor.checks.splVerified[(size_t) mic] = true; };
+            processor.syncMonitorFromSlot();
+            processor.monitorMic.splDate = LiveAlignProcessor::today();
+            processor.monitorMic.configured = true;
+            monitorMicPage->refresh();
+        };
+    }
+    else
+    {
+        panel = std::make_unique<CalibrationPanel> (settings, mic, processor.mics.nameOf (mic),
+            [this, mic] { return mic < (int) snap.mics.size() ? snap.mics[(size_t) mic].rawZSlowDbfs : -200.0f; },
+            [this, mic]
+            {
+                const int a = processor.activeCalAngle (mic);
+                return a < 0 ? juce::String() : la::calAngleName (a) + ": " + processor.calibrations (mic).name[a];
+            });
+        panel->onLoadFile = [this, mic] { loadCalFile (mic); };
+        panel->onClearFile = [this, mic] { processor.clearCalibration (mic); };
+        panel->onVerified = [this, mic] { processor.checks.splVerified[(size_t) mic] = true; };
+    }
     auto area = anchor != nullptr ? getLocalArea (anchor, anchor->getLocalBounds()) : getLocalBounds().withSizeKeepingCentre (10, 10);
     juce::CallOutBox::launchAsynchronously (std::move (panel), area, this);
 }
@@ -595,8 +735,9 @@ void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
 // angle -1: one or both files at once; each goes to 0 or 90 degrees from its name (e.g. miniDSP's "_90deg").
 void LiveAlignEditor::loadCalFile (int mic, int angle)
 {
-    const auto title = angle < 0 ? "Load the calibration file(s) for " + processor.mics.nameOf (mic) + " (select both 0 and 90 degree files if you have them)"
-                                 : "Load the " + la::calAngleName (angle) + " calibration file for " + processor.mics.nameOf (mic);
+    const auto who = mic == kMonitorMic ? processor.monitorMic.name : processor.mics.nameOf (mic);
+    const auto title = angle < 0 ? "Load the calibration file(s) for " + who + " (select both 0 and 90 degree files if you have them)"
+                                 : "Load the " + la::calAngleName (angle) + " calibration file for " + who;
     chooser = std::make_unique<juce::FileChooser> (title, juce::File(), "*.txt;*.cal;*.frd;*.csv");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
     const int chooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
@@ -617,13 +758,15 @@ void LiveAlignEditor::loadCalFile (int mic, int angle)
         juce::StringArray done, errors;
         for (int i = 0; i < files.size(); ++i)
         {
-            const auto err = safe->processor.loadCalibrationFile (mic, files[i], angles[i]);
+            const auto err = mic == kMonitorMic ? safe->processor.loadMonitorCalibration (files[i], angles[i])
+                                                : safe->processor.loadCalibrationFile (mic, files[i], angles[i]);
             if (err.isNotEmpty()) errors.add (err);
             else done.add (la::calAngleName (angles[i]) + ": " + files[i].getFileName());
         }
         if (! errors.isEmpty()) safe->showMessage ("Calibration file not loaded", errors.joinIntoString ("\n"));
-        else if (angle < 0) safe->micPage->setNote (mic, "Loaded " + done.joinIntoString (", ") + ". Wrong angle? Use the file menu to load it as the other one.");
-        safe->micPage->refreshChoices();
+        else if (angle < 0 && mic >= 0) safe->micPage->setNote (mic, "Loaded " + done.joinIntoString (", ") + ". Wrong angle? Use the file menu to load it as the other one.");
+        if (mic == kMonitorMic) safe->monitorMicPage->refresh();
+        else safe->micPage->refreshChoices();
     });
 }
 
@@ -866,9 +1009,11 @@ void LiveAlignEditor::afterProjectLoaded()
 {
     micPage->refreshChoices();
     speakerPage->refreshChoices();
-    speakerPage->chooseStep();
     planPage->refresh();
     roomPage->refresh();
+    feedbackPage->refresh();
+    acousticsPage->refresh();
+    monitorMicPage->refresh();
     homePage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
@@ -923,10 +1068,25 @@ void LiveAlignEditor::timerCallback()
         }
         else if (shownPage == (int) Page::Mics)
             micPage->setSnapshot (snap);
-        else if (shownPage == (int) Page::Speakers)
+        else if (speakerPage->isVisible())
             speakerPage->setSnapshot (snap);
         else if (shownPage == (int) Page::Room)
             roomPage->setSnapshot (snap);
+        else if (shownPage == (int) Page::Feedback)
+            feedbackPage->setSnapshot (snap);
+        else if (shownPage == (int) Page::MonitorMic)
+            monitorMicPage->setSnapshot (snap);
+    }
+
+    // the sound level log of the event, about once a second while monitoring
+    if (processor.isMonitorMode() && snapSerial > 0)
+    {
+        const double now = (double) juce::Time::currentTimeMillis() / 1000.0;
+        if (now - lastLogSecond >= 1.0)
+        {
+            lastLogSecond = now;
+            processor.splLog.add (now, snap.splAS, snap.splCS, snap.splAF);
+        }
     }
 
     if (monitoring)
@@ -935,6 +1095,7 @@ void LiveAlignEditor::timerCallback()
         inputPanel.setLevels (processor.takeMicPeak (m), processor.micRmsDb (m), processor.takeRefPeak(), processor.refRmsDb());
         delayPanel.setReport (processor.analyzer.readDelayReport());
         tracesPanel.refresh();
+        if (tick % 15 == 0) eventPanel.setLog (processor.splLog);
     }
 
     const bool running = settings.running.load();
@@ -979,7 +1140,7 @@ void LiveAlignEditor::timerCallback()
         panes[0]->setStatus (s);
     }
 
-    if (tick % 15 == 0 && shownPage != (int) Page::Monitor) refreshNext();
+    if (tick % 15 == 0 && shownPage != (int) Page::Monitor) { refreshNext(); if (shownPage == (int) Page::Home || tick % 60 == 0) updateStatuses(); }
     if (processor.isStandalone() && tick % (30 * 120) == 0) processor.autosave();   // every two minutes
     if (tick % 60 == 0 && processor.syncLocker() && shownPage == (int) Page::Mics) micPage->refreshChoices();
 
@@ -1049,6 +1210,8 @@ void LiveAlignEditor::resized()
     roomPage->setBounds (r);
     planPage->setBounds (r);
     lockerPage->setBounds (r);
+    for (auto* pg : std::initializer_list<juce::Component*> { feedbackPage.get(), acousticsPage.get(), monitorMicPage.get(), tuningReportPage.get(), monitorReportPage.get() })
+        pg->setBounds (r);
 
     auto side = r.removeFromRight (330);
     r.removeFromRight (8);
@@ -1060,6 +1223,8 @@ void LiveAlignEditor::resized()
     inputPanel.setBounds (side.removeFromTop (98));
     side.removeFromTop (8);
     delayPanel.setBounds (side.removeFromTop (160));
+    side.removeFromTop (8);
+    eventPanel.setBounds (side.removeFromTop (90));
     side.removeFromTop (8);
     tracesPanel.setBounds (side);
 }

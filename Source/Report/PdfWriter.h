@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// A small PDF writer for LiveAlign's reports: US Letter pages with text in the standard Helvetica and Courier fonts,
-// lines, rectangles and JPEG pictures. Coordinates are in points from the top-left corner of the page.
+// A small PDF writer for LiveAlign's reports: US Letter pages (portrait or landscape) with text in the standard
+// Helvetica and Courier fonts, lines, rectangles and JPEG pictures. Coordinates are in points from the top-left corner
+// of the page. Drawing goes to the newest page unless an earlier one is picked (for contents and "page x of y").
 #include <vector>
 #include <juce_graphics/juce_graphics.h>
 
@@ -15,8 +16,18 @@ public:
     static constexpr float kPageW = 612.0f, kPageH = 792.0f;   // US Letter
     enum FontId { Regular = 0, Bold = 1, Mono = 2, Italic = 3 };
 
-    void newPage() { pages.emplace_back(); }
+    void newPage (bool landscape = false)
+    {
+        Page pg;
+        pg.landscape = landscape;
+        pages.push_back (std::move (pg));
+        target = -1;
+    }
     int pageCount() const { return (int) pages.size(); }
+    // Draw on an earlier page (0-based); -1 = the newest page again.
+    void selectPage (int index) { target = index >= 0 && index < (int) pages.size() ? index : -1; }
+    float pageW() const { return curPage().landscape ? kPageH : kPageW; }
+    float pageH() const { return curPage().landscape ? kPageW : kPageH; }
 
     // Text width in points, from the standard Helvetica metrics (the PDF fonts themselves).
     static float textWidth (const juce::String& t, float size, FontId f = Regular)
@@ -37,7 +48,7 @@ public:
     void text (float x, float y, const juce::String& t, float size, FontId f = Regular, juce::Colour c = juce::Colours::black)
     {
         auto& s = cur();
-        s << "BT /F" << (int) f << ' ' << num (size) << " Tf " << rgb (c, false) << ' ' << num (x) << ' ' << num (kPageH - y) << " Td ("
+        s << "BT /F" << (int) f << ' ' << num (size) << " Tf " << rgb (c, false) << ' ' << num (x) << ' ' << num (pageH() - y) << " Td ("
           << escape (t) << ") Tj ET\n";
     }
 
@@ -81,8 +92,9 @@ public:
 
     void line (float x1, float y1, float x2, float y2, float width, juce::Colour c)
     {
-        cur() << num (width) << " w " << rgb (c, true) << ' ' << num (x1) << ' ' << num (kPageH - y1) << " m " << num (x2) << ' '
-              << num (kPageH - y2) << " l S\n";
+        const float h = pageH();
+        cur() << num (width) << " w " << rgb (c, true) << ' ' << num (x1) << ' ' << num (h - y1) << " m " << num (x2) << ' '
+              << num (h - y2) << " l S\n";
     }
 
     void rect (float x, float y, float w, float h, juce::Colour fill, juce::Colour stroke = {}, float strokeWidth = 0.6f)
@@ -91,7 +103,7 @@ public:
         const bool doFill = ! fill.isTransparent(), doStroke = ! stroke.isTransparent();
         if (doFill) s << rgb (fill, false) << ' ';
         if (doStroke) s << num (strokeWidth) << " w " << rgb (stroke, true) << ' ';
-        s << num (x) << ' ' << num (kPageH - y - h) << ' ' << num (w) << ' ' << num (h) << " re " << (doFill && doStroke ? "B" : doFill ? "f" : "S") << "\n";
+        s << num (x) << ' ' << num (pageH() - y - h) << ' ' << num (w) << ' ' << num (h) << " re " << (doFill && doStroke ? "B" : doFill ? "f" : "S") << "\n";
     }
 
     // A picture, stored as JPEG.
@@ -103,8 +115,8 @@ public:
         fmt.writeImageToStream (img.convertedToFormat (juce::Image::RGB), jpg);
         images.push_back ({ jpg.getMemoryBlock(), img.getWidth(), img.getHeight() });
         const int id = (int) images.size() - 1;
-        pages.back().images.push_back (id);
-        cur() << "q " << num (w) << " 0 0 " << num (h) << ' ' << num (x) << ' ' << num (kPageH - y - h) << " cm /Im" << id << " Do Q\n";
+        (target >= 0 ? pages[(size_t) target] : pages.back()).images.push_back (id);
+        cur() << "q " << num (w) << " 0 0 " << num (h) << ' ' << num (x) << ' ' << num (pageH() - y - h) << " cm /Im" << id << " Do Q\n";
     }
 
     juce::MemoryBlock build (const juce::String& title, const juce::String& author) const
@@ -149,7 +161,7 @@ public:
         {
             const auto& pg = pages[(size_t) i];
             beginObj();
-            out << "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " << num (kPageW) << ' ' << num (kPageH) << "] /Contents "
+            out << "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " << num (pg.landscape ? kPageH : kPageW) << ' ' << num (pg.landscape ? kPageW : kPageH) << "] /Contents "
                 << (firstPage + i * 2 + 1) << " 0 R /Resources << /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R /F3 6 0 R >>";
             if (! pg.images.empty())
             {
@@ -181,13 +193,20 @@ public:
     }
 
 private:
-    struct Page { juce::String content; std::vector<int> images; };
+    struct Page { juce::String content; std::vector<int> images; bool landscape = false; };
     struct Img { juce::MemoryBlock jpeg; int w, h; };
 
     juce::String& cur()
     {
         if (pages.empty()) newPage();
-        return pages.back().content;
+        return (target >= 0 ? pages[(size_t) target] : pages.back()).content;
+    }
+
+    const Page& curPage() const
+    {
+        static const Page none;
+        if (pages.empty()) return none;
+        return target >= 0 ? pages[(size_t) target] : pages.back();
     }
 
     static juce::String num (float v) { return juce::String (v, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd ("."); }
@@ -238,5 +257,6 @@ private:
 
     std::vector<Page> pages;
     std::vector<Img> images;
+    int target = -1;
 };
 } // namespace la::pdf

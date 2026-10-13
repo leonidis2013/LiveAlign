@@ -11,6 +11,10 @@
 #include "UI/SpeakersPage.h"
 #include "UI/PlanPage.h"
 #include "UI/RoomPage.h"
+#include "UI/FeedbackPage.h"
+#include "UI/AcousticsPage.h"
+#include "UI/MonitorMicPage.h"
+#include "UI/ReportPage.h"
 #include "UI/MicLockerPanel.h"
 #include "UI/Pages.h"
 #include "UI/MeasurePane.h"
@@ -33,6 +37,8 @@ public:
     la::ui::SpeakersPage& speakersPage() { return *speakerPage; }
     la::ui::PlanPage& planPageForPreview() { return *planPage; }
     la::ui::RoomPage& roomPageForPreview() { return *roomPage; }
+    la::ui::FeedbackPage& feedbackPageForPreview() { return *feedbackPage; }
+    void exportReportTo (bool monitoring, const juce::File& f);   // without the file chooser (local screenshot tool)
     void updateStatuses();
 
 private:
@@ -47,7 +53,8 @@ private:
     void openMicLocker();
     void loadLockerCal (const juce::String& id, int angle);
     void exportPlan();
-    void exportReport();
+    void exportReport (bool monitoring = false);
+    juce::Image planImage (int layer);
     void openCalibration (int mic, juce::Component* anchor);
     void loadCalFile (int mic, int angle = -1);
     void capture();
@@ -85,6 +92,12 @@ private:
     std::unique_ptr<la::ui::RoomPage> roomPage;
     std::unique_ptr<la::ui::PlanPage> planPage;
     std::unique_ptr<la::ui::MicLockerPage> lockerPage;
+    std::unique_ptr<la::ui::FeedbackPage> feedbackPage;
+    std::unique_ptr<la::ui::AcousticsPage> acousticsPage;
+    std::unique_ptr<la::ui::MonitorMicPage> monitorMicPage;
+    std::unique_ptr<la::ui::ReportPage> tuningReportPage, monitorReportPage;
+    static constexpr int kMonitorMic = -2;   // the monitoring mic, for the calibration pop-ups
+    double lastLogSecond = 0.0;
 
     // Monitoring page
     std::unique_ptr<la::ui::MeasurePane> panes[3];
@@ -92,6 +105,7 @@ private:
     la::ui::InputPanel inputPanel;
     la::ui::DelayPanel delayPanel;
     la::ui::TracesPanel tracesPanel;
+    la::ui::EventPanel eventPanel;
     juce::ComboBox micPicker;
 
     la::ui::GeneratorStrip generator;

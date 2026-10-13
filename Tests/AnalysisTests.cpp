@@ -17,6 +17,8 @@
 #include "Analysis/TargetCurves.h"
 #include "Analysis/Crossover.h"
 #include "Analysis/CrossoverPair.h"
+#include "Analysis/RoomAcoustics.h"
+#include "Analysis/FeedbackDetector.h"
 #include "Analysis/EqFit.h"
 
 using namespace la;
@@ -588,6 +590,88 @@ static void testCrossoverPair()
     check (s.valid (2), "Crossover pair: two subs make a valid pair");
 }
 
+// Room acoustics from a synthetic exponentially decaying noise (a diffuse room with a known reverberation time).
+static void testRoomAcoustics()
+{
+    using namespace la::acoustics;
+    const double fs = 48000.0, rt = 1.0;
+    std::mt19937 rng (7);
+    std::normal_distribution<double> nd (0.0, 1.0);
+    std::vector<float> ir ((size_t) (1.6 * fs), 0.0f);
+    const int at = 480;   // direct sound at 10 ms
+    for (size_t i = (size_t) at; i < ir.size(); ++i)
+    {
+        const double t = (double) (i - (size_t) at) / fs;
+        ir[i] = (float) (nd (rng) * std::exp (-6.9078 * t / rt));
+    }
+    for (auto& v : ir) v += (float) (nd (rng) * 1e-4);   // a noise floor about 80 dB down
+    ir[(size_t) at] = 4.0f;                                // direct sound
+    const auto r = analyse (ir, fs);
+    check (r.valid, "Acoustics: result");
+    near (r.band[3].t30, rt, 0.12, "Acoustics: T30 at 1 kHz");
+    near (r.band[2].t20, rt, 0.12, "Acoustics: T20 at 500 Hz");
+    near (r.band[4].edt, rt, 0.2, "Acoustics: EDT at 2 kHz");
+    // exponential decay with T = 1 s: C80 about 3 dB, C50 about 0.4 dB (minus a little for the direct sound added)
+    check (r.band[3].c80 > 1.5 && r.band[3].c80 < 6.0, "Acoustics: C80 at 1 kHz", r.band[3].c80, 3.1);
+    check (r.band[3].c50 < r.band[3].c80, "Acoustics: C50 below C80");
+    check (std::isfinite (r.sti) && r.sti > 0.45 && r.sti < 0.72, "Acoustics: STI for a 1 s room", r.sti, 0.58);
+
+    // a drier room: shorter RT, higher STI and clarity
+    std::vector<float> dry (ir.size(), 0.0f);
+    for (size_t i = (size_t) at; i < dry.size(); ++i)
+        dry[i] = (float) (nd (rng) * std::exp (-6.9078 * (double) (i - (size_t) at) / fs / 0.4));
+    dry[(size_t) at] = 4.0f;
+    const auto d = analyse (dry, fs);
+    near (d.band[3].rt(), 0.4, 0.06, "Acoustics: RT of a dry room");
+    check (d.sti > r.sti && d.band[3].c80 > r.band[3].c80, "Acoustics: a drier room is clearer");
+
+    // noise ratings
+    const std::array<double, kNoiseBands> nc30 { 57, 48, 41, 35, 31, 29, 28, 27 };
+    near (noiseCriterion (nc30), 30.0, 0.5, "Noise: the NC-30 curve rates NC 30");
+    const std::array<double, kNoiseBands> quiet { 40, 30, 25, 20, 18, 15, 12, 10 };
+    check (noiseCriterion (quiet) < 20.0, "Noise: a quiet room is below NC 20", noiseCriterion (quiet), 18);
+    const std::array<double, kNoiseBands> flat40 { 40, 40, 40, 40, 40, 40, 40, 40 };
+    near (noiseRating (flat40), 45.7, 0.3, "Noise: NR of a flat 40 dB spectrum (set by 8 kHz)");
+}
+
+// Feedback ring-out: a steady narrow peak is a ring; a short one is not.
+static void testFeedbackDetector()
+{
+    using namespace la::fb;
+    std::vector<double> f;
+    for (double x = 40.0; x <= 16000.0; x *= std::pow (2.0, 1.0 / 24.0)) f.push_back (x);
+    std::mt19937 rng (3);
+    std::normal_distribution<double> nd (0.0, 2.0);
+    auto frame = [&] (double ringHz, double ringDb)
+    {
+        std::vector<float> db (f.size());
+        for (size_t i = 0; i < f.size(); ++i)
+        {
+            double v = -40.0 - 3.0 * std::log2 (f[i] / 1000.0) + nd (rng);
+            if (ringHz > 0.0) v = std::max (v, -40.0 + ringDb - 60.0 * std::abs (std::log2 (f[i] / ringHz)) * 24.0 / 2.0);
+            db[i] = (float) v;
+        }
+        return db;
+    };
+    Detector det;
+    std::vector<Ring> found;
+    for (int k = 0; k < 10; ++k) for (const auto& r : det.push (f, frame (1250.0, 25.0))) found.push_back (r);
+    check (found.size() == 1, "Feedback: a steady ring is found once", (double) found.size(), 1);
+    if (! found.empty())
+    {
+        near (found[0].freq, 1250.0, 1250.0 * 0.02, "Feedback: ring frequency");
+        check (found[0].cutDb <= -4.0 && found[0].cutDb >= -12.0, "Feedback: a sensible cut", found[0].cutDb, -8);
+    }
+    Detector det2;
+    int brief = 0;
+    for (int k = 0; k < 12; ++k) brief += (int) det2.push (f, frame (k < 2 ? 3000.0 : 0.0, 25.0)).size();
+    check (brief == 0, "Feedback: a short peak is not a ring", brief, 0);
+    Detector det3;
+    int none = 0;
+    for (int k = 0; k < 20; ++k) none += (int) det3.push (f, frame (0.0, 0.0)).size();
+    check (none == 0, "Feedback: noise alone gives no rings", none, 0);
+}
+
 int main()
 {
     testTargets();
@@ -604,6 +688,8 @@ int main()
     testCrossover();
     testEqFit();
     testCrossoverPair();
+    testRoomAcoustics();
+    testFeedbackDetector();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

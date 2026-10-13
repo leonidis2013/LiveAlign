@@ -103,6 +103,22 @@ struct SessionChecks
     int noiseMics = 0;
     std::array<float, kMaxMics> noiseA {}, noiseC {};
     std::array<bool, kMaxMics> noiseIsSpl {};
+    // octave band noise levels 63 Hz - 8 kHz per mic (for NC / NR), -200 = not measured
+    std::array<std::array<float, 8>, kMaxMics> noiseOct = [] { std::array<std::array<float, 8>, kMaxMics> a {}; for (auto& r : a) r.fill (-200.0f); return a; }();
+
+    // From the 1/3 octave bands: each octave is the energy sum of its three thirds.
+    void setNoiseOctaves (int m, const std::vector<double>& freq, const std::vector<float>& db)
+    {
+        static const double oct[8] = { 63, 125, 250, 500, 1000, 2000, 4000, 8000 };
+        for (int b = 0; b < 8; ++b)
+        {
+            double e = 0.0;
+            int n = 0;
+            for (size_t i = 0; i < freq.size() && i < db.size(); ++i)
+                if (freq[i] >= oct[b] / 1.42 && freq[i] < oct[b] * 1.42 && std::isfinite (db[i])) { e += std::pow (10.0, db[i] / 10.0); ++n; }
+            noiseOct[(size_t) m][(size_t) b] = n > 0 ? (float) (10.0 * std::log10 (e)) : -200.0f;
+        }
+    }
 
     juce::String setup;   // interface and wiring when the checks were done (see setupFingerprint)
 
@@ -124,6 +140,9 @@ struct SessionChecks
             e->setAttribute ("noiseA" + k, noiseA[(size_t) m]);
             e->setAttribute ("noiseC" + k, noiseC[(size_t) m]);
             e->setAttribute ("noiseIsSpl" + k, noiseIsSpl[(size_t) m]);
+            juce::StringArray o;
+            for (float v : noiseOct[(size_t) m]) o.add (juce::String (v, 1));
+            e->setAttribute ("noiseOct" + k, o.joinIntoString (" "));
         }
     }
 
@@ -147,6 +166,9 @@ struct SessionChecks
                 noiseA[(size_t) m] = (float) e->getDoubleAttribute ("noiseA" + k, -200.0);
                 noiseC[(size_t) m] = (float) e->getDoubleAttribute ("noiseC" + k, -200.0);
                 noiseIsSpl[(size_t) m] = e->getBoolAttribute ("noiseIsSpl" + k);
+                juce::StringArray o;
+                o.addTokens (e->getStringAttribute ("noiseOct" + k), " ", {});
+                for (int b = 0; b < 8; ++b) noiseOct[(size_t) m][(size_t) b] = b < o.size() ? o[b].getFloatValue() : -200.0f;
             }
         }
         else if (const auto* old = parent.getChildByName ("MicSetup"))   // version 0.3

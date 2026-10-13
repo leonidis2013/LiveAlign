@@ -23,9 +23,15 @@ struct PlanSymbol
 struct PlanItem
 {
     enum Kind { Area = 0, Marker = 1, Note = 2 };
+    // An area can show chairs, so a position reads as "row 8, left of the aisle": rows (a rectangle with a centre
+    // aisle), square blocks, or curved rows facing the stage.
+    enum Seating { Plain = 0, Rows = 1, Blocks = 2, Curved = 3 };
     int kind = Area;
     juce::String text;
     float x = 0.5f, y = 0.5f, w = 0.3f, h = 0.15f;   // areas use w and h; markers and notes only x and y
+    int seating = Plain;
+
+    static juce::StringArray seatingNames() { return { "No chairs", "Rows (rectangle)", "Square blocks", "Curved rows" }; }
 };
 
 struct VenuePlan
@@ -33,6 +39,7 @@ struct VenuePlan
     static constexpr int kMaxSpeakers = 8;
     std::array<PlanSymbol, kMaxSpeakers> speakers {};
     std::array<PlanSymbol, kMaxMics> mics {};
+    PlanSymbol monitorMic;   // the monitoring mic (the monitoring layer of the plan)
     std::vector<PlanItem> items;
     bool edited = false;   // changed by hand since it was created
 
@@ -41,7 +48,7 @@ struct VenuePlan
     {
         VenuePlan p;
         p.items.push_back ({ PlanItem::Area, "Stage", 0.5f, 0.12f, 0.6f, 0.16f });
-        p.items.push_back ({ PlanItem::Area, "Seating", 0.5f, 0.56f, 0.8f, 0.52f });
+        p.items.push_back ({ PlanItem::Area, "Seating", 0.5f, 0.56f, 0.8f, 0.52f, PlanItem::Rows });
         p.items.push_back ({ PlanItem::Area, "FOH", 0.5f, 0.9f, 0.18f, 0.08f });
         return p;
     }
@@ -73,6 +80,7 @@ struct VenuePlan
             s.angle = 90.0f;   // facing the audience
             s.placed = true;
         }
+        if (! monitorMic.placed) { monitorMic = { 0.5f, 0.9f, -90.0f, true }; }   // at FOH
         for (int m = 0; m < juce::jmin (numMics, kMaxMics); ++m)
         {
             auto& p = mics[(size_t) m];
@@ -132,6 +140,7 @@ struct VenuePlan
                 c->setAttribute ("index", m);
                 saveSymbol (*c, mics[(size_t) m]);
             }
+        if (monitorMic.placed) saveSymbol (*e->createNewChildElement ("MonitorMic"), monitorMic);
         for (const auto& it : items)
         {
             auto* c = e->createNewChildElement ("Item");
@@ -141,6 +150,7 @@ struct VenuePlan
             c->setAttribute ("y", it.y);
             c->setAttribute ("w", it.w);
             c->setAttribute ("h", it.h);
+            if (it.seating != PlanItem::Plain) c->setAttribute ("seating", it.seating);
         }
     }
 
@@ -160,6 +170,7 @@ struct VenuePlan
             const int m = c->getIntAttribute ("index", -1);
             if (m >= 0 && m < kMaxMics) mics[(size_t) m] = loadSymbol (*c);
         }
+        if (const auto* mm = e->getChildByName ("MonitorMic")) monitorMic = loadSymbol (*mm);
         for (const auto* c : e->getChildWithTagNameIterator ("Item"))
         {
             PlanItem it;
@@ -169,6 +180,8 @@ struct VenuePlan
             it.y = juce::jlimit (0.0f, 1.0f, (float) c->getDoubleAttribute ("y", 0.5));
             it.w = juce::jlimit (0.03f, 1.0f, (float) c->getDoubleAttribute ("w", 0.3));
             it.h = juce::jlimit (0.03f, 1.0f, (float) c->getDoubleAttribute ("h", 0.15));
+            // seating areas from earlier versions get rows of chairs
+            it.seating = juce::jlimit (0, 3, c->getIntAttribute ("seating", it.kind == PlanItem::Area && it.text.containsIgnoreCase ("seat") ? PlanItem::Rows : PlanItem::Plain));
             items.push_back (it);
         }
     }

@@ -5,9 +5,11 @@
 // Room tuning for one session: measurements of the whole system at the listening positions (several mics at once,
 // or one mic moved between positions), their average against a target curve, the suggested EQ and the check after
 // the EQ is in. The EQ itself is kept on the speaker (it belongs to the venue). Message thread only.
+#include <array>
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "Analysis/EqFit.h"
+#include "Analysis/RoomAcoustics.h"
 #include "Analysis/FreqTable.h"
 #include "Analysis/Banding.h"
 #include "Analysis/TargetCurves.h"
@@ -21,6 +23,7 @@ struct RoomMeasurement
     bool after = false;      // taken after the EQ went in
     bool include = true;     // part of the average
     FreqTable tf;            // dB, phase, coherence (extra)
+    acoustics::Result ac;    // room acoustics from this position's impulse response (when it was captured)
 
     double levelDb() const   // broad level, 500 Hz - 4 kHz
     {
@@ -43,6 +46,8 @@ struct RoomTuning
     std::vector<eq::Band> suggested;
     std::vector<eq::Band> baseEq;   // EQ that was already on the speaker when the "before" positions were measured
     double offsetDb = 0.0, rmsBefore = 0.0, rmsAfter = 0.0;
+    juce::StringArray skipped;      // positions left out of the measuring plan
+    int use = 1;                    // what the room is for (room acoustics guide): see useNames()
     bool tuned = false;             // the user marked the room as tuned
     juce::String tunedOn;
 
@@ -69,6 +74,15 @@ struct RoomTuning
         }
         if (fLo > 0.0) lo = fLo;
         if (fHi > 0.0) hi = fHi;
+    }
+
+    // What the room is used for, with typical mid-frequency reverberation times and the speech intelligibility to aim for.
+    static juce::StringArray useNames() { return { "Speech, lectures", "Contemporary worship, amplified music", "Traditional worship, choir", "Concerts, classical music" }; }
+    static void useTargets (int u, double& rtLo, double& rtHi, double& stiMin)
+    {
+        static const double lo[] = { 0.6, 0.8, 1.3, 1.6 }, hi[] = { 1.0, 1.3, 2.2, 2.2 }, sti[] = { 0.6, 0.5, 0.45, 0.4 };
+        u = juce::jlimit (0, 3, u);
+        rtLo = lo[u]; rtHi = hi[u]; stiMin = sti[u];
     }
 
     static std::vector<double> grid()
@@ -113,6 +127,75 @@ struct RoomTuning
         }
         std::vector<double> out (g.size(), NAN);
         for (size_t i = 0; i < g.size(); ++i) if (n[i] > 0) out[i] = 10.0 * std::log10 (sum[i] / n[i]);
+        return out;
+    }
+
+    // Room acoustics averaged over the positions that have them (the latest round of each position).
+    acoustics::Result acousticsAverage() const
+    {
+        acoustics::Result r;
+        std::array<std::array<double, 9>, acoustics::kBands> sum {};
+        std::array<std::array<int, 9>, acoustics::kBands> n {};
+        double sti = 0.0;
+        int nsti = 0;
+        for (const auto& m : meas)
+        {
+            if (! m.ac.valid || ! m.include) continue;
+            r.valid = true;
+            for (int b = 0; b < acoustics::kBands; ++b)
+            {
+                const auto& o = m.ac.band[(size_t) b];
+                const double v[9] = { o.edt, o.t20, o.t30, o.c50, o.c80, o.d50, o.mti, o.rangeDb, o.t15 };
+                for (int k = 0; k < 9; ++k) if (std::isfinite (v[k])) { sum[(size_t) b][(size_t) k] += v[k]; ++n[(size_t) b][(size_t) k]; }
+            }
+            if (std::isfinite (m.ac.sti)) { sti += m.ac.sti; ++nsti; }
+        }
+        for (int b = 0; b < acoustics::kBands; ++b)
+        {
+            auto avg = [&] (int k) { return n[(size_t) b][(size_t) k] > 0 ? sum[(size_t) b][(size_t) k] / n[(size_t) b][(size_t) k] : NAN; };
+            auto& o = r.band[(size_t) b];
+            o.edt = avg (0); o.t20 = avg (1); o.t30 = avg (2); o.c50 = avg (3); o.c80 = avg (4); o.d50 = avg (5); o.mti = avg (6); o.rangeDb = avg (7); o.t15 = avg (8);
+        }
+        r.sti = nsti > 0 ? sti / nsti : NAN;
+        return r;
+    }
+
+    int acousticsCount() const { int k = 0; for (const auto& m : meas) k += m.ac.valid && m.include ? 1 : 0; return k; }
+
+    // Low-frequency peaks of the average (room modes): frequency, height above the local median, and how much the
+    // level at that frequency differs between the positions (standard deviation, dB).
+    struct Mode { double freq, heightDb, seatSpreadDb; };
+    std::vector<Mode> modes (bool after = false) const
+    {
+        std::vector<Mode> out;
+        const auto g = grid();
+        const auto avg = average (after);
+        const auto sm = eq::smooth (g, avg, 1.0 / 12.0);
+        for (size_t i = 2; i + 2 < g.size(); ++i)
+        {
+            if (g[i] < 30.0 || g[i] > 300.0 || ! std::isfinite (sm[i])) continue;
+            if (! (sm[i] > sm[i - 1] && sm[i] >= sm[i + 1])) continue;
+            std::vector<double> nb;
+            for (size_t k = 0; k < g.size(); ++k)
+                if (std::abs (std::log2 (g[k] / g[i])) < 0.5 && std::isfinite (sm[k])) nb.push_back (sm[k]);
+            const double h = sm[i] - eq::median (nb);
+            if (h < 4.0) continue;
+            // the spread across seats at this frequency
+            double s = 0.0, s2 = 0.0;
+            int n = 0;
+            for (const auto& m : meas)
+            {
+                if (m.after != after || ! m.include || m.tf.freq.size() < 4) continue;
+                const double v = m.tf.dbAt (g[i]) - m.levelDb();
+                if (! std::isfinite (v)) continue;
+                s += v; s2 += v * v; ++n;
+            }
+            const double sd = n > 1 ? std::sqrt (std::max (0.0, s2 / n - (s / n) * (s / n))) : NAN;
+            out.push_back ({ g[i], h, sd });
+        }
+        std::sort (out.begin(), out.end(), [] (const Mode& a, const Mode& b) { return a.heightDb > b.heightDb; });
+        if (out.size() > 6) out.resize (6);
+        std::sort (out.begin(), out.end(), [] (const Mode& a, const Mode& b) { return a.freq < b.freq; });
         return out;
     }
 
@@ -167,6 +250,8 @@ struct RoomTuning
         e->setAttribute ("fHi", fHi);
         e->setAttribute ("tuned", tuned);
         e->setAttribute ("tunedOn", tunedOn);
+        e->setAttribute ("skipped", skipped.joinIntoString ("|"));
+        e->setAttribute ("use", use);
         for (const auto& b : suggested)
         {
             auto* c = e->createNewChildElement ("Suggested");
@@ -191,6 +276,18 @@ struct RoomTuning
             c->setAttribute ("time", m.time);
             c->setAttribute ("after", m.after);
             c->setAttribute ("include", m.include);
+            if (m.ac.valid)
+            {
+                auto* a = c->createNewChildElement ("Acoustics");
+                a->setAttribute ("sti", m.ac.sti);
+                for (int b = 0; b < acoustics::kBands; ++b)
+                {
+                    const auto& o = m.ac.band[(size_t) b];
+                    juce::StringArray v;
+                    for (double x : { o.edt, o.t20, o.t30, o.c50, o.c80, o.d50, o.mti, o.rangeDb, o.t15 }) v.add (std::isfinite (x) ? juce::String (x, 4) : juce::String ("nan"));
+                    a->setAttribute ("b" + juce::String (b), v.joinIntoString (" "));
+                }
+            }
             juce::String text;
             for (size_t i = 0; i < m.tf.freq.size(); ++i)
             {
@@ -217,6 +314,9 @@ struct RoomTuning
         fHi = e->getDoubleAttribute ("fHi");
         tuned = e->getBoolAttribute ("tuned");
         tunedOn = e->getStringAttribute ("tunedOn");
+        skipped.addTokens (e->getStringAttribute ("skipped"), "|", {});
+        skipped.removeEmptyStrings();
+        use = juce::jlimit (0, 3, e->getIntAttribute ("use", 1));
         for (const auto* c : e->getChildWithTagNameIterator ("Suggested"))
             suggested.push_back ({ c->getDoubleAttribute ("freq"), c->getDoubleAttribute ("gain"), c->getDoubleAttribute ("q", 1.0) });
         for (const auto* c : e->getChildWithTagNameIterator ("BaseEq"))
@@ -231,6 +331,19 @@ struct RoomTuning
             m.time = c->getStringAttribute ("time");
             m.after = c->getBoolAttribute ("after");
             m.include = c->getBoolAttribute ("include", true);
+            if (const auto* a = c->getChildByName ("Acoustics"))
+            {
+                m.ac.valid = true;
+                m.ac.sti = a->hasAttribute ("sti") && a->getStringAttribute ("sti") != "nan" ? a->getDoubleAttribute ("sti") : NAN;
+                for (int b = 0; b < acoustics::kBands; ++b)
+                {
+                    juce::StringArray v;
+                    v.addTokens (a->getStringAttribute ("b" + juce::String (b)), " ", {});
+                    auto at = [&v] (int i) { return i < v.size() && v[i] != "nan" ? v[i].getDoubleValue() : NAN; };
+                    auto& o = m.ac.band[(size_t) b];
+                    o.edt = at (0); o.t20 = at (1); o.t30 = at (2); o.c50 = at (3); o.c80 = at (4); o.d50 = at (5); o.mti = at (6); o.rangeDb = at (7); o.t15 = at (8);
+                }
+            }
             juce::StringArray lines;
             lines.addLines (c->getAllSubText());
             for (const auto& line : lines)

@@ -5,6 +5,7 @@
 #include "../Analyzer.h"
 #include "../TraceStore.h"
 #include "../Analysis/TargetCurves.h"
+#include "../Monitoring.h"
 
 namespace la::ui
 {
@@ -262,6 +263,75 @@ private:
 };
 
 //==============================================================================
+// The event so far: the sound level log against the limit (set on the Monitor mic page).
+class EventPanel : public juce::Component
+{
+public:
+    void setLog (const SplLog& l)
+    {
+        const auto rolling = l.rollingLaeq();
+        const double now = rolling.empty() ? NAN : rolling.back();
+        if (l.points.size() == shownPoints && std::abs (l.limitLaeq - shownLimit) < 0.01) return;
+        shownPoints = l.points.size();
+        shownLimit = l.limitLaeq;
+        leq = l.leq (false);
+        roll = now;
+        limit = l.limitLaeq;
+        minutes = l.limitMinutes;
+        over = l.minutesOver();
+        since = l.empty() ? juce::String() : juce::Time ((juce::int64) (l.start() * 1000.0)).formatted ("%H:%M");
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        auto r = getLocalBounds().toFloat();
+        drawPanel (g, r, "Event");
+        auto c = r.reduced (12.0f, 0.0f).withTrimmedTop (32.0f);
+        if (! std::isfinite (leq))
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (11.5f));
+            g.drawFittedText ("The sound level is logged every 5 seconds for the monitoring report.", c.toNearestInt(), juce::Justification::topLeft, 2);
+            return;
+        }
+        auto line = c.removeFromTop (20.0f);
+        g.setColour (p.text);
+        g.setFont (monoFont (13.0f, true));
+        g.drawText ("LAeq " + juce::String (leq, 1), line, juce::Justification::centredLeft);
+        g.setColour (p.textDim);
+        g.setFont (font (11.0f));
+        g.drawText ("since " + since, line, juce::Justification::centredRight);
+        c.removeFromTop (4.0f);
+        auto bar = c.removeFromTop (8.0f);
+        g.setColour (p.border);
+        g.fillRoundedRectangle (bar, 4.0f);
+        if (limit > 0.0 && std::isfinite (roll))
+        {
+            const float f = (float) juce::jlimit (0.0, 1.0, (roll - (limit - 20.0)) / 22.0);
+            g.setColour (roll > limit ? p.bad : roll > limit - 3.0 ? p.warn : p.good);
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * f), 4.0f);
+            g.setColour (p.text);
+            const float lx = bar.getX() + bar.getWidth() * 20.0f / 22.0f;
+            g.fillRect (lx - 1.0f, bar.getY() - 3.0f, 2.0f, bar.getHeight() + 6.0f);
+        }
+        c.removeFromTop (5.0f);
+        g.setColour (limit > 0.0 && roll > limit ? p.bad : p.textDim);
+        g.setFont (font (11.0f));
+        g.drawText (limit > 0.0 ? juce::String (minutes) + " min LAeq " + juce::String (roll, 1) + " of " + juce::String (juce::roundToInt (limit)) + " dBA"
+                                      + (over > 0.0 ? ", over for " + juce::String (juce::roundToInt (over)) + " min" : juce::String())
+                                : juce::String (minutes) + " min LAeq " + juce::String (roll, 1) + " (no limit set)",
+                    c.removeFromTop (16.0f), juce::Justification::centredLeft, true);
+    }
+
+private:
+    size_t shownPoints = (size_t) -1;
+    double shownLimit = -1.0, leq = NAN, roll = NAN, limit = 0.0, over = 0.0;
+    int minutes = 15;
+    juce::String since;
+};
+
 class TracesPanel : public juce::Component
 {
 public:
@@ -275,10 +345,14 @@ public:
         targetBox.onChange = [this]
         {
             settings.targetCurve = targetBox.getSelectedItemIndex();
+            settings.targetAnchorMask = 0;   // line the new target up with the live trace once
             targetBox.setTooltip (targets::list()[(size_t) juce::jmax (0, targetBox.getSelectedItemIndex())].description);
         };
         targetBox.setTooltip (targets::list()[(size_t) settings.targetCurve.load()].description);
         addAndMakeVisible (targetBox);
+        relevelButton.setTooltip ("Line the target up with the live trace again (it stays where it is otherwise)");
+        relevelButton.onClick = [this] { settings.targetAnchorMask = 0; };
+        addAndMakeVisible (relevelButton);
 
         captureButton.setTooltip ("Save the current transfer function or RTA as a trace (key: C)");
         importButton.setTooltip ("Load a trace or speaker response from an FRD, TXT or CSV file");
@@ -298,7 +372,12 @@ public:
         captureButton.setBounds (r.removeFromLeft (w));
         r.removeFromLeft (6);
         importButton.setBounds (r);
-        targetBox.setBounds (getLocalBounds().reduced (12, 0).withTrimmedTop (62).removeFromTop (26).withTrimmedLeft (54));
+        {
+            auto tr = getLocalBounds().reduced (12, 0).withTrimmedTop (62).removeFromTop (26).withTrimmedLeft (54);
+            relevelButton.setBounds (tr.removeFromRight (72));
+            tr.removeFromRight (6);
+            targetBox.setBounds (tr);
+        }
     }
 
     void syncTarget() { targetBox.setSelectedItemIndex (settings.targetCurve.load(), juce::dontSendNotification); }
@@ -441,6 +520,7 @@ private:
     Settings& settings;
     juce::TextButton captureButton { "Capture" }, importButton { "Import..." };
     juce::ComboBox targetBox;
+    juce::TextButton relevelButton { "Re-level" };
     int seenVersion = -1, hoverRow = -1, scroll = 0;
 };
 } // namespace la::ui

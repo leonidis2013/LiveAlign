@@ -53,7 +53,10 @@ struct Settings
     std::atomic<int> paneLayout { 0 };       // 0 stacked (rows), 1 side by side (columns)
     std::atomic<int> paneView2 { (int) View::Rta }, paneView3 { (int) View::Impulse };
     std::atomic<int> targetCurve { 0 };      // la::targets index, 0 = none
-    std::atomic<int> currentTab { 0 };       // page: 0 home, 1 mic setup, 2 speakers, 3 room tuning, 4 monitoring, 5 venue plan
+    // The target is lined up with the live trace once (when it is chosen) and then stays put; Re-level does it again.
+    std::atomic<int> targetAnchorMask { 0 };          // bit 0: transfer function, bit 1: RTA
+    std::atomic<float> targetTfLevelDb { 0.0f }, targetRtaLevelDb { 0.0f };
+    std::atomic<int> currentTab { 0 };       // page shown (la::ui::Page)
     std::atomic<int> theme { 0 };            // 0 dark, 1 light
     std::atomic<float> temperatureC { 20.0f };
     std::atomic<int> distanceUnit { 0 };     // 0 feet, 1 metres
@@ -68,6 +71,7 @@ struct Settings
     std::atomic<bool> requestFindDelay { false };
     std::atomic<bool> requestResetLeq { false };
     std::atomic<bool> requestClearPeak { false };
+    std::atomic<bool> captureAllIr { false };     // put every mic's impulse response in the snapshot (room acoustics)
 
     // The mic whose delay / calibration the single-mic controls act on (the average uses mic 1).
     int focusMic() const { const int m = selectedMic.load(); return m >= kAverageMic || m >= micCount.load() ? 0 : juce::jmax (0, m); }
@@ -183,7 +187,7 @@ struct Settings
         wfSeconds = i ("wfSeconds", 1, 0, 2);
         wfRange = i ("wfRange", 1, 0, 2);
         paneCount = i ("paneCount", 1, 1, 3);
-        currentTab = i ("currentTab", 0, 0, 6);
+        currentTab = i ("currentTab", 0, 0, 14);
         paneLayout = i ("paneLayout", 0, 0, 1);
         paneView2 = i ("paneView2", (int) View::Rta, 0, 3);
         paneView3 = i ("paneView3", (int) View::Impulse, 0, 3);

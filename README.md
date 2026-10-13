@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.12.1**: the crossover pair now follows the speakers' roles (top above, sub below) instead of their order in the list, with a warning and a Swap button when a sub is set above a top. **0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.13.0**: a new navigation (Setup, Tuning, Monitoring, Reports) with Speaker response, Crossover and Time alignment as their own steps; close-up speaker measurements with a picture of where to put the mic; a time alignment wizard (play the main, play the sub, apply, check) that matches phase at the crossover; Room EQ in rounds with several mics or one mic moved between positions; a feedback test; room acoustics (RT60, EDT, C50 / C80, STI, room modes, coverage, NC / NR); a dedicated monitoring mic and event panel; tuning and live monitoring reports in chapters with the settings as found and as left; seating and two mic layers on the Venue plan; a new logo and Home page; true full screen on macOS. **0.12.1**: the crossover pair follows the speakers' roles (top above, sub below), with a warning and a Swap button when a sub is set above a top. **0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -16,19 +16,35 @@ LiveProfessor). Windows and macOS.
 
 ## Workflow
 
-Everything runs from the **navigation pane** on the left, grouped into **Configuration** (Mic setup, Speakers),
-**Tuning** (Room tuning, Venue plan) and **Monitoring**. **Mic locker** and **Settings** are at the bottom. The window
-uses the system's own title bar: on macOS the red / yellow / green buttons (green for full screen), on Windows the
-usual minimise / maximise / close. Each step has its own icon and a live status: a green tick
-when it is ready, an amber `!` when it needs attention, a progress ring while it is under way.
-The venue and session are at the bottom of the pane, above Mic locker and Settings.
-Steps that are required but not done yet have an amber outline (on Home and on the Mic setup checklist); click
-anywhere on a step on the Home page to open it. The generator strip only appears on the pages that play test
-signals (Speakers, Room tuning, Monitoring); leaving for the other pages stops it.
+Everything runs from the **navigation pane** on the left (it scrolls with the mouse wheel), under the LiveAlign logo:
 
-**Next button:** the top right of every page shows the one thing to do next (the first unfinished Mic setup check, the
-next Speakers step, the next Room tuning step) and, once a page is done, **Continue to** the next one. On Home it
-starts where you left off; on the Venue plan it exports the tuning report.
+| Group | Page | What it does |
+|------|------|--------------|
+| | **Home** | Venue name and notes, sessions, and every page of the workflow with where it stands |
+| **Setup** | **Mics** (Mic setup) | Mic table and checklist: interface, reference, mics connected, calibration files, sound level, loopback check, room noise floor |
+| | **Speakers** | The system: cabinets, roles, channels (Mono, Left, Centre, Right), outputs, models; how the speakers are measured |
+| | **Venue plan** | A sketch of the room, seating, speakers, and the tuning and monitoring mics |
+| **Tuning** | **1 Speaker response** | Measure each speaker close up (or from one spot), or import its response |
+| | **2 Crossover** | Find the best crossover your processor can do, or adjust by hand |
+| | **3 Time alignment** | Line up the sub to the main, fills and delays: play one, play the other, apply, check |
+| | **4 Room EQ** | Listening positions in rounds, average against a target, suggested parametric EQ, check after |
+| | **5 Feedback test** | Raise the gain on an open mic and catch the frequencies that start to ring |
+| | **6 Room acoustics** | RT60, EDT, clarity, speech intelligibility, room modes, coverage, background noise |
+| **Monitoring** | **Monitor mic** | The mic used during the event (usually one at FOH): input, calibration, sound level, where it is |
+| | **Live monitoring** | RTA, transfer function, impulse response, waterfall, sound level, delay finder and traces |
+| **Reports** | **Tuning report** | Pick the chapters and export the PDF |
+| | **Monitoring report** | The event's sound level against the limit, the monitoring mic and traces |
+
+**Mic locker** and **Settings** sit at the bottom of the pane, above the venue and session. Each page has its own icon
+and a live status: a green tick when it is ready, an amber `!` when it needs attention, a progress ring while it is
+under way (Live monitoring has no tick: it is never "done"). Required steps not done yet have an amber outline on
+Home; click a step there to open it. The generator strip only appears on the pages that play test signals.
+
+**Window:** on macOS the window uses the standard red / yellow / green buttons, and green (or `F`) gives true full
+screen. On Windows the usual minimise / maximise / close.
+
+**Next button:** the top right of every page shows the one thing to do next and, once a page is done, **Continue to**
+the next one. On Home it starts where you left off.
 
 **Autosave:** every two minutes, unsaved changes are copied to a recovery file in LiveAlign's user folder (your
 venue file is only written by Save). If LiveAlign did not close normally, the next start offers to restore them.
@@ -36,16 +52,7 @@ venue file is only written by Save). If LiveAlign did not close normally, the ne
 **New venue... > Based on this one** (Home) starts a venue with the same mics, speakers (names, models, outputs,
 crossover filters), positions and plan, and nothing measured: handy for a touring rig or a similar room.
 
-| Page | Status | What it does |
-|------|--------|--------------|
-| **Home** | Built | Venue name and notes, the venue's sessions, and where each step stands |
-| **Venue plan** | Built | A sketch of the setup (not to scale): speakers, mics with their aim, areas, mic positions, notes; saved as a picture |
-| **1 Mic setup** | Built | Mic table and a checklist: interface, reference, mics connected, calibration files, sound level, loopback check, room noise floor |
-| **2 Speakers** | Built | Any speakers and any speaker management system: build the system, measure (one mic) or import each speaker, overlay them with the predicted sum, crossover recommendation, settings summary |
-| **3 Room tuning** | Built | Listening positions measured and averaged, target curve, suggested parametric EQ, before / after check |
-| **4 Monitoring** | Built | RTA, transfer function, impulse response, waterfall, sound level, delay finder and traces |
-
-The **VST3** shows the Monitoring page only, since it runs inside a host during the event.
+The **VST3** opens on Live monitoring with the monitoring mic, since it runs inside a host during the event.
 
 ### Home: venues and sessions
 
@@ -86,8 +93,13 @@ A simple drawing of how the setup is laid out, seen from above, **not to scale**
 - Drag to move, drag the small dot to turn (15 degree steps; hold Alt for any angle, or use `[` and `]`),
   double-click to rename, Delete to remove. New speakers and mics are placed for you; **Place missing speakers and
   mics** puts back any that are not on the drawing.
+- **Seating:** a seating area can show chairs in plain rows, blocks with aisles, or curved rows (pick a style when it is
+  selected), so the drawing reads like the room.
+- **Two mic layers, one drawing:** **Tuning mics** shows the mics and positions used for tuning; **Monitoring mic** shows
+  the event's monitoring mic on the same room and speakers. The tuning report uses the tuning layer, the monitoring
+  report the monitoring layer, each on its own landscape page.
 
-### 1 Mic setup
+### Mic setup
 
 **Mic table** (up to 8 mics): name, input, position (pick one or type a new name), calibration files (load, clear, or
 mark that the mic has none), aim, sound level (Calibrate, or Re-check level when it was calibrated in an earlier session),
@@ -142,7 +154,7 @@ Mic setup, the **Locker** button beside a mic's name (it reads **Linked** for a 
 - **Mic locker...** (beside + Add mic) lists the saved mics, which row of this venue uses each one, and Rename /
   Remove. The locker is the file `MicLocker.xml` in LiveAlign's user folder.
 
-### 2 Speakers
+### Speakers and Tuning steps 1 - 3
 
 **Speakers are individual cabinets or outputs.** **Add speaker** offers a *left / right pair* (Main L and Main R,
 the right one sharing the left one's settings), a sub, a front fill, a delay speaker, a centre or another speaker.
@@ -150,11 +162,15 @@ Each has a name, **model**, role, channel, output and **count** (cabinets on tha
 speaker share another's filters, level and polarity (and delay, unless a time alignment gives it its own): it needs
 no measurement of its own. A new venue starts with Main L, Main R (same as Main L) and a sub.
 
-Set up once per venue, for any speakers and any speaker management system. The right-hand column walks through
-three steps: **1 Measure**, **2 Crossover** and **3 Time alignment**. The open step gets the room; the others fold to a
-one-line summary (click one to open it). Each turns green when done and amber while it is still needed; the page
-moves on by itself when all speakers are measured and when a crossover is found. Time alignment is only needed
-when there are fills, delays or separate left and right mains.
+Set up once per venue, for any speakers and any speaker management system. The **Speakers** page builds the system;
+**Speaker response**, **Crossover** and **Time alignment** are the first three Tuning steps, each its own page in the
+navigation. Each turns green when done and amber while it is still needed.
+
+**How the speakers are measured** (Speakers page): **Close up** (the default) puts the measurement mic about 12 in
+(30 cm) from each speaker's cone, on its axis, so the room hardly shows; the page draws where the mic goes for the
+selected speaker and says which mic. **From one spot** keeps the mic in one place for every speaker (venues from
+earlier versions). Close-up measurements do not carry the speakers' true arrival times, so the time alignment step
+is then needed for the crossover pair.
 
 **Is the signal reliable?** Coherence says how much of what the mic hears is the test signal rather than noise or
 late reflections. LiveAlign uses it everywhere in this step:
@@ -174,7 +190,7 @@ late reflections. LiveAlign uses it everywhere in this step:
 - On **Monitoring**, the status line shows how much of the transfer function is reliable right now.
 
 - **Speakers:** up to 8 sources (a top, a sub, fills, delays, more subs ...), each with a name, a role, a channel
-  (Mono, Left, Centre, Right, or Stereo L+R) and the interface output that feeds it while it is measured. The dot at the right of a row shows or hides it on the graph.
+  (Mono, Left, Centre or Right; a stereo main is a left / right pair) and the interface output that feeds it while it is measured. The dot at the right of a row shows or hides it on the graph.
 - **Measure** (app): pick the **one mic** used for every speaker measurement (Measurement card), then measure each
   speaker on its own with your processor's crossover filters bypassed. LiveAlign plays pink noise from that speaker's
   output, finds its arrival, and averages its response. The first measurement sets the timing and **locks** it, so
@@ -195,7 +211,13 @@ late reflections. LiveAlign uses it everywhere in this step:
   low speaker to the high one. It scores how flat the sum is (against what the two speakers give on their own, so a
   room notch both share does not count) and how much in phase they meet. **Adjust by hand** shows and edits the
   result: frequency, filter, slope, low speaker delay, gain and polarity, with a live readout of the sum.
-- **Time alignment** (step 3): line up a fill, a delay or one side of a left / right pair with
+- **Time alignment** (step 3) is a guided wizard. For the **sub to the main**: put the mic where both are heard
+  (usually FOH), press **Play the main** (pink noise from the main only), then **Play the sub** (the main muted, the
+  sub on). LiveAlign matches their phase across the crossover region (half to twice the crossover frequency) and gives
+  the delay for the speaker that arrives first, taking into account any delay already set in the processor when you
+  measured. **Apply** puts it in the settings (swapping which speaker is delayed if needed), then **Check** plays both
+  together and confirms they add up in phase at the crossover (the sum should gain about 6 dB over each on its own).
+  **Redo** starts again. Other alignments line up a fill, a delay or one side of a left / right pair with
   another speaker where their coverage meets: the front rows for a front fill, under the balcony for a delay, the
   centre line for left / right (not FOH, which is usually off to one side). Pick the speaker to delay, the one it
   lines up to and the spot, move the measurement mic there, set both speakers' processor delays to 0, and press
@@ -262,13 +284,17 @@ it plays. Choose the output it plays from. `G` toggles it.
 In the **app**, outputs carry only the generator; inputs are never passed through, so the mic cannot feed back into
 the PA. In the **VST3**, audio passes through untouched unless the generator is driving a channel.
 
-### 3 Room tuning
+### 4 Room EQ
 
 Measures the whole system at the listening positions and tunes it toward a target.
 
 - **Listening positions** (left): every position with its aim and whether it has a before / after measurement.
   **+ Position** adds one. **Where the mics are now** says where each mic is; with one mic, **Next position** moves
   it to the next position not measured yet (and LiveAlign does that by itself after each measurement).
+- **Rounds:** tick the planned positions to measure. With as many mics as positions, they are all measured at once;
+  with fewer mics (two mics for six positions, say) LiveAlign measures in rounds and tells you which mic to **move**
+  where before the next one. Mics left at a position already measured sit the next round out. Positions can be
+  skipped.
 - **1 Measure:** plays pink noise (whole system or one output), finds each mic's arrival, averages, and stores each
   mic's response at its position. Points below the minimum coherence are left out. Measuring a position again
   replaces its earlier measurement of the same round (before or after EQ).
@@ -285,7 +311,51 @@ Measures the whole system at the listening positions and tunes it toward a targe
 The graph shows each position (thin), the before and after averages, the target with a +/-3 dB band, and the before
 average with the suggested EQ (dashed).
 
-## Tuning report
+### 5 Feedback test
+
+With a microphone open on stage and the system running, slowly raise the gain. LiveAlign watches the spectrum and
+flags a frequency that stands 12 dB or more above its neighbours (within a third of an octave) for several frames in
+a row, the start of a ring. Pull the gain back, put in the suggested cut (a narrow bell, Q 10) and go again for the
+next ring; tick each one once its cut is in. The rings, with the stage mic they were found on, go in the tuning report.
+
+### 6 Room acoustics
+
+Uses the impulse responses captured at each listening position during Room EQ (and the noise floor from Mic setup):
+
+- **RT60** (from T20 or T30, T15 for a short or noisy response) and **EDT** per octave band, 63 Hz - 8 kHz.
+- **C50**, **C80** and **D50** (clarity and definition).
+- **STI** per position (speech intelligibility, IEC 60268-16 indirect method from the impulse response, male weights).
+- **Room modes**: peaks that the positions share below about 300 Hz.
+- **Coverage**: level spread across the positions.
+- **NC** and **NR** ratings of the background noise.
+
+These are estimates from a live-sound measurement, not a certified acoustic survey.
+
+## Monitoring mic
+
+The mic used during the event, usually just one at FOH, set up on its own: its input, calibration files (or pick it from
+the Mic locker, or take one of the tuning mics), sound level calibration and where it is on the Venue plan. Live
+monitoring and the VST3 use it; the tuning mics are kept for the Tuning steps.
+
+## Live monitoring additions
+
+- **Event panel:** the sound level logged every 5 seconds through the event, the rolling LAeq and a limit you set.
+- **Target:** the target curve is anchored where you put it instead of following the measurement; **Re-level**
+  lines it up with the current measurement again.
+
+## Reports
+
+Two reports, each its own page under **Reports**: pick the chapters (remembered on this computer), who prepared it,
+and export the PDF. The cover lists the chapters in bold, numbered; every page is numbered "page x of y"; the venue
+plan has its own landscape page.
+
+- **Tuning report:** summary with the settings **as found** (when the session started) beside **as left**, the venue
+  plan (tuning mics), speakers and processor settings, crossover, time alignment, room EQ, feedback test, room
+  acoustics, mics and measurements.
+- **Live monitoring report:** sound level of the event against the limit, the monitoring mic and its calibration, the
+  venue plan (monitoring mic) and the traces captured during the event.
+
+## Tuning report (details)
 
 **Tuning report (PDF)...** (on Home and on the Venue plan page) writes a PDF of the open session: a cover with the
 venue, session, date, who prepared it (Settings > Reports) and the analysis settings; the venue plan; the speakers
@@ -400,7 +470,9 @@ delay and of a Butterworth filter (magnitude and phase against theory), coherenc
 finder (full range, inverted polarity, a sub-like band-limited path, silence), A and C weighting, the sound level
 meter, generator levels and pink-noise slope, calibration / FRD / CSV file parsing, the target curves, and the
 crossover maths (Linkwitz-Riley, Butterworth and Bessel responses against theory, minimum phase from magnitude, the
-timing of measured responses, and the optimiser on a known top and sub, also with a room notch). CI runs them with address and
+timing of measured responses, and the optimiser on a known top and sub, also with a room notch), the crossover pair
+following the speakers' roles, the room acoustics (RT60, EDT, clarity and STI of a synthetic decay with a known
+reverb time, NC / NR) and the feedback detector (a ring found, music and noise left alone). CI runs them with address and
 undefined-behaviour sanitizers before building.
 
 `-DLA_BUILD_PREVIEW=ON` builds a local-only tool that feeds a simulated PA and room through the processor and saves
@@ -419,10 +491,7 @@ screenshots of every view, including measuring a simulated top and sub and findi
 
 ## Roadmap
 
-- **Room performance (next):** room acoustics from impulse responses at the positions: reverb time (RT60, EDT) per
-  octave, clarity (C50 / C80), speech intelligibility (STI estimate), room modes, coverage across the seats, and the
-  noise floor as an NC / NR rating.
-- **Room tuning additions:** top / sub alignment checked at the seats, feedback ring-out for stage mics.
+- **Room acoustics additions:** coverage maps on the venue plan, acoustics from a dedicated sweep.
 - **Speakers additions:** EQ suggestions per speaker, more than one crossover pair at a time, CLF / GLL data
   (these formats are closed or binary; FRD / CSV exports from the manufacturer's software work today).
-- **Monitoring additions:** delay tracking, trace offsets, SPL logging with alarms, PDF reports.
+- **Monitoring additions:** delay tracking, trace offsets, sound level alarms.

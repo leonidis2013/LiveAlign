@@ -6,21 +6,34 @@
 // session, settings and full-screen controls at the bottom.
 #include <functional>
 #include "Theme.h"
+#include "Logo.h"
 
 namespace la::ui
 {
-enum class Page { Home = 0, Mics = 1, Speakers = 2, Room = 3, Monitor = 4, Plan = 5, Locker = 6 };
-constexpr int kNumPages = 7;
-// The navigation pane, top to bottom. Negative entries are section headings (-1 Configuration, -2 Tuning,
-// -3 Monitoring). The mic locker is opened from its own button at the bottom.
-constexpr int kNavOrder[] = { 0, -1, 1, 2, -2, 3, 5, -3, 4 };
-inline const char* navHeading (int h) { static const char* n[] = { "CONFIGURATION", "TUNING", "MONITORING" }; return n[juce::jlimit (0, 2, -h - 1)]; }
+enum class Page
+{
+    Home = 0,
+    Mics, Speakers, Plan,                                       // setup
+    Response, Crossover, Align, Room, Feedback, Acoustics,      // tuning, in order
+    MonitorMic, Monitor,                                        // monitoring
+    TuningReport, MonitorReport,                                // reports
+    Locker
+};
+constexpr int kNumPages = 15;
+// The navigation pane, top to bottom. Negative entries are section headings. The mic locker is opened from its
+// own button at the bottom.
+constexpr int kNavOrder[] = { 0, -1, 1, 2, 3, -2, 4, 5, 6, 7, 8, 9, -3, 10, 11, -4, 12, 13 };
+inline const char* navHeading (int h) { static const char* n[] = { "SETUP", "TUNING", "MONITORING", "REPORTS" }; return n[juce::jlimit (0, 3, -h - 1)]; }
+inline bool isTuningStep (int page) { return page >= (int) Page::Response && page <= (int) Page::Acoustics; }
+inline int tuningStepNumber (int page) { return page - (int) Page::Response + 1; }
 
 enum class StepStatus { Ready, InProgress, Attention, NotStarted, Later, None };
 
 inline const char* pageName (int i)
 {
-    static const char* names[] = { "Home", "Mic setup", "Speakers", "Room tuning", "Monitoring", "Venue plan", "Mic locker" };
+    static const char* names[] = { "Home", "Mics", "Speakers", "Venue plan", "Speaker response", "Crossover", "Time alignment", "Room EQ",
+                                   "Feedback test", "Room acoustics", "Monitor mic", "Live monitoring", "Tuning report", "Monitoring report",
+                                   "Mic locker" };
     return names[juce::jlimit (0, kNumPages - 1, i)];
 }
 
@@ -28,14 +41,15 @@ inline const char* pageName (int i)
 inline juce::Path pageIcon (int page)
 {
     juce::Path p;
-    switch (page)
+    switch ((Page) page)
     {
-        case 0:   // home: house
+        case Page::Home:   // house
             p.startNewSubPath (3.0f, 11.0f); p.lineTo (12.0f, 3.5f); p.lineTo (21.0f, 11.0f);
             p.startNewSubPath (5.5f, 9.5f); p.lineTo (5.5f, 20.5f); p.lineTo (18.5f, 20.5f); p.lineTo (18.5f, 9.5f);
             p.startNewSubPath (10.0f, 20.5f); p.lineTo (10.0f, 14.5f); p.lineTo (14.0f, 14.5f); p.lineTo (14.0f, 20.5f);
             break;
-        case 1:   // mic setup: measurement mic on a stand
+        case Page::Mics:
+        case Page::MonitorMic:   // measurement mic on a stand
             p.addRoundedRectangle (9.0f, 2.5f, 6.0f, 11.0f, 3.0f);
             p.startNewSubPath (6.0f, 10.0f);
             p.quadraticTo (6.0f, 17.0f, 12.0f, 17.0f);
@@ -43,12 +57,32 @@ inline juce::Path pageIcon (int page)
             p.startNewSubPath (12.0f, 17.0f); p.lineTo (12.0f, 21.0f);
             p.startNewSubPath (8.0f, 21.0f); p.lineTo (16.0f, 21.0f);
             break;
-        case 2:   // speakers: cabinet with woofer and tweeter
+        case Page::Speakers:   // cabinet with woofer and tweeter
             p.addRoundedRectangle (5.0f, 2.5f, 14.0f, 19.0f, 2.0f);
             p.addEllipse (8.0f, 11.0f, 8.0f, 8.0f);
             p.addEllipse (10.5f, 5.0f, 3.0f, 3.0f);
             break;
-        case 3:   // room tuning: EQ faders
+        case Page::Plan:   // room outline with a speaker and a mic
+            p.addRoundedRectangle (3.0f, 3.5f, 18.0f, 17.0f, 2.0f);
+            p.addRectangle (7.0f, 6.5f, 4.0f, 3.0f);
+            p.addRectangle (13.0f, 6.5f, 4.0f, 3.0f);
+            p.addEllipse (10.0f, 14.0f, 4.0f, 4.0f);
+            break;
+        case Page::Response:   // a speaker and its response curve
+            p.addRoundedRectangle (2.5f, 6.0f, 7.0f, 12.0f, 1.5f);
+            p.addEllipse (4.0f, 11.0f, 4.0f, 4.0f);
+            p.startNewSubPath (12.0f, 15.0f); p.quadraticTo (14.0f, 9.0f, 16.5f, 10.5f); p.quadraticTo (19.0f, 12.0f, 21.5f, 8.0f);
+            break;
+        case Page::Crossover:   // two slopes crossing
+            p.startNewSubPath (2.5f, 7.0f); p.lineTo (9.0f, 7.0f); p.quadraticTo (14.0f, 7.0f, 19.0f, 19.0f);
+            p.startNewSubPath (21.5f, 7.0f); p.lineTo (15.0f, 7.0f); p.quadraticTo (10.0f, 7.0f, 5.0f, 19.0f);
+            break;
+        case Page::Align:   // two arrivals meeting on a line
+            p.startNewSubPath (12.0f, 3.0f); p.lineTo (12.0f, 21.0f);
+            p.startNewSubPath (2.5f, 12.0f); p.lineTo (5.5f, 12.0f); p.lineTo (7.5f, 6.0f); p.lineTo (9.5f, 17.0f); p.lineTo (10.5f, 12.0f);
+            p.startNewSubPath (21.5f, 12.0f); p.lineTo (18.5f, 12.0f); p.lineTo (16.5f, 6.0f); p.lineTo (14.5f, 17.0f); p.lineTo (13.5f, 12.0f);
+            break;
+        case Page::Room:   // EQ faders
             p.startNewSubPath (6.0f, 3.0f);  p.lineTo (6.0f, 21.0f);
             p.startNewSubPath (12.0f, 3.0f); p.lineTo (12.0f, 21.0f);
             p.startNewSubPath (18.0f, 3.0f); p.lineTo (18.0f, 21.0f);
@@ -56,12 +90,33 @@ inline juce::Path pageIcon (int page)
             p.addRoundedRectangle (9.5f, 6.0f, 5.0f, 3.5f, 1.2f);
             p.addRoundedRectangle (15.5f, 10.0f, 5.0f, 3.5f, 1.2f);
             break;
-        case 5:   // venue plan: room outline with a speaker and a mic
-            p.addRoundedRectangle (3.0f, 3.5f, 18.0f, 17.0f, 2.0f);
-            p.addRectangle (7.0f, 6.5f, 4.0f, 3.0f);
-            p.addRectangle (13.0f, 6.5f, 4.0f, 3.0f);
-            p.addEllipse (10.0f, 14.0f, 4.0f, 4.0f);
+        case Page::Feedback:   // a narrow ringing peak
+            p.startNewSubPath (2.5f, 19.0f); p.lineTo (9.0f, 18.0f); p.lineTo (11.0f, 4.0f); p.lineTo (13.0f, 18.0f); p.lineTo (21.5f, 19.0f);
+            p.startNewSubPath (15.5f, 6.0f); p.quadraticTo (17.5f, 8.0f, 15.5f, 10.0f);
+            p.startNewSubPath (18.0f, 4.0f); p.quadraticTo (21.0f, 8.0f, 18.0f, 12.0f);
             break;
+        case Page::Acoustics:   // a decaying impulse
+            p.startNewSubPath (2.5f, 20.5f); p.lineTo (21.5f, 20.5f);
+            p.startNewSubPath (4.0f, 20.5f); p.lineTo (4.0f, 3.5f);
+            p.startNewSubPath (7.5f, 20.5f); p.lineTo (7.5f, 9.0f);
+            p.startNewSubPath (11.0f, 20.5f); p.lineTo (11.0f, 13.0f);
+            p.startNewSubPath (14.5f, 20.5f); p.lineTo (14.5f, 16.0f);
+            p.startNewSubPath (18.0f, 20.5f); p.lineTo (18.0f, 18.0f);
+            break;
+        case Page::TuningReport:
+        case Page::MonitorReport:   // a page with lines
+            p.startNewSubPath (14.0f, 2.5f); p.lineTo (5.0f, 2.5f); p.lineTo (5.0f, 21.5f); p.lineTo (19.0f, 21.5f); p.lineTo (19.0f, 7.5f); p.lineTo (14.0f, 2.5f); p.lineTo (14.0f, 7.5f); p.lineTo (19.0f, 7.5f);
+            p.startNewSubPath (8.0f, 12.0f); p.lineTo (16.0f, 12.0f);
+            p.startNewSubPath (8.0f, 15.5f); p.lineTo (16.0f, 15.5f);
+            p.startNewSubPath (8.0f, 19.0f); p.lineTo (13.0f, 19.0f);
+            break;
+        case Page::Locker:   // a box
+            p.addRoundedRectangle (3.0f, 7.0f, 18.0f, 13.5f, 1.5f);
+            p.startNewSubPath (3.0f, 11.0f); p.lineTo (21.0f, 11.0f);
+            p.startNewSubPath (10.0f, 14.0f); p.lineTo (14.0f, 14.0f);
+            p.startNewSubPath (8.0f, 7.0f); p.lineTo (8.0f, 4.0f); p.lineTo (16.0f, 4.0f); p.lineTo (16.0f, 7.0f);
+            break;
+        case Page::Monitor:
         default:  // monitoring: graph with a trace
             p.startNewSubPath (3.0f, 3.0f); p.lineTo (3.0f, 21.0f); p.lineTo (21.0f, 21.0f);
             p.startNewSubPath (5.5f, 16.0f);
@@ -139,7 +194,7 @@ public:
         addChildComponent (updateButton);
     }
 
-    void setCurrent (int page) { if (page != current) { current = page; repaint(); } }
+    void setCurrent (int page) { if (page != current) { current = page; scrollToShow (page); repaint(); } }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; repaint(); } }
     void setLockerAvailable (bool a) { lockerButton.setVisible (a); resized(); }
     void setLockerActive (bool a)
@@ -181,78 +236,93 @@ public:
         g.setColour (p.border);
         g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
 
-        // name, as in the other Live plug-ins
+        // logo and name
+        drawLogo (g, juce::Rectangle<float> (12.0f, 10.0f, 30.0f, 30.0f), true);
         g.setColour (p.text);
-        g.setFont (font (16.0f, true));
-        g.drawText ("LIVEALIGN", juce::Rectangle<int> (14, 12, getWidth() - 20, 22), juce::Justification::centredLeft);
+        g.setFont (font (15.5f, true));
+        g.drawText ("LIVEALIGN", juce::Rectangle<int> (50, 11, getWidth() - 56, 18), juce::Justification::centredLeft);
         g.setColour (p.textFaint);
         g.setFont (font (10.5f));
-        g.drawText ("v" + juce::String (JucePlugin_VersionString), juce::Rectangle<int> (15, 32, getWidth() - 20, 14), juce::Justification::centredLeft);
+        g.drawText ("v" + juce::String (JucePlugin_VersionString), juce::Rectangle<int> (51, 28, getWidth() - 56, 13), juce::Justification::centredLeft);
 
-        // section headings
         {
-            int y = 58;
+            juce::Graphics::ScopedSaveState save (g);
+            g.reduceClipRegion (listArea());
+
+            // section headings
             for (int k : kNavOrder)
             {
-                if (k >= 0) { if (visible[k]) y += 48; continue; }
-                if (! headingVisible (k)) continue;
+                if (k >= 0 || ! headingVisible (k)) continue;
+                const int y = headingY (k);
                 g.setColour (p.textFaint);
                 g.setFont (font (10.0f, true));
-                g.drawText (navHeading (k), juce::Rectangle<int> (16, y + 6, getWidth() - 28, 16), juce::Justification::centredLeft);
+                g.drawText (navHeading (k), juce::Rectangle<int> (16, y + 4, getWidth() - 28, 16), juce::Justification::centredLeft);
                 g.setColour (p.border);
-                g.drawHorizontalLine (y + 14, 16.0f + (float) juce::GlyphArrangement::getStringWidthInt (font (10.0f, true), navHeading (k)) + 8.0f,
+                g.drawHorizontalLine (y + 12, 16.0f + (float) juce::GlyphArrangement::getStringWidthInt (font (10.0f, true), navHeading (k)) + 8.0f,
                                       (float) getWidth() - 14.0f);
-                y += 26;
+            }
+
+            for (int i = 0; i < kNumPages; ++i)
+            {
+                if (! visible[i] || ! inNav (i)) continue;
+                const auto r = itemBounds (i);
+                const bool active = i == current, over = i == hover;
+                if (active || over)
+                {
+                    g.setColour (active ? p.panelRaised : p.panelRaised.withAlpha (0.5f));
+                    g.fillRoundedRectangle (r.toFloat(), 6.0f);
+                }
+                if (active)
+                {
+                    g.setColour (p.accent);
+                    g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 8.0f, 3.0f, (float) r.getHeight() - 16.0f, 1.5f);
+                }
+
+                auto iconBox = juce::Rectangle<float> (24.0f, 24.0f).withCentre ({ (float) r.getX() + 20.0f, (float) r.getCentreY() });
+                auto icon = pageIcon (i);
+                icon.applyTransform (juce::AffineTransform::scale (0.85f, 0.85f, 12.0f, 12.0f).translated (iconBox.getX(), iconBox.getY()));
+                g.setColour (active ? p.accent : p.textDim);
+                g.strokePath (icon, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+                const auto& e = entries[i];
+                auto text = r.withTrimmedLeft (38).withTrimmedRight (e.status == StepStatus::None ? 6 : 24);
+                juce::String name = pageName (i);
+                if (isTuningStep (i)) name = juce::String (tuningStepNumber (i)) + "  " + name;
+                g.setColour (active ? p.text : shade (p.text, p.dark ? -0.15f : 0.2f));
+                g.setFont (font (12.5f, true));
+                if (e.text.isNotEmpty())
+                {
+                    g.drawText (name, text.removeFromTop (r.getHeight() / 2 + 1).withTrimmedTop (2), juce::Justification::bottomLeft, true);
+                    g.setColour (e.status == StepStatus::Attention ? p.warn : p.textDim);
+                    g.setFont (font (10.0f));
+                    g.drawText (e.text, text, juce::Justification::topLeft, true);
+                }
+                else
+                    g.drawText (name, text, juce::Justification::centredLeft, true);
+
+                drawStatusBadge (g, juce::Rectangle<float> (13.0f, 13.0f).withCentre ({ (float) r.getRight() - 12.0f, (float) r.getCentreY() }),
+                                 e.status, e.fraction);
             }
         }
-
-        for (int i = 0; i < kNumPages; ++i)
+        // more below / above the visible part of the list
+        const auto la = listArea();
+        if (scroll > 0 || contentHeight() - scroll > la.getHeight())
         {
-            if (! visible[i]) continue;
-            const auto r = itemBounds (i);
-            const bool active = i == current, over = i == hover;
-            if (active || over)
-            {
-                g.setColour (active ? p.panelRaised : p.panelRaised.withAlpha (0.5f));
-                g.fillRoundedRectangle (r.toFloat(), 7.0f);
-            }
-            if (active)
-            {
-                g.setColour (p.accent);
-                g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 10.0f, 3.0f, (float) r.getHeight() - 20.0f, 1.5f);
-            }
-
-            auto iconBox = juce::Rectangle<float> (24.0f, 24.0f).withCentre ({ (float) r.getX() + 21.0f, (float) r.getCentreY() });
-            auto icon = pageIcon (i);
-            icon.applyTransform (juce::AffineTransform::translation (iconBox.getX(), iconBox.getY()));
-            g.setColour (active ? p.accent : p.textDim);
-            g.strokePath (icon, juce::PathStrokeType (1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-            const auto& e = entries[i];
-            auto text = r.withTrimmedLeft (40).withTrimmedRight (26);
-            g.setColour (active ? p.text : shade (p.text, p.dark ? -0.15f : 0.2f));
-            g.setFont (font (13.0f, true));
-            if (e.text.isNotEmpty())
-            {
-                g.drawText (pageName (i), text.removeFromTop (r.getHeight() / 2 + 1).withTrimmedTop (3), juce::Justification::bottomLeft, true);
-                g.setColour (e.status == StepStatus::Attention ? p.warn : p.textDim);
-                g.setFont (font (10.5f));
-                g.drawText (e.text, text.withTrimmedTop (1), juce::Justification::topLeft, true);
-            }
-            else
-                g.drawText (pageName (i), text, juce::Justification::centredLeft, true);
-
-            drawStatusBadge (g, juce::Rectangle<float> (15.0f, 15.0f).withCentre ({ (float) r.getRight() - 13.0f, (float) r.getCentreY() }),
-                             e.status, e.fraction);
+            g.setColour (p.textFaint);
+            if (scroll > 0) g.drawText (juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb2")), la.withHeight (12).withTrimmedRight (8), juce::Justification::centredRight);
+            if (contentHeight() - scroll > la.getHeight())
+                g.drawText (juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xbc")), la.withTrimmedTop (la.getHeight() - 12).withTrimmedRight (8), juce::Justification::centredRight);
         }
 
-        // venue and session at the bottom
+        // venue and session at the very bottom
         auto v = venueBounds();
         if (v.contains (hoverPoint))
         {
             g.setColour (p.panelRaised.withAlpha (0.6f));
             g.fillRoundedRectangle (v.toFloat(), 7.0f);
         }
+        g.setColour (p.border);
+        g.drawHorizontalLine (v.getY() - 6, 10.0f, (float) getWidth() - 10.0f);
         v = v.reduced (10, 6);
         g.setColour (p.textFaint);
         g.setFont (font (10.0f, true));
@@ -270,16 +340,21 @@ public:
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (10, 10);
-        auto bottom = r.removeFromBottom (lockerButton.isVisible() ? 64 : 30);
-        settingsButton.setBounds (bottom.removeFromBottom (30));
-        if (lockerButton.isVisible())
-        {
-            bottom.removeFromBottom (4);
-            lockerButton.setBounds (bottom.removeFromBottom (30));
-        }
-        updateButton.setBounds (settingsButton.getX(), settingsButton.getY() - (lockerButton.isVisible() ? 34 : 0) - 34,
-                                settingsButton.getWidth(), 30);
+        // bottom, top to bottom: update, mic locker, settings, then the venue
+        auto r = getLocalBounds().reduced (10, 0);
+        r.removeFromBottom (kVenueH + 16);
+        settingsButton.setBounds (r.removeFromBottom (30));
+        r.removeFromBottom (6);
+        if (lockerButton.isVisible()) { lockerButton.setBounds (r.removeFromBottom (30)); r.removeFromBottom (6); }
+        if (updateButton.isVisible()) updateButton.setBounds (r.removeFromBottom (30));
+        scroll = juce::jlimit (0, juce::jmax (0, contentHeight() - listArea().getHeight()), scroll);
+    }
+
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    {
+        const int before = scroll;
+        scroll = juce::jlimit (0, juce::jmax (0, contentHeight() - listArea().getHeight()), scroll - juce::roundToInt (w.deltaY * 200.0f));
+        if (scroll != before) repaint();
     }
 
     void mouseMove (const juce::MouseEvent& e) override
@@ -287,6 +362,8 @@ public:
         hoverPoint = e.getPosition();
         const int h = itemAt (e.getPosition());
         if (h != hover) hover = h;
+        if (h >= 0 && entries[h].text.isNotEmpty()) setTooltip (juce::String (pageName (h)) + ": " + entries[h].text);
+        else setTooltip ({});
         repaint();
     }
     void mouseExit (const juce::MouseEvent&) override { hover = -1; hoverPoint = {}; repaint(); }
@@ -299,34 +376,73 @@ public:
 
 private:
     struct Entry { StepStatus status = StepStatus::None; juce::String text; float fraction = 0.0f; };
+    static constexpr int kTop = 52, kItemH = 38, kItemGap = 2, kHeadingH = 24, kVenueH = 72;
+
+    static bool inNav (int page) { for (int k : kNavOrder) if (k == page) return true; return false; }
+
+    juce::Rectangle<int> listArea() const
+    {
+        const int bottom = (updateButton.isVisible() ? updateButton.getY() : lockerButton.isVisible() ? lockerButton.getY() : settingsButton.getY()) - 8;
+        return { 0, kTop, getWidth() - 1, juce::jmax (0, bottom - kTop) };
+    }
+
+    int contentHeight() const
+    {
+        int y = 0;
+        for (int k : kNavOrder)
+        {
+            if (k < 0) { if (headingVisible (k)) y += kHeadingH; }
+            else if (visible[k]) y += kItemH + kItemGap;
+        }
+        return y + 4;
+    }
+
+    int headingY (int h) const
+    {
+        int y = kTop - scroll;
+        for (int k : kNavOrder)
+        {
+            if (k == h) return y;
+            if (k < 0) { if (headingVisible (k)) y += kHeadingH; }
+            else if (visible[k]) y += kItemH + kItemGap;
+        }
+        return y;
+    }
 
     juce::Rectangle<int> itemBounds (int i) const
     {
-        int y = 58;
+        int y = kTop - scroll;
         for (int k : kNavOrder)
         {
-            if (k == i) return { 6, y, getWidth() - 12, 44 };
-            if (k < 0) { if (headingVisible (k)) y += 26; }
-            else if (visible[k]) y += 48;
+            if (k == i) return { 6, y, getWidth() - 12, kItemH };
+            if (k < 0) { if (headingVisible (k)) y += kHeadingH; }
+            else if (visible[k]) y += kItemH + kItemGap;
         }
         return {};
     }
 
-    juce::Rectangle<int> venueBounds() const
+    void scrollToShow (int page)
     {
-        const int top = settingsButton.getY() - (lockerButton.isVisible() ? 34 : 0) - (updateButton.isVisible() ? 34 : 0) - 78;
-        return { 6, top, getWidth() - 12, 72 };
+        const auto r = itemBounds (page);
+        const auto la = listArea();
+        if (r.isEmpty() || la.isEmpty()) return;
+        if (r.getY() < la.getY()) scroll -= la.getY() - r.getY();
+        else if (r.getBottom() > la.getBottom()) scroll += r.getBottom() - la.getBottom();
+        scroll = juce::jlimit (0, juce::jmax (0, contentHeight() - la.getHeight()), scroll);
     }
+
+    juce::Rectangle<int> venueBounds() const { return { 6, getHeight() - kVenueH - 8, getWidth() - 12, kVenueH }; }
 
     int itemAt (juce::Point<int> pt) const
     {
+        if (! listArea().contains (pt)) return -1;
         for (int i = 0; i < kNumPages; ++i)
-            if (visible[i] && itemBounds (i).contains (pt)) return i;
+            if (visible[i] && inNav (i) && itemBounds (i).contains (pt)) return i;
         return -1;
     }
 
     Entry entries[kNumPages];
-    bool visible[kNumPages] { true, true, true, true, true, true, false };
+    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, false };
 
     // A heading shows when any page under it does.
     bool headingVisible (int h) const
@@ -339,12 +455,12 @@ private:
         }
         return under;
     }
-    int current = 0, hover = -1;
+    int current = 0, hover = -1, scroll = 0;
     juce::Point<int> hoverPoint;
     juce::String venueName, sessionName;
     bool dirty = false;
     juce::TextButton settingsButton { "SETTINGS" }, lockerButton { "MIC LOCKER" }, updateButton;
 public:
-    static constexpr int kWidth = 184;
+    static constexpr int kWidth = 196;
 };
 } // namespace la::ui

@@ -61,14 +61,22 @@ public:
         };
         la::StandaloneHooks::toggleFullScreen() = [this]
         {
-            auto& desktop = juce::Desktop::getInstance();
             if (mainWindow == nullptr) return;
+           #if JUCE_MAC
+            mainWindow->setFullScreen (! mainWindow->isFullScreen());   // macOS full screen (its own space), as the green button
+           #else
+            auto& desktop = juce::Desktop::getInstance();
             if (desktop.getKioskModeComponent() == mainWindow.get()) desktop.setKioskModeComponent (nullptr, false);
             else desktop.setKioskModeComponent (mainWindow.get(), false);
+           #endif
         };
         la::StandaloneHooks::isFullScreen() = [this]
         {
+           #if JUCE_MAC
+            return mainWindow != nullptr && mainWindow->isFullScreen();
+           #else
             return mainWindow != nullptr && juce::Desktop::getInstance().getKioskModeComponent() == mainWindow.get();
+           #endif
         };
 
         mainWindow = std::make_unique<juce::StandaloneFilterWindow> (
@@ -79,9 +87,12 @@ public:
         for (auto* c : mainWindow->getChildren())
             if (auto* b = dynamic_cast<juce::TextButton*> (c))
                 if (b->getButtonText() == "Options") b->setVisible (false);
-        // the system's own title bar: red / yellow / green buttons on macOS (green = full screen), the usual ones on Windows
-        mainWindow->setUsingNativeTitleBar (true);
+        // The system's own title bar with all three buttons: on macOS the small red / yellow / green ones, and green
+        // takes the window to full screen in its own space (macOS only offers that when the window has a maximise
+        // button and is resizable). On Windows the usual minimise / maximise / close.
         mainWindow->setResizable (true, false);
+        mainWindow->setTitleBarButtonsRequired (juce::DocumentWindow::allButtons, false);
+        mainWindow->setUsingNativeTitleBar (true);
         mainWindow->setVisible (true);
     }
 

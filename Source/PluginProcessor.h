@@ -15,6 +15,8 @@
 #include "MicCalibration.h"
 #include "VenuePlan.h"
 #include "RoomTuning.h"
+#include "Monitoring.h"
+#include "TuningExtras.h"
 #include "UpdateChecker.h"
 #include "Analysis/Generator.h"
 
@@ -138,6 +140,24 @@ public:
     la::VenuePlan plan;                 // sketch of the setup (venue)           // sources, responses and crossover (venue)
     la::SessionChecks checks;           // the open session's checks
     la::RoomTuning room;                // the open session's room tuning
+    la::FeedbackTest feedback;          // the open session's feedback test
+    la::AsFound asFound;                // the open session's processor settings before anything was changed
+    la::SplLog splLog;                  // the open session's sound level log (monitoring)
+    la::MonitorMic monitorMic;          // the monitoring mic (venue)
+
+    // ---- monitoring mode ----
+    // Monitoring uses its own mic: while it is on, analysis slot 1 is the monitor mic (its input, calibration,
+    // sound level and delay) and the tuning mics are put aside, then restored. The VST3 is always in this mode.
+    void setMonitorMode (bool on);
+    bool isMonitorMode() const { return monitorModeOn; }
+    int tuningMicCount() const { return monitorModeOn ? tuningSlot.count : settings.micCount.load(); }
+    void applyMonitorMic();            // after the monitor mic was edited (while in monitoring mode)
+    void takeMonitorMicFromTuning (int mic = -1);   // copy a tuning mic (default: the one at FOH, else mic 1)
+    juce::String loadMonitorCalibration (const juce::File&, int angle = -1);
+    void assignMonitorFromLocker (const juce::String& lockerId);
+    void syncMonitorFromSlot();        // the monitor mic's delay and sound level, as changed while monitoring
+    // Remember the system as found, the first time something is about to change it in this session.
+    void noteAsFound() { if (! asFound.taken()) asFound.take (system, today() + juce::Time::getCurrentTime().formatted (" %H:%M")); }
 
     la::Settings settings;
     la::Analyzer analyzer { settings };
@@ -162,6 +182,9 @@ private:
     void applyCalibration (int mic);
     std::array<la::MicCalSet, la::kMaxMics> cals;
     int aimOverrideValue = -1;
+
+    bool monitorModeOn = false;
+    struct TuningSlot { int count = 1, selected = 0, input = 0; float delay = 0.0f, offset = 120.0f; bool calibrated = false; } tuningSlot;
 
     std::vector<la::SessionInfo> sessions;
     int current = 0;

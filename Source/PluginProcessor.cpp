@@ -20,6 +20,7 @@ LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
     locker.load();
     resetVenue();
     traces.importLegacyFolder();
+    if (wrapperType != wrapperType_Standalone) setMonitorMode (true);   // the VST3 only monitors
     savedProjectText = createProjectXml()->toString();
 }
 
@@ -218,6 +219,7 @@ void LiveAlignProcessor::setAimOverride (int aim)
 // Gives the analysis the file that matches how the mic is aimed now.
 void LiveAlignProcessor::applyCalibration (int mic)
 {
+    if (monitorModeOn && mic == 0) { applyMonitorMic(); return; }
     const auto& c = cals[(size_t) mic];
     const int a = c.pick (effectiveAim (mic));
     if (a < 0) { if (! analyzer.getCalibration (mic).empty()) analyzer.clearCalibration (mic); return; }
@@ -359,6 +361,7 @@ juce::String LiveAlignProcessor::micModelSerial (int mic) const
 
 bool LiveAlignProcessor::syncLocker()
 {
+    if (monitorModeOn) return false;   // slot 1 is the monitor mic just now
     bool changed = false;
     for (int m = 0; m < settings.micCount.load(); ++m)
     {
@@ -425,6 +428,110 @@ void LiveAlignProcessor::loadMicCalibrations (const juce::XmlElement& parent)
         loadCalibrationFile (0, juce::File (path));
 }
 
+// ---------------------------------------------------------------------------- monitoring mode
+
+void LiveAlignProcessor::setMonitorMode (bool on)
+{
+    if (on == monitorModeOn) return;
+    if (on)
+    {
+        if (! monitorMic.configured) takeMonitorMicFromTuning();
+        tuningSlot = { settings.micCount.load(), settings.selectedMic.load(), settings.micInput[0].load(), settings.micDelayMs[0].load(),
+                       settings.micSplOffset[0].load(), settings.micSplCalibrated[0].load() };
+        monitorModeOn = true;
+        applyMonitorMic();
+    }
+    else
+    {
+        // what changed while monitoring belongs to the monitor mic
+        monitorMic.delayMs = settings.micDelayMs[0].load();
+        monitorMic.splOffset = settings.micSplOffset[0].load();
+        monitorMic.splCalibrated = settings.micSplCalibrated[0].load();
+        monitorModeOn = false;
+        settings.micCount = tuningSlot.count;
+        settings.selectedMic = tuningSlot.selected;
+        settings.micInput[0] = tuningSlot.input;
+        settings.micDelayMs[0] = tuningSlot.delay;
+        settings.micSplOffset[0] = tuningSlot.offset;
+        settings.micSplCalibrated[0] = tuningSlot.calibrated;
+        applyCalibration (0);
+    }
+    settings.requestResetAverages = true;
+    settings.requestResetLeq = true;
+}
+
+void LiveAlignProcessor::applyMonitorMic()
+{
+    if (! monitorModeOn) return;
+    settings.micCount = 1;
+    settings.selectedMic = 0;
+    settings.micInput[0] = juce::jlimit (0, kMaxInputs - 1, monitorMic.input);
+    settings.micDelayMs[0] = monitorMic.delayMs;
+    settings.micSplOffset[0] = monitorMic.splOffset;
+    settings.micSplCalibrated[0] = monitorMic.splCalibrated;
+    const int a = monitorMic.cal.pick (monitorMic.aim);
+    if (a < 0) { if (! analyzer.getCalibration (0).empty()) analyzer.clearCalibration (0); }
+    else analyzer.setCalibration (0, monitorMic.cal.table[a], monitorMic.cal.name[a]);
+}
+
+void LiveAlignProcessor::takeMonitorMicFromTuning (int mic)
+{
+    int m = 0;
+    const int count = monitorModeOn ? tuningSlot.count : settings.micCount.load();
+    if (mic >= 0 && mic < count) m = mic;
+    else
+        for (int k = 0; k < count; ++k)
+            if (mics.position[(size_t) k].containsIgnoreCase ("FOH")) { m = k; break; }
+    const bool slot0 = monitorModeOn && m == 0;
+    monitorMic.name = mics.nameOf (m);
+    monitorMic.position = mics.position[(size_t) m].isNotEmpty() ? mics.position[(size_t) m] : juce::String ("FOH");
+    monitorMic.lockerId = mics.lockerId[(size_t) m];
+    monitorMic.input = slot0 ? tuningSlot.input : settings.micInput[m].load();
+    monitorMic.cal = cals[(size_t) m];
+    monitorMic.noCalFile = mics.noCalFile[(size_t) m];
+    monitorMic.aim = ownAim (m);
+    monitorMic.splCalibrated = slot0 ? tuningSlot.calibrated : settings.micSplCalibrated[m].load();
+    monitorMic.splOffset = slot0 ? tuningSlot.offset : settings.micSplOffset[m].load();
+    monitorMic.delayMs = slot0 ? tuningSlot.delay : settings.micDelayMs[m].load();
+    applyMonitorMic();
+}
+
+juce::String LiveAlignProcessor::loadMonitorCalibration (const juce::File& f, int angle)
+{
+    if (! f.existsAsFile()) return "File not found: " + f.getFullPathName();
+    auto t = la::parseFreqTable (f.loadFileAsString().toStdString());
+    if (t.freq.size() < 3) return "No calibration data found in " + f.getFileName();
+    const int a = angle < 0 ? la::MicCalSet::angleFromName (f.getFileName()) : (angle & 1);
+    monitorMic.cal.table[a] = std::move (t);
+    monitorMic.cal.name[a] = f.getFileName();
+    monitorMic.noCalFile = false;
+    monitorMic.configured = true;
+    applyMonitorMic();
+    return {};
+}
+
+void LiveAlignProcessor::assignMonitorFromLocker (const juce::String& id)
+{
+    const auto* e = locker.find (id);
+    if (e == nullptr) return;
+    syncMonitorFromSlot();
+    monitorMic.lockerId = id;
+    monitorMic.name = e->label();
+    monitorMic.cal = e->cals;
+    monitorMic.noCalFile = e->noCalFile;
+    if (e->hasSpl) { monitorMic.splCalibrated = true; monitorMic.splOffset = e->splOffset; monitorMic.splDate = e->splDate; }
+    monitorMic.configured = true;
+    applyMonitorMic();
+}
+
+void LiveAlignProcessor::syncMonitorFromSlot()
+{
+    if (! monitorModeOn) return;
+    monitorMic.delayMs = settings.micDelayMs[0].load();
+    monitorMic.splOffset = settings.micSplOffset[0].load();
+    monitorMic.splCalibrated = settings.micSplCalibrated[0].load();
+}
+
 // ---------------------------------------------------------------------------- sessions
 
 std::unique_ptr<juce::XmlElement> LiveAlignProcessor::sessionBody() const
@@ -435,14 +542,34 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::sessionBody() const
     checks.save (*b);
     traces.save (*b);
     room.save (*b);
+    feedback.save (*b);
+    asFound.save (*b);
+    splLog.save (*b);
+    if (monitorModeOn) d->setAttribute ("mic0", tuningSlot.delay);   // the tuning mic's, not the monitor mic's
     return b;
 }
 
 void LiveAlignProcessor::loadSessionBody (const juce::XmlElement* b)
 {
+    // while monitoring, slot 1 holds the monitor mic: its delay stays, the session's goes to the tuning mic
+    struct KeepMonitorDelay
+    {
+        LiveAlignProcessor& p;
+        float d;
+        explicit KeepMonitorDelay (LiveAlignProcessor& pp) : p (pp), d (pp.settings.micDelayMs[0].load()) {}
+        ~KeepMonitorDelay()
+        {
+            if (! p.monitorModeOn) return;
+            p.tuningSlot.delay = p.settings.micDelayMs[0].load();
+            p.settings.micDelayMs[0] = d;
+        }
+    } keep (*this);
     checks = {};
     traces.clear();
     room.load (b);
+    feedback.load (b);
+    asFound.load (b);
+    splLog.load (b);
     for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
     if (b == nullptr) return;
     if (const auto* d = b->getChildByName ("Delays"))
@@ -511,6 +638,12 @@ void LiveAlignProcessor::compareWithSession (int index)
 
 void LiveAlignProcessor::resetVenue()
 {
+    const bool wasMonitoring = monitorModeOn;
+    setMonitorMode (false);
+    monitorMic = {};
+    feedback = {};
+    asFound = {};
+    splLog.clear();
     venueName = "Untitled venue";
     venueNotes.clear();
     projectFile = juce::File();
@@ -534,6 +667,7 @@ void LiveAlignProcessor::resetVenue()
     sessions.push_back (std::move (s));
     current = 0;
     for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
+    if (wasMonitoring) setMonitorMode (true);
 }
 
 std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
@@ -549,6 +683,24 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     settings.save (*st);
     for (auto* a : { "theme", "currentTab" }) st->removeAttribute (a);   // preferences of this computer
     for (int m = 0; m < la::kMaxMics; ++m) st->removeAttribute ("micDelayMs" + juce::String (m));   // per session
+    if (monitorModeOn)   // the tuning mics as they are outside monitoring
+    {
+        st->setAttribute ("micCount", tuningSlot.count);
+        st->setAttribute ("selectedMic", tuningSlot.selected);
+        st->setAttribute ("micInput0", tuningSlot.input);
+        st->setAttribute ("micSplOffset0", tuningSlot.offset);
+        st->setAttribute ("micSplCalibrated0", tuningSlot.calibrated);
+    }
+    {
+        auto mm = monitorMic;
+        if (monitorModeOn)
+        {
+            mm.delayMs = settings.micDelayMs[0].load();
+            mm.splOffset = settings.micSplOffset[0].load();
+            mm.splCalibrated = settings.micSplCalibrated[0].load();
+        }
+        mm.save (*x);
+    }
 
     mics.save (*x);
     saveMicCalibrations (*x);
@@ -582,6 +734,8 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
 
 void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
 {
+    const bool wasMonitoring = monitorModeOn;
+    setMonitorMode (false);
     const int theme = settings.theme.load(), tab = settings.currentTab.load();
     resetVenue();
     if (const auto* venue = x.getChildByName ("Venue"))
@@ -611,6 +765,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     speakers.load (x);
     system.load (x);
     plan.load (x);
+    monitorMic.load (x);
     // mics linked to the locker pick up their latest calibration from it
     for (int m = 0; m < la::kMaxMics; ++m)
         if (const auto* e = locker.find (mics.lockerId[(size_t) m]))
@@ -649,6 +804,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     }
     settings.requestResetAverages = true;
     settings.requestResetLeq = true;
+    if (wasMonitoring) setMonitorMode (true);
 }
 
 juce::String LiveAlignProcessor::saveProject (const juce::File& f)
@@ -687,8 +843,12 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     const auto keepPositions = positions;
     const auto keepAim = positionAim;
     const auto keepPlan = plan;
+    auto keepMonitor = monitorMic;
+    if (monitorModeOn) { keepMonitor.delayMs = settings.micDelayMs[0].load(); keepMonitor.splOffset = settings.micSplOffset[0].load(); }
     auto keepSystem = system;
     resetVenue();
+    monitorMic = keepMonitor;
+    applyMonitorMic();
     venueName = name.trim().isNotEmpty() ? name.trim() : juce::String ("Untitled venue");
     mics = keepMics;
     cals = keepCals;
@@ -705,6 +865,7 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
         s.hasArrival = false;
         s.proc.delayMs = 0.0;
         s.proc.eq.clear();
+        s.nearField = false;
     }
     keepSystem.alignments.clear();
     keepSystem.lastResult = {};
@@ -784,7 +945,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
     {
         if (! x->hasTagName ("LiveAlign")) return;
         settings.theme = juce::jlimit (0, 1, x->getIntAttribute ("theme", 0));
-        settings.currentTab = juce::jlimit (0, 6, x->getIntAttribute ("currentTab", 0));
+        settings.currentTab = juce::jlimit (0, 14, x->getIntAttribute ("currentTab", 0));
         if (const auto* project = x->getChildByName ("LiveAlignProject"))
         {
             loadProjectXml (*project);

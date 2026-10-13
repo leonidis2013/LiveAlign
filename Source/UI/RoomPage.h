@@ -203,8 +203,8 @@ public:
         clearButton.onClick = [this] { clearSelected(); };
         clearButton.setTooltip ("Remove the measurements at the selected position");
         addAndMakeVisible (clearButton);
-        nextPosButton.onClick = [this] { moveToNextPosition (true); };
-        nextPosButton.setTooltip ("One mic, moved between positions: put mic 1 at the next position that has not been measured");
+        nextPosButton.onClick = [this] { planNextRound (true); };
+        nextPosButton.setTooltip ("Put the mics at the next planned positions that have not been measured, and say where to move them");
         addAndMakeVisible (nextPosButton);
 
         // ---- 1 measure ----
@@ -331,7 +331,8 @@ public:
         boostBox.setSelectedId ((int) room.maxBoostDb + 1, juce::dontSendNotification);
         if (boostBox.getSelectedId() == 0) boostBox.setSelectedId (4, juce::dontSendNotification);
         tunedButton.setButtonText (room.tuned ? "Room tuned " + room.tunedOn + "  (undo)" : juce::String ("Mark the room as tuned"));
-        nextPosButton.setVisible (n == 1);
+        nextPosButton.setVisible (true);
+        nextPosButton.setButtonText (n == 1 ? "Next position" : "Next positions");
 
         double lo, hi;
         eqRange (lo, hi);
@@ -345,6 +346,7 @@ public:
     juce::String nextHint() const
     {
         if (room.count (false) == 0) return "Place the mics and measure";
+        if (plannedLeft (false) > 0 && room.count (true) == 0) return "Measure the next positions";
         if (room.suggested.empty() && ! eqApplied()) return "Suggest EQ";
         if (! eqApplied()) return "Copy the EQ to the speaker settings";
         if (room.count (true) == 0) return "Enter the EQ in the processor, then measure after";
@@ -357,7 +359,7 @@ public:
     {
         if (phase != Phase::Idle) return;
         const auto h = nextHint();
-        if (h.startsWith ("Place") || h.startsWith ("Enter")) { if (h.startsWith ("Enter")) setMeasuringAfter (true); startMeasure(); }
+        if (h.startsWith ("Place") || h.startsWith ("Enter") || h.startsWith ("Measure the next")) { if (h.startsWith ("Enter")) setMeasuringAfter (true); startMeasure(); }
         else if (h.startsWith ("Suggest")) suggest();
         else if (h.startsWith ("Copy")) applyEq();
         else if (h.startsWith ("Mark")) { room.tuned = true; room.tunedOn = LiveAlignProcessor::today(); refresh(); changed(); }
@@ -390,8 +392,23 @@ public:
             g.fillRoundedRectangle (row.toFloat(), 5.0f);
             if (sel) { g.setColour (p.accent); g.drawRoundedRectangle (row.toFloat().reduced (0.5f), 5.0f, 1.2f); }
             auto r = row.reduced (8, 0);
-            g.setColour (positionColour (i));
-            g.fillRoundedRectangle (r.removeFromLeft (4).toFloat().withSizeKeepingCentre (4.0f, 20.0f), 2.0f);
+            {
+                // in the measuring plan: a tick box in the position's colour
+                const auto box = r.removeFromLeft (16).toFloat().withSizeKeepingCentre (14.0f, 14.0f);
+                const bool planned = ! room.skipped.contains (name);
+                g.setColour (positionColour (i));
+                if (planned)
+                {
+                    g.fillRoundedRectangle (box, 3.0f);
+                    juce::Path tick;
+                    tick.startNewSubPath (box.getX() + 3.0f, box.getCentreY());
+                    tick.lineTo (box.getX() + 6.0f, box.getBottom() - 3.5f);
+                    tick.lineTo (box.getRight() - 3.0f, box.getY() + 3.5f);
+                    g.setColour (p.bg);
+                    g.strokePath (tick, juce::PathStrokeType (1.8f));
+                }
+                else g.drawRoundedRectangle (box.reduced (0.5f), 3.0f, 1.3f);
+            }
             r.removeFromLeft (8);
             juce::String st;
             if (room.hasAt (name, false)) st << "before";
@@ -428,8 +445,8 @@ public:
         g.setColour (p.textFaint);
         g.setFont (font (11.0f));
         g.drawFittedText (settings.micCount.load() == 1
-                              ? "One mic: measure, then Next position (or pick where it went) and measure again."
-                              : "Each mic is measured at its own position at the same time. Move them and measure again for more positions.",
+                              ? "One mic: measure, and LiveAlign says where to move it next. Untick a position to leave it out."
+                              : "The mics measure their positions at the same time; LiveAlign then says where to move them for the rest.",
                           micHint, juce::Justification::topLeft, 3);
 
         // step texts
@@ -444,6 +461,16 @@ public:
             g.setColour (p.textDim);
             g.setFont (font (11.0f, true));
             g.drawText (l.first.toUpperCase(), l.second, juce::Justification::centredLeft, true);
+        }
+        if (! promptArea.isEmpty())
+        {
+            g.setColour (p.accent.withAlpha (0.16f));
+            g.fillRoundedRectangle (promptArea.toFloat(), 6.0f);
+            g.setColour (p.accent);
+            g.fillRoundedRectangle (promptArea.toFloat().removeFromLeft (4.0f), 2.0f);
+            g.setColour (p.text);
+            g.setFont (font (12.5f, true));
+            g.drawFittedText (movePrompt, promptArea.reduced (12, 4), juce::Justification::centredLeft, 3);
         }
         if (phase != Phase::Idle) txt (measureInfo, phaseText(), p.accent, true);
         else txt (measureInfo, status.isNotEmpty() ? status
@@ -546,7 +573,7 @@ public:
         for (auto* t : { &showPositions, &showBefore, &showAfter, &showPredicted }) t->setBounds (toggles.removeFromLeft (tw));
 
         // right: three steps
-        step1 = right.removeFromTop (196);
+        step1 = right.removeFromTop (movePrompt.isNotEmpty() ? 250 : 196);
         right.removeFromTop (8);
         step3 = right.removeFromBottom (166);
         right.removeFromBottom (8);
@@ -562,6 +589,8 @@ public:
             ph.removeFromLeft (6);
             phaseButtons[1].setBounds (ph);
             c.removeFromTop (8);
+            promptArea = movePrompt.isNotEmpty() ? c.removeFromTop (48) : juce::Rectangle<int>();
+            if (movePrompt.isNotEmpty()) c.removeFromTop (6);
             measureButton.setBounds (c.removeFromTop (32));
             c.removeFromTop (6);
             measureInfo = c.removeFromTop (40);
@@ -606,6 +635,15 @@ public:
         for (int i = 0; i < proc.positions.size(); ++i)
             if (posRow (i).contains (e.getPosition()))
             {
+                if (e.x < posRow (i).getX() + 30)   // the tick box: in or out of the measuring plan
+                {
+                    const auto& name = proc.positions[i];
+                    if (room.skipped.contains (name)) room.skipped.removeString (name);
+                    else room.skipped.add (name);
+                    movePrompt.clear();
+                    changed();
+                    return;
+                }
                 selectedPos = proc.positions[i] == selectedPos ? juce::String() : proc.positions[i];
                 graph.setSelectedPosition (selectedPos);
                 repaint();
@@ -719,6 +757,43 @@ private:
         changed();
     }
 
+    int plannedLeft (bool after) const
+    {
+        int n = 0;
+        for (const auto& pos : proc.positions) n += ! room.skipped.contains (pos) && ! room.hasAt (pos, after) ? 1 : 0;
+        return n;
+    }
+
+    // The next round: each mic to a planned position not measured yet in this round (before or after EQ), in order.
+    // One mic visits them one by one; several mics cover several at a time. Says where to move them.
+    void planNextRound (bool fromButton)
+    {
+        juce::StringArray todo;
+        for (const auto& pos : proc.positions)
+            if (! room.skipped.contains (pos) && ! room.hasAt (pos, measuringAfter)) todo.add (pos);
+        const int n = settings.micCount.load();
+        if (todo.isEmpty())
+        {
+            movePrompt.clear();
+            if (fromButton) status = "Every planned position is measured" + juce::String (measuringAfter ? " after EQ." : ".");
+            resized();
+            repaint();
+            return;
+        }
+        juce::StringArray moves;
+        for (int m = 0; m < n && m < todo.size(); ++m)
+        {
+            if (proc.mics.position[(size_t) m] != todo[m]) moves.add (proc.mics.nameOf (m) + " to " + todo[m]);
+            proc.setMicPosition (m, todo[m]);
+        }
+        const int left = juce::jmax (0, todo.size() - n);
+        movePrompt = moves.isEmpty() ? "Press Measure for " + todo.joinIntoString (", ", 0, n) + "."
+                                     : "Move " + moves.joinIntoString (", ") + ", then press Measure.";
+        if (left > 0) movePrompt << " " << left << (left == 1 ? " more position after this." : " more positions after this.");
+        refresh();
+        changed();
+    }
+
     // One mic: move it to the next position not measured yet (in this before / after round).
     void moveToNextPosition (bool fromButton)
     {
@@ -749,8 +824,22 @@ private:
     void startMeasure()
     {
         if (settings.refSource.load() == 0) { status = "Set a reference on Mic setup to measure."; repaint(); return; }
+        bool unplaced = false;
+        for (int m = 0; m < settings.micCount.load(); ++m) unplaced = unplaced || proc.mics.position[(size_t) m].isEmpty();
+        if (unplaced) planNextRound (false);   // put them at the first planned positions
         for (int m = 0; m < settings.micCount.load(); ++m)
             if (proc.mics.position[(size_t) m].isEmpty()) { status = "Say where " + proc.mics.nameOf (m) + " is first."; repaint(); return; }
+        movePrompt.clear();
+        // mics left at a position already measured in this round sit this one out (unless every mic is)
+        measuredAtStart.clear();
+        bool anyNew = false;
+        for (int m = 0; m < settings.micCount.load(); ++m) anyNew = anyNew || ! room.hasAt (proc.mics.position[(size_t) m], measuringAfter);
+        if (anyNew)
+            for (int m = 0; m < settings.micCount.load(); ++m)
+                if (room.hasAt (proc.mics.position[(size_t) m], measuringAfter)) measuredAtStart.add (proc.mics.position[(size_t) m]);
+        resized();
+        proc.noteAsFound();
+        settings.captureAllIr = true;   // each mic's impulse response, for the room acoustics
         settings.genOutput = playOutput;
         settings.genType = 0;
         settings.genOn = true;
@@ -767,6 +856,7 @@ private:
     void cancel (const juce::String& why)
     {
         settings.genOn = false;
+        settings.captureAllIr = false;
         phase = Phase::Idle;
         status = why;
         refreshMeasureButton();
@@ -832,6 +922,7 @@ private:
     void capture()
     {
         settings.genOn = false;
+        settings.captureAllIr = false;
         phase = Phase::Idle;
         if (snap == nullptr) { cancel ("No data."); return; }
         const float minCoh = juce::jmax (0.2f, settings.coherenceBlank.load());
@@ -841,6 +932,7 @@ private:
             const auto& r = snap->mics[(size_t) m];
             RoomMeasurement rm;
             rm.position = proc.mics.position[(size_t) m];
+            if (measuredAtStart.contains (rm.position)) continue;   // done in an earlier round
             rm.mic = m;
             rm.micName = proc.mics.nameOf (m);
             const int a = proc.activeCalAngle (m);
@@ -856,6 +948,7 @@ private:
                 rm.tf.extra.push_back (i < r.tfCoh.size() ? r.tfCoh[i] : 0.0);
             }
             if (rm.tf.freq.size() < 16) continue;
+            if (r.ir.size() > 1024) rm.ac = acoustics::analyse (r.ir, rate());
             // a new measurement at a position replaces the old one of the same round
             room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(),
                                              [&rm] (const RoomMeasurement& x) { return x.position == rm.position && x.after == rm.after; }),
@@ -873,13 +966,8 @@ private:
                 if (room.count (false) == (int) done.size() && room.eqSpeaker >= 0 && room.eqSpeaker < (int) proc.system.sources.size())
                     room.baseEq = proc.system.sources[(size_t) room.eqSpeaker].proc.eq;   // first "before" round: note the EQ in place
             }
-            if (settings.micCount.load() == 1)
-            {
-                const auto before = proc.mics.position[0];
-                moveToNextPosition (false);
-                if (proc.mics.position[0] != before) status << " Move the mic to " << proc.mics.position[0] << " and measure again.";
-                else status << " Every position is measured.";
-            }
+            planNextRound (false);
+            if (movePrompt.isEmpty()) status << " Every planned position is measured.";
         }
         refreshMeasureButton();
         changed();
@@ -901,7 +989,9 @@ private:
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> labels;
     juce::Rectangle<int> posCard, micCard, posList, micHint, step1, step2, step3, measureInfo, rangeInfo, bandsArea, checkInfo;
 
-    juce::String selectedPos, status;
+    juce::String selectedPos, status, movePrompt;
+    juce::StringArray measuredAtStart;
+    juce::Rectangle<int> promptArea;
     int playOutput = 0;
     bool measuringAfter = false, sawReset = false;
     Phase phase = Phase::Idle;
