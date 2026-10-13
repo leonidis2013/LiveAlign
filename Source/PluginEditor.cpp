@@ -1174,10 +1174,11 @@ void LiveAlignEditor::openGuided (GuidedSource& source)
 {
     guidedOverlay = std::make_unique<GuidedOverlay> (processor, source);
     guidedOverlay->onChanged = [this] { planPage->refresh(); updateStatuses(); };
-    guidedOverlay->onClose = [this]
+    juce::Component::SafePointer<LiveAlignEditor> self (this);
+    guidedOverlay->onClose = [self]
     {
         // closed from inside its own callback: let it go once that has returned
-        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<LiveAlignEditor> (this)]
+        juce::MessageManager::callAsync ([safe = self]
         {
             if (safe == nullptr || safe->guidedOverlay == nullptr) return;
             safe->removeChildComponent (safe->guidedOverlay.get());
