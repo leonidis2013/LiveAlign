@@ -26,6 +26,16 @@ public:
     void select (Sel t, int i) { selType_ = t; selIndex_ = i; repaint(); if (onSelectionChanged) onSelectionChanged(); }
 
     int numSpeakers() const { return juce::jmin ((int) proc.system.sources.size(), VenuePlan::kMaxSpeakers); }
+
+    // Guided measuring: the plan shows only where the mics go (the point now pulsing, with the mic and its aim), what
+    // is done and what is still to do. The point now can be dragged to where it really is. Nothing else is editable.
+    struct Guide
+    {
+        bool active = false;
+        std::vector<GuideSpot> spots;
+        float pulse = 0.0f;   // 0..1, animated by the owner
+    };
+    Guide guide;
     int numMics() const { return layer == 0 ? proc.tuningMicCount() : 0; }
 
     // The plan has two layers over the same speakers and room: the tuning mics, or the monitoring mic.
@@ -89,6 +99,9 @@ public:
             if (it.kind == PlanItem::Area) continue;
             const bool sel = selType_ == Sel::Item && selIndex_ == i && ! forExport;
             const auto c = toPx (it.x, it.y);
+            if (guide.active && it.kind == PlanItem::Marker
+                && std::any_of (guide.spots.begin(), guide.spots.end(), [i] (const GuideSpot& sp) { return sp.marker == i; }))
+                continue;   // drawn as a guided point
             if (it.kind == PlanItem::Marker)
             {
                 // a named mic position (one mic moved between places, an alignment spot ...)
@@ -108,8 +121,12 @@ public:
         }
 
         for (int i = 0; i < numSpeakers(); ++i) drawSpeaker (g, i, forExport, ink);
-        for (int m = 0; m < numMics(); ++m) drawMic (g, m, forExport, ink);
-        if (layer == 1) drawMonitorMic (g, forExport, ink);
+        if (guide.active) drawGuide (g);
+        else
+        {
+            for (int m = 0; m < numMics(); ++m) drawMic (g, m, forExport, ink);
+            if (layer == 1) drawMonitorMic (g, forExport, ink);
+        }
 
         // title block
         g.setColour (line);
@@ -156,6 +173,16 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        if (guide.active)
+        {
+            guideDrag = -1;
+            for (int k = 0; k < (int) guide.spots.size(); ++k)
+            {
+                const auto& sp = guide.spots[(size_t) k];
+                if (sp.state == GuideSpot::Now && sp.marker >= 0 && toPx (sp.x, sp.y).getDistanceFrom (e.position) < 20.0f) guideDrag = k;
+            }
+            return;
+        }
         grabKeyboardFocus();
         const auto pt = e.position;
         drag = Drag::None;
@@ -198,6 +225,17 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        if (guide.active)
+        {
+            if (guideDrag < 0 || guideDrag >= (int) guide.spots.size()) return;
+            auto& sp = guide.spots[(size_t) guideDrag];
+            const auto n = toNorm (e.position);
+            sp.x = n.x;
+            sp.y = n.y;
+            if (sp.marker >= 0 && sp.marker < (int) plan.items.size()) { plan.items[(size_t) sp.marker].x = n.x; plan.items[(size_t) sp.marker].y = n.y; }
+            repaint();
+            return;
+        }
         if (drag == Drag::None) return;
         const auto pt = e.position;
         if (drag == Drag::Move)
@@ -232,6 +270,16 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (guide.active)
+        {
+            if (guideDrag >= 0)
+            {
+                plan.edited = true;
+                if (onChanged) onChanged();
+            }
+            guideDrag = -1;
+            return;
+        }
         // a mic dropped on a named position takes that position's name (and sits on it)
         if (drag == Drag::Move && selType_ == Sel::Mic)
         {
@@ -254,6 +302,7 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent&) override
     {
+        if (guide.active) return;
         if (selType_ == Sel::Item && onEditItem) onEditItem (selIndex_);
     }
 
@@ -535,6 +584,113 @@ private:
                     chair (x, y, 0.0f);
     }
 
+    // The guided points: to do (hollow), done (ticked), and the one(s) now: pulsing, with the mic and its aim.
+    void drawGuide (juce::Graphics& g) const
+    {
+        const auto& p = pal();
+        auto tick = [&g] (juce::Point<float> c, float s, juce::Colour col)
+        {
+            juce::Path t;
+            t.startNewSubPath (c.x - s * 0.45f, c.y + s * 0.02f);
+            t.lineTo (c.x - s * 0.12f, c.y + s * 0.32f);
+            t.lineTo (c.x + s * 0.48f, c.y - s * 0.32f);
+            g.setColour (col);
+            g.strokePath (t, juce::PathStrokeType (s * 0.16f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        };
+        // the others first, then the ones now on top
+        for (int pass = 0; pass < 2; ++pass)
+            for (const auto& sp : guide.spots)
+            {
+                const bool now = sp.state == GuideSpot::Now || sp.state == GuideSpot::JustDone;
+                if (now != (pass == 1)) continue;
+                const auto c = toPx (sp.x, sp.y);
+                if (sp.speaker >= 0 && sp.speaker < numSpeakers() && plan.speakers[(size_t) sp.speaker].placed && sp.state == GuideSpot::Now)
+                {
+                    // close up: a ring on the speaker, a dashed line from the mic to it
+                    const auto sc = toPx (plan.speakers[(size_t) sp.speaker].x, plan.speakers[(size_t) sp.speaker].y);
+                    g.setColour (p.accent.withAlpha (0.9f));
+                    g.drawEllipse (juce::Rectangle<float> (52.0f, 52.0f).withCentre (sc), 2.0f);
+                    juce::Path l, d;
+                    l.startNewSubPath (c);
+                    l.lineTo (sc);
+                    const float dashes[] = { 4.0f, 4.0f };
+                    juce::PathStrokeType (1.4f).createDashedStroke (d, l, dashes, 2);
+                    g.fillPath (d);
+                }
+                if (sp.state == GuideSpot::ToDo)
+                {
+                    juce::Path dm;
+                    dm.addPolygon (c, 4, 8.0f, 0.0f);
+                    g.setColour (p.textDim);
+                    g.strokePath (dm, juce::PathStrokeType (1.5f));
+                    g.setFont (font (11.5f));
+                    g.drawText (sp.label, juce::Rectangle<float> (c.x + 12.0f, c.y - 9.0f, 160.0f, 18.0f), juce::Justification::centredLeft, true);
+                    continue;
+                }
+                if (sp.state == GuideSpot::Done)
+                {
+                    g.setColour (p.good.withAlpha (0.85f));
+                    g.fillEllipse (juce::Rectangle<float> (18.0f, 18.0f).withCentre (c));
+                    tick (c, 12.0f, p.onAccent);
+                    g.setColour (p.textDim);
+                    g.setFont (font (11.5f));
+                    g.drawText (sp.label, juce::Rectangle<float> (c.x + 13.0f, c.y - 9.0f, 160.0f, 18.0f), juce::Justification::centredLeft, true);
+                    continue;
+                }
+                const bool justDone = sp.state == GuideSpot::JustDone;
+                const auto col = justDone ? p.good : p.accent;
+                if (! justDone)
+                    for (int k = 0; k < 2; ++k)
+                    {
+                        const float ph = std::fmod (guide.pulse + 0.5f * (float) k, 1.0f);
+                        g.setColour (col.withAlpha (0.55f * (1.0f - ph)));
+                        g.drawEllipse (juce::Rectangle<float> (30.0f + 46.0f * ph, 30.0f + 46.0f * ph).withCentre (c), 2.0f);
+                    }
+                const auto mc = sp.mic >= 0 ? micColour (sp.mic) : col;
+                g.setColour ((justDone ? p.good : mc).withAlpha (0.25f));
+                g.fillEllipse (juce::Rectangle<float> (30.0f, 30.0f).withCentre (c));
+                g.setColour (justDone ? p.good : mc);
+                g.drawEllipse (juce::Rectangle<float> (30.0f, 30.0f).withCentre (c), 2.4f);
+                if (justDone) tick (c, 18.0f, p.good);
+                else if (sp.up)
+                {
+                    g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre (c));   // pointing up, out of the page
+                }
+                else
+                {
+                    float a = juce::degreesToRadians (sp.angle);
+                    if (sp.aimAt >= 0 && sp.aimAt < numSpeakers() && plan.speakers[(size_t) sp.aimAt].placed)
+                    {
+                        const auto sc = toPx (plan.speakers[(size_t) sp.aimAt].x, plan.speakers[(size_t) sp.aimAt].y);
+                        a = std::atan2 (sc.y - c.y, sc.x - c.x);
+                    }
+                    juce::Path arrow;
+                    arrow.startNewSubPath (15.0f, 0.0f);
+                    arrow.lineTo (32.0f, 0.0f);
+                    arrow.startNewSubPath (25.0f, -6.0f);
+                    arrow.lineTo (32.0f, 0.0f);
+                    arrow.lineTo (25.0f, 6.0f);
+                    arrow.applyTransform (juce::AffineTransform::rotation (a).translated (c));
+                    g.strokePath (arrow, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                }
+                if (sp.mic >= 0 && ! justDone)
+                {
+                    g.setFont (monoFont (11.5f, true));
+                    g.drawText (juce::String (sp.mic + 1), juce::Rectangle<float> (16.0f, 14.0f).withCentre (sp.up ? c.translated (0.0f, -9.0f) : c),
+                                juce::Justification::centred);
+                }
+                // the label in a chip under the point
+                const juce::String txt = (sp.mic >= 0 ? proc.mics.nameOf (sp.mic) + "  -  " : juce::String()) + sp.label;
+                g.setFont (font (12.5f, true));
+                const float w = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), txt) + 20.0f;
+                auto chip = juce::Rectangle<float> (w, 22.0f).withCentre (c.translated (0.0f, 30.0f)).constrainedWithin (drawArea);
+                g.setColour (col);
+                g.fillRoundedRectangle (chip, 11.0f);
+                g.setColour (p.onAccent);
+                g.drawText (txt, chip, juce::Justification::centred, false);
+            }
+    }
+
     void drawSelection (juce::Graphics& g, juce::Point<float> c, float r, juce::Point<float> handle) const
     {
         const auto& p = pal();
@@ -560,6 +716,7 @@ private:
     juce::Point<float> grabOffset;
     mutable juce::Rectangle<float> drawArea;
     mutable int layer = 0;
+    int guideDrag = -1;
 };
 
 //==============================================================================

@@ -9,6 +9,7 @@
 #include <thread>
 #include "Graph.h"
 #include "NavRail.h"
+#include "GuidedMeasure.h"
 #include "../PluginProcessor.h"
 
 namespace la::ui
@@ -401,10 +402,11 @@ private:
 };
 
 //==============================================================================
-class SpeakersPage : public juce::Component, private juce::Timer
+class SpeakersPage : public juce::Component, public GuidedSource, private juce::Timer
 {
 public:
     std::function<void (int)> onImport;   // the editor owns the file chooser
+    std::function<void (GuidedSource&)> onGuided;   // opens the guided pop-up
     std::function<void()> onChanged;
 
     explicit SpeakersPage (LiveAlignProcessor& p)
@@ -450,7 +452,12 @@ public:
         outputBox.onChange = [this] { if (auto* s = current()) { s->output = outputBox.getSelectedItemIndex(); systemChanged (false); } };
         outputBox.setTooltip ("The interface output that feeds this speaker or group while it is measured. "
                               "Or play all outputs and mute the others in your processor.");
-        measureButton.onClick = [this] { if (phase == Phase::Idle) startMeasure (selected); else cancelMeasure ("Stopped."); };
+        measureButton.onClick = [this] { if (phase == Phase::Idle) requestMeasure(); else cancelMeasure ("Stopped."); };
+        guidedToggle.setButtonText ("Guided");
+        guidedToggle.setTooltip ("Step by step in a pop-up: the venue plan shows which speaker plays and where the mic goes, then Measure and Next point");
+        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
+        guidedToggle.onClick = [this] { GuidedSource::setEnabled (guidedToggle.getToggleState()); };
+        addChildComponent (guidedToggle);
         measureButton.setTooltip ("Plays pink noise from this speaker's output, finds its arrival and averages its response at the measurement mic");
         importButton.onClick = [this] { if (onImport) onImport (selected); };
         importButton.setTooltip ("Use a manufacturer or measured response: FRD, CSV or TXT (frequency, dB, optional phase)");
@@ -750,6 +757,91 @@ public:
 
     // Same as the buttons (used by the local screenshot tool).
     void measure (int i) { select (i); startMeasure (i); }
+
+    // Measure the selected speaker: in the guided pop-up when Guided is on, otherwise right here.
+    void requestMeasure()
+    {
+        if (phase != Phase::Idle) return;
+        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
+        if (GuidedSource::enabled() && onGuided) { guidedNow = selected; onGuided (*this); }
+        else startMeasure (selected);
+    }
+
+    // ---- guided measuring: one point per speaker that needs its own measurement ----
+    juce::String guidedTitle() const override { return "Speaker response"; }
+
+    int guidedCurrent() const
+    {
+        const int n = (int) sys.sources.size();
+        if (guidedNow >= 0 && guidedNow < n && sys.master (guidedNow) == guidedNow) return guidedNow;
+        for (int i = 0; i < n; ++i) if (sys.master (i) == i && ! sys.covered (i)) return i;
+        return -1;
+    }
+
+    std::vector<GuideSpot> guidedSpots() override
+    {
+        std::vector<GuideSpot> out;
+        const int n = juce::jmin ((int) sys.sources.size(), VenuePlan::kMaxSpeakers);
+        const int now = guidedCurrent();
+        const int mic = juce::jlimit (0, juce::jmax (0, proc.tuningMicCount() - 1), sys.measureMic);
+        for (int i = 0; i < n; ++i)
+        {
+            if (sys.master (i) != i) continue;   // "same as" another: nothing to measure
+            const auto& sym = proc.plan.speakers[(size_t) i];
+            GuideSpot sp;
+            sp.id = i;
+            sp.label = nameOf (i);
+            const float a = juce::degreesToRadians (sym.angle);
+            sp.x = juce::jlimit (0.02f, 0.98f, sym.x + std::cos (a) * 0.06f);
+            sp.y = juce::jlimit (0.02f, 0.98f, sym.y + std::sin (a) * 0.09f);
+            sp.up = false;
+            sp.aimAt = i;
+            sp.state = i == now ? GuideSpot::Now : sys.covered (i) ? GuideSpot::Done : GuideSpot::ToDo;
+            if (sp.state == GuideSpot::Now)
+            {
+                sp.mic = mic;
+                sp.speaker = i;
+                if (sys.placement == 1)
+                {
+                    // one spot: the mic stays where it is for every speaker
+                    sp.x = proc.plan.mics[(size_t) mic].x;
+                    sp.y = proc.plan.mics[(size_t) mic].y;
+                    sp.how = "stays in the same place for every speaker, aimed at " + nameOf (i);
+                }
+                else sp.how = "about 12 in (30 cm) from the cone, on its axis, pointing at it";
+            }
+            out.push_back (sp);
+        }
+        return out;
+    }
+
+    juce::String guidedHowTo() const override
+    {
+        const int now = guidedCurrent();
+        const auto who = now >= 0 ? nameOf (now) : juce::String ("the speaker");
+        if (sys.placement == 1)
+            return "Only " + who + " plays. Bypass its crossover filters in the processor while it is measured. Keep the mic where it is.";
+        return "Only " + who + " plays. Bypass its crossover filters in the processor while it is measured. Midway between the woofer and "
+               "the horn on a two-way cabinet.";
+    }
+
+    bool guidedStart() override
+    {
+        const int now = guidedCurrent();
+        if (now < 0) { status = "Every speaker is measured."; return false; }
+        guidedNow = now;
+        select (now);
+        startMeasure (now);
+        return phase != Phase::Idle;
+    }
+    void guidedStop() override { cancelMeasure ("Stopped."); }
+    bool guidedBusy() const override { return phase != Phase::Idle; }
+    float guidedProgress() const override { return progress; }
+    juce::String guidedPhase() const override { return phaseText(); }
+    int guidedSerial() const override { return measureSerial; }
+    juce::String guidedStatus() const override { return status; }
+    void guidedRedo (const std::vector<GuideSpot>& was) override { if (! was.empty()) guidedNow = was.front().id; }
+    void guidedClosed() override { guidedNow = -1; resized(); repaint(); }
     void findCrossover() { findBest(); }
     bool busy() const { return phase != Phase::Idle || searching; }
     void newAlignment() { addAlignment(); }
@@ -983,7 +1075,12 @@ public:
             c.removeFromTop (10);
             guideArea = c.removeFromTop (118);
             c.removeFromTop (8);
-            measureButton.setBounds (c.removeFromTop (36));
+            {
+                auto mrow = c.removeFromTop (36);
+                guidedToggle.setBounds (mrow.removeFromRight (92));
+                mrow.removeFromRight (6);
+                measureButton.setBounds (mrow);
+            }
             c.removeFromTop (8);
             measureInfo = c.removeFromTop (40);
             c.removeFromTop (8);
@@ -1668,6 +1765,8 @@ private:
         for (int k = 0; k < (int) sys.sources.size(); ++k)
             if (! sys.covered (k)) { selected = k; break; }
         status = who + " measured.";
+        ++measureSerial;
+        guidedNow = -1;
         systemChanged (true);
         {
             const int idx = (int) (&s - sys.sources.data());
@@ -1689,7 +1788,7 @@ private:
     void setStepVisibility()
     {
         const bool resp = mode == 1;
-        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &placementBox, &measureButton })
+        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &placementBox, &measureButton, &guidedToggle })
             c->setVisible (resp);
         relockButton.setVisible (resp && sys.placement == 1);
         const bool xo = mode == 2;
@@ -2593,6 +2692,7 @@ private:
     juce::TextEditor modelEditor;
     juce::ComboBox countBox, linkBox;
     juce::ComboBox roleBox, channelBox, outputBox, micBox, highBox, lowBox, rangeBox, typeBox, slopeBox;
+    juce::ToggleButton guidedToggle;
     juce::TextButton measureButton { "Measure" }, importButton { "Import response..." }, clearButton { "Clear" }, relockButton { "Re-time" };
     juce::Slider offsetSlider, freqSlider, delaySlider, gainSlider;
     juce::ToggleButton processedToggle { "With processing" };
@@ -2627,7 +2727,7 @@ private:
     juce::Rectangle<int> systemCard, selCard, summaryCard, selInfo, measureInfo, xoInfo, liveLine, summaryArea, statusLine;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
 
-    int selected = 0, nOuts = -1, measuring = -1;
+    int selected = 0, nOuts = -1, measuring = -1, measureSerial = 0, guidedNow = -1;
     Phase phase = Phase::Idle;
     double phaseStart = 0.0;
     float progress = 0.0f;

@@ -108,8 +108,10 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     speakerPage = std::make_unique<SpeakersPage> (p);
     speakerPage->onImport = [this] (int i) { importSpeaker (i); };
     speakerPage->onChanged = [this] { generator.sync(); updateStatuses(); };
+    speakerPage->onGuided = [this] (GuidedSource& s) { openGuided (s); };
     roomPage = std::make_unique<RoomPage> (p);
     roomPage->onChanged = [this] { generator.sync(); updateStatuses(); };
+    roomPage->onGuided = [this] (GuidedSource& s) { openGuided (s); };
     roomPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
     {
         askText (title, {}, initial, std::move (done));
@@ -512,7 +514,7 @@ void LiveAlignEditor::refreshNext()
         }
         case Page::Speakers: cont (processor.plan.drawn() ? Page::Response : Page::Plan); break;
         case Page::Plan: cont (Page::Response); break;
-        case Page::Response: if (speakerPage->busy()) text = "Measuring..."; else if (! speakerPage->responsesDone()) { text = "Next: measure each speaker"; } else cont (Page::Crossover); break;
+        case Page::Response: if (speakerPage->busy()) text = "Measuring..."; else if (! speakerPage->responsesDone()) { text = "Next: measure each speaker"; action = [this] { speakerPage->requestMeasure(); }; } else cont (Page::Crossover); break;
         case Page::Crossover:
             if (speakerPage->busy()) text = "Searching...";
             else if (! speakerPage->crossoverDone()) { text = "Next: Find the best crossover"; action = [this] { speakerPage->findCrossover(); }; }
@@ -1168,8 +1170,31 @@ void LiveAlignEditor::paint (juce::Graphics& g)
     g.drawHorizontalLine (titleArea.getBottom() + 6, (float) titleArea.getX(), (float) getWidth() - 12.0f);
 }
 
+void LiveAlignEditor::openGuided (GuidedSource& source)
+{
+    guidedOverlay = std::make_unique<GuidedOverlay> (processor, source);
+    guidedOverlay->onChanged = [this] { planPage->refresh(); updateStatuses(); };
+    guidedOverlay->onClose = [this]
+    {
+        // closed from inside its own callback: let it go once that has returned
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<LiveAlignEditor> (this)]
+        {
+            if (safe == nullptr || safe->guidedOverlay == nullptr) return;
+            safe->removeChildComponent (safe->guidedOverlay.get());
+            safe->guidedOverlay.reset();
+            safe->planPage->refresh();
+            safe->updateStatuses();
+        });
+    };
+    addAndMakeVisible (*guidedOverlay);
+    guidedOverlay->setBounds (getLocalBounds());
+    guidedOverlay->toFront (true);
+    guidedOverlay->grabKeyboardFocus();
+}
+
 void LiveAlignEditor::resized()
 {
+    if (guidedOverlay != nullptr) guidedOverlay->setBounds (getLocalBounds());
     auto r = getLocalBounds();
     nav.setBounds (r.removeFromLeft (NavRail::kWidth));
     r.reduce (12, 10);

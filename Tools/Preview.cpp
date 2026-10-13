@@ -202,6 +202,13 @@ public:
                 cp.setLookAndFeel (nullptr);
             }
         }
+        if (ticks == 252)
+        {
+            // the guided pop-up on Speaker response, before measuring
+            editor->showPage ((int) la::ui::Page::Response);
+            editor->openGuided (editor->speakersPage());
+        }
+        if (ticks == 258 && editor->guided() != nullptr) { shot ("guided-speaker"); editor->guided()->closeNow(); }
         if (ticks == 262)
         {
             editor->showPage ((int) P::Response);
@@ -330,8 +337,32 @@ public:
                     proc.settings.view = 1;
                     editor->showPage ((int) P::Room);
                     rp.setMeasuringAfter (false);
-                    rp.measure();   // the mics go to the first planned positions by themselves
-                    next (10);
+                    editor->openGuided (rp);   // the first round, guided: the mics go to the first planned positions
+                    next (20);
+                }
+                break;
+            case 20:   // guided: ready, count-in, measuring, done, next point
+                if (after (10)) { shot ("guided-ready"); editor->guided()->pressPrimaryForTest(); }
+                if (after (16)) { shot ("guided-countin"); editor->guided()->skipCountIn(); next (21); }
+                break;
+            case 21:
+                if (after (40)) shot ("guided-measuring");
+                if (stageTick + 10 < ticks && (! rp.busy() || timeout)) next (22);
+                break;
+            case 22:
+                if (after (5))
+                {
+                    std::printf ("guided round 1: %s\n", rp.statusText().toRawUTF8());
+                    shot ("guided-done");
+                    editor->guided()->pressPrimaryForTest();   // Next point
+                }
+                if (after (10)) { shot ("guided-next"); editor->guided()->closeNow(); }
+                if (after (14))
+                {
+                    std::printf ("room round 1: %s count=%d acoustics=%d\n", rp.statusText().toRawUTF8(), proc.room.count (false), proc.room.acousticsCount());
+                    shot ("room-move");
+                    rp.measure();   // the second round: the next positions
+                    next (11);
                 }
                 break;
             case 10:

@@ -8,6 +8,7 @@
 #include <functional>
 #include "Graph.h"
 #include "NavRail.h"
+#include "GuidedMeasure.h"
 #include "../PluginProcessor.h"
 
 namespace la::ui
@@ -168,10 +169,11 @@ private:
 };
 
 //==============================================================================
-class RoomPage : public juce::Component, private juce::Timer
+class RoomPage : public juce::Component, public GuidedSource, private juce::Timer
 {
 public:
     std::function<void()> onChanged;
+    std::function<void (GuidedSource&)> onGuided;   // opens the guided pop-up
     std::function<void (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)>)> askText;
 
     explicit RoomPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), room (p.room), graph (p)
@@ -220,7 +222,12 @@ public:
             addAndMakeVisible (phaseButtons[i]);
         }
         phaseButtons[0].setToggleState (true, juce::dontSendNotification);
-        measureButton.onClick = [this] { if (phase == Phase::Idle) startMeasure(); else cancel ("Stopped."); };
+        measureButton.onClick = [this] { if (phase == Phase::Idle) requestMeasure(); else cancel ("Stopped."); };
+        guidedToggle.setButtonText ("Guided");
+        guidedToggle.setTooltip ("Step by step in a pop-up: the venue plan shows where each mic goes and how to aim it, then Measure and Next point");
+        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
+        guidedToggle.onClick = [this] { GuidedSource::setEnabled (guidedToggle.getToggleState()); };
+        addAndMakeVisible (guidedToggle);
         measureButton.setTooltip ("Plays pink noise, finds each mic's arrival and averages the response at every mic, each at its position");
         addAndMakeVisible (measureButton);
 
@@ -332,6 +339,7 @@ public:
         if (boostBox.getSelectedId() == 0) boostBox.setSelectedId (4, juce::dontSendNotification);
         tunedButton.setButtonText (room.tuned ? "Room tuned " + room.tunedOn + "  (undo)" : juce::String ("Mark the room as tuned"));
         nextPosButton.setVisible (true);
+        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
         nextPosButton.setButtonText (n == 1 ? "Next position" : "Next positions");
 
         double lo, hi;
@@ -359,13 +367,111 @@ public:
     {
         if (phase != Phase::Idle) return;
         const auto h = nextHint();
-        if (h.startsWith ("Place") || h.startsWith ("Enter") || h.startsWith ("Measure the next")) { if (h.startsWith ("Enter")) setMeasuringAfter (true); startMeasure(); }
+        if (h.startsWith ("Place") || h.startsWith ("Enter") || h.startsWith ("Measure the next")) { if (h.startsWith ("Enter")) setMeasuringAfter (true); requestMeasure(); }
         else if (h.startsWith ("Suggest")) suggest();
         else if (h.startsWith ("Copy")) applyEq();
         else if (h.startsWith ("Mark")) { room.tuned = true; room.tunedOn = LiveAlignProcessor::today(); refresh(); changed(); }
     }
 
     bool busy() const { return phase != Phase::Idle; }
+
+    // Measure: in the guided pop-up when Guided is on, otherwise right here.
+    void requestMeasure()
+    {
+        if (phase != Phase::Idle) return;
+        if (GuidedSource::enabled() && onGuided) onGuided (*this);
+        else startMeasure();
+    }
+
+    // ---- guided measuring ----
+    juce::String guidedTitle() const override { return juce::String ("Room EQ, ") + (measuringAfter ? "after EQ" : "before EQ"); }
+
+    std::vector<GuideSpot> guidedSpots() override
+    {
+        const int n = settings.micCount.load();
+        // the mics go to the next planned positions, unless one is already at a position still to measure
+        bool atNew = false, unplaced = false;
+        for (int m = 0; m < n; ++m)
+        {
+            const auto& pos = proc.mics.position[(size_t) m];
+            unplaced = unplaced || pos.isEmpty();
+            atNew = atNew || (pos.isNotEmpty() && ! room.skipped.contains (pos) && ! room.hasAt (pos, measuringAfter));
+        }
+        if ((unplaced || ! atNew) && plannedLeft (measuringAfter) > 0) planNextRound (false);
+
+        std::vector<GuideSpot> out;
+        const size_t markersBefore = proc.plan.items.size();
+        const int nSpk = (int) proc.system.sources.size();
+        auto isTop = [this] (int i) { return proc.system.sources[(size_t) i].role != (int) SpeakerRole::Sub; };
+        for (const auto& pos : proc.positions)
+        {
+            if (room.skipped.contains (pos)) continue;
+            GuideSpot sp;
+            sp.label = pos;
+            sp.marker = proc.plan.ensureMarker (pos);
+            sp.x = proc.plan.items[(size_t) sp.marker].x;
+            sp.y = proc.plan.items[(size_t) sp.marker].y;
+            if (room.hasAt (pos, measuringAfter)) sp.state = GuideSpot::Done;
+            else
+            {
+                for (int m = 0; m < n; ++m)
+                    if (proc.mics.position[(size_t) m] == pos) { sp.mic = m; sp.state = GuideSpot::Now; break; }
+            }
+            const int aim = sp.mic >= 0 ? proc.ownAim (sp.mic) : proc.positionAimOf (pos);
+            sp.up = aim != 0;
+            if (! sp.up) sp.aimAt = proc.plan.nearestSpeaker (sp.x, sp.y, nSpk, isTop);
+            out.push_back (sp);
+        }
+        // the mic symbols sit on their positions
+        for (const auto& sp : out)
+            if (sp.mic >= 0 && sp.mic < kMaxMics) { proc.plan.mics[(size_t) sp.mic].x = sp.x; proc.plan.mics[(size_t) sp.mic].y = sp.y; proc.plan.mics[(size_t) sp.mic].placed = true; }
+        if (proc.plan.items.size() != markersBefore && onChanged) onChanged();
+        return out;
+    }
+
+    juce::String guidedHowTo() const override
+    {
+        if (proc.positions.isEmpty()) return "Add the listening positions first, with + Position on the Room EQ page.";
+        juce::StringArray idle;
+        for (int m = 0; m < settings.micCount.load(); ++m)
+        {
+            const auto& pos = proc.mics.position[(size_t) m];
+            if (pos.isEmpty() || room.skipped.contains (pos) || room.hasAt (pos, measuringAfter)) idle.add (proc.mics.nameOf (m));
+        }
+        juce::String t = "Mics at seated ear height, about 4 ft (1.2 m). Pink noise plays from " + outputBox.getText().toLowerCase()
+                         + ". Drag the pulsing point if it is not where the mic really is.";
+        if (! idle.isEmpty() && idle.size() < settings.micCount.load())
+            t << " " << idle.joinIntoString (", ") << (idle.size() == 1 ? " sits this one out." : " sit this one out.");
+        return t;
+    }
+
+    bool guidedStart() override { startMeasure(); return phase != Phase::Idle; }
+    void guidedStop() override { cancel ("Stopped."); }
+    bool guidedBusy() const override { return phase != Phase::Idle; }
+    float guidedProgress() const override { return progress; }
+    juce::String guidedPhase() const override { return phaseText(); }
+    int guidedSerial() const override { return measureSerial; }
+    juce::String guidedStatus() const override { return status; }
+
+    void guidedRedo (const std::vector<GuideSpot>& was) override
+    {
+        for (const auto& sp : was) if (sp.mic >= 0) proc.setMicPosition (sp.mic, sp.label);
+        refresh();
+    }
+
+    bool guidedCanSkip() const override { return true; }
+    void guidedSkip() override
+    {
+        for (int m = 0; m < settings.micCount.load(); ++m)
+        {
+            const auto& pos = proc.mics.position[(size_t) m];
+            if (pos.isNotEmpty() && ! room.hasAt (pos, measuringAfter)) room.skipped.addIfNotAlreadyThere (pos);
+        }
+        planNextRound (false);
+        changed();
+    }
+
+    void guidedClosed() override { refresh(); }
     void measure() { startMeasure(); }
     void suggestNow() { suggest(); }
     void applyNow() { applyEq(); }
@@ -591,7 +697,12 @@ public:
             c.removeFromTop (8);
             promptArea = movePrompt.isNotEmpty() ? c.removeFromTop (48) : juce::Rectangle<int>();
             if (movePrompt.isNotEmpty()) c.removeFromTop (6);
-            measureButton.setBounds (c.removeFromTop (32));
+            {
+                auto mrow = c.removeFromTop (32);
+                guidedToggle.setBounds (mrow.removeFromRight (92));
+                mrow.removeFromRight (6);
+                measureButton.setBounds (mrow);
+            }
             c.removeFromTop (6);
             measureInfo = c.removeFromTop (40);
         }
@@ -960,6 +1071,7 @@ private:
         else
         {
             status = "Measured " + done.joinIntoString (", ") + ".";
+            ++measureSerial;
             if (! measuringAfter)
             {
                 room.suggested.clear();
@@ -984,6 +1096,7 @@ private:
     juce::ComboBox outputBox, targetBox, speakerBox, bandsBox, boostBox;
     juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "Copy to the speaker settings" };
     juce::TextButton tunedButton { "Mark the room as tuned" };
+    juce::ToggleButton guidedToggle;
     std::vector<std::unique_ptr<juce::ComboBox>> micBoxes;
     std::vector<juce::Rectangle<int>> micLabels;
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> labels;
@@ -992,7 +1105,7 @@ private:
     juce::String selectedPos, status, movePrompt;
     juce::StringArray measuredAtStart;
     juce::Rectangle<int> promptArea;
-    int playOutput = 0;
+    int playOutput = 0, measureSerial = 0;
     bool measuringAfter = false, sawReset = false;
     Phase phase = Phase::Idle;
     double phaseStart = 0.0;

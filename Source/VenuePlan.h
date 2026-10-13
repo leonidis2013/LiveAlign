@@ -7,6 +7,7 @@
 // Saved in the venue file. Message thread only.
 #include <array>
 #include <cmath>
+#include <functional>
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "Settings.h"
@@ -32,6 +33,23 @@ struct PlanItem
     int seating = Plain;
 
     static juce::StringArray seatingNames() { return { "No chairs", "Rows (rectangle)", "Square blocks", "Curved rows" }; }
+};
+
+// A point of a guided measurement, as the plan shows it.
+struct GuideSpot
+{
+    enum State { ToDo = 0, Done = 1, Now = 2, JustDone = 3 };
+    float x = 0.5f, y = 0.5f;
+    juce::String label;      // the position or speaker
+    int id = -1;             // what the page knows it by (a speaker index)
+    int mic = -1;            // the mic that goes there (-1: none)
+    bool up = true;          // pointing up (90 degree cal) or aimed along `angle`
+    float angle = -90.0f;
+    int state = ToDo;
+    int marker = -1;         // the plan item it sits on (it can be dragged into place)
+    int speaker = -1;        // a close-up spot: the speaker it is in front of
+    int aimAt = -1;          // not up: the speaker it points at (the plan works out the angle)
+    juce::String how;        // how to set the mic up there, when the usual words do not fit
 };
 
 struct VenuePlan
@@ -90,6 +108,63 @@ struct VenuePlan
             p.angle = -90.0f;  // toward the stage
             p.placed = true;
         }
+    }
+
+    int markerOf (const juce::String& name) const
+    {
+        for (int i = 0; i < (int) items.size(); ++i)
+            if (items[(size_t) i].kind == PlanItem::Marker && items[(size_t) i].text == name) return i;
+        return -1;
+    }
+
+    // The marker of a named position, placed when there is none: on an area of the same name (FOH), otherwise
+    // spread across the seating, away from the markers already there. Returns its index in `items`.
+    int ensureMarker (const juce::String& name)
+    {
+        if (const int i = markerOf (name); i >= 0) return i;
+        for (const auto& it : items)
+            if (it.kind == PlanItem::Area && it.text.isNotEmpty()
+                && (it.text.equalsIgnoreCase (name) || name.containsIgnoreCase (it.text) || it.text.containsIgnoreCase (name)))
+            {
+                items.push_back ({ PlanItem::Marker, name, it.x, it.y, 0.0f, 0.0f });
+                return (int) items.size() - 1;
+            }
+        // the biggest seating area, or the middle of the room
+        float x0 = 0.15f, x1 = 0.85f, y0 = 0.38f, y1 = 0.8f, best = 0.0f;
+        for (const auto& it : items)
+            if (it.kind == PlanItem::Area && (it.seating != PlanItem::Plain || it.text.containsIgnoreCase ("seat")) && it.w * it.h > best)
+            {
+                best = it.w * it.h;
+                x0 = it.x - it.w * 0.5f; x1 = it.x + it.w * 0.5f;
+                y0 = it.y - it.h * 0.5f; y1 = it.y + it.h * 0.5f;
+            }
+        float bx = 0.5f * (x0 + x1), by = 0.5f * (y0 + y1), bestD = -1.0f;
+        for (int row = 0; row < 4; ++row)
+            for (int col = 0; col < 5; ++col)
+            {
+                const float x = x0 + (x1 - x0) * (0.14f + 0.18f * (float) col), y = y0 + (y1 - y0) * (0.2f + 0.22f * (float) row);
+                float d = 10.0f;
+                for (const auto& it : items) if (it.kind == PlanItem::Marker) d = juce::jmin (d, std::hypot (it.x - x, it.y - y));
+                if (d > bestD + 0.02f) { bestD = d; bx = x; by = y; }   // front rows and the left first when it is a tie
+            }
+        items.push_back ({ PlanItem::Marker, name, bx, by, 0.0f, 0.0f });
+        return (int) items.size() - 1;
+    }
+
+    // The speaker a mic at `x, y` aims at: the nearest placed one that `isTop` (or any). -1: none placed.
+    int nearestSpeaker (float x, float y, int numSpeakers, const std::function<bool (int)>& isTop) const
+    {
+        int pick = -1;
+        float bestD = 1e9f;
+        for (int pass = 0; pass < 2 && pick < 0; ++pass)
+            for (int i = 0; i < juce::jmin (numSpeakers, kMaxSpeakers); ++i)
+            {
+                const auto& s = speakers[(size_t) i];
+                if (! s.placed || (pass == 0 && isTop && ! isTop (i))) continue;
+                const float d = std::hypot (s.x - x, s.y - y);
+                if (d < bestD) { bestD = d; pick = i; }
+            }
+        return pick;
     }
 
     // After speaker `i` is removed from the system.

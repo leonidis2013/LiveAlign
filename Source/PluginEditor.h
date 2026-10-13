@@ -11,6 +11,7 @@
 #include "UI/SpeakersPage.h"
 #include "UI/PlanPage.h"
 #include "UI/RoomPage.h"
+#include "UI/GuidedMeasure.h"
 #include "UI/FeedbackPage.h"
 #include "UI/AcousticsPage.h"
 #include "UI/MonitorMicPage.h"
@@ -96,6 +97,11 @@ private:
     std::unique_ptr<la::ui::AcousticsPage> acousticsPage;
     std::unique_ptr<la::ui::MonitorMicPage> monitorMicPage;
     std::unique_ptr<la::ui::ReportPage> tuningReportPage, monitorReportPage;
+    std::unique_ptr<la::ui::GuidedOverlay> guidedOverlay;   // the guided measuring pop-up, while it is open
+public:
+    void openGuided (la::ui::GuidedSource& source);
+    la::ui::GuidedOverlay* guided() { return guidedOverlay.get(); }   // for the preview
+private:
     static constexpr int kMonitorMic = -2;   // the monitoring mic, for the calibration pop-ups
     double lastLogSecond = 0.0;
 
