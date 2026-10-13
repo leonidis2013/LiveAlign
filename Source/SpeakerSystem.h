@@ -10,6 +10,7 @@
 #include "Analysis/Crossover.h"
 #include "Analysis/CrossoverPair.h"
 #include "Analysis/FreqTable.h"
+#include "Analysis/Polarity.h"
 
 namespace la
 {
@@ -28,6 +29,20 @@ inline juce::String speakerChannelShort (int c)
     static const char* n[] = { "M", "L", "C", "R" };
     return n[juce::jlimit (0, kNumSpeakerChannels - 1, c)];
 }
+
+// The polarity of one cabinet: from its own measurement, and against the speaker it should match.
+struct PolarityCheck
+{
+    int verdict = polarity::Unknown;   // the answer: normal, inverted, check, skipped
+    int own = polarity::Unknown;       // from its own phase and impulse
+    double phaseDeg = 0.0;             // its excess phase through its loudest octaves
+    bool peakInverted = false;
+    int against = -1;                  // the speaker it was compared with (-1: none)
+    int relative = polarity::Unknown;  // Normal = same as `against`, Inverted = opposite
+    juce::String when, mic;
+
+    bool done() const { return verdict != polarity::Unknown; }
+};
 
 struct SpeakerSource
 {
@@ -49,6 +64,37 @@ struct SpeakerSource
     double arrivalMs = 0.0;        // measured arrival at the mic (from the reference)
     bool nearField = false;        // measured close to the speaker: its own response, timed to its own arrival
     int measureMic = -1;           // close up: the mic used for this speaker (-1: the system's mic)
+    std::vector<PolarityCheck> polarity;   // per cabinet (cabinet 1 from the response measurement)
+
+    PolarityCheck* polarityOf (int cab)
+    {
+        if (cab < 0 || cab >= count) return nullptr;
+        if ((int) polarity.size() < count) polarity.resize ((size_t) count);
+        return &polarity[(size_t) cab];
+    }
+    const PolarityCheck* polarityOf (int cab) const { return cab >= 0 && cab < (int) polarity.size() ? &polarity[(size_t) cab] : nullptr; }
+
+    // All its cabinets: inverted if any is, check if any is unclear, normal when every one is checked and normal.
+    int polaritySummary() const
+    {
+        int normal = 0, worst = polarity::Unknown;
+        for (int c = 0; c < count; ++c)
+        {
+            const auto* p = polarityOf (c);
+            const int v = p != nullptr ? p->verdict : polarity::Unknown;
+            if (v == polarity::Inverted) return polarity::Inverted;
+            if (v == polarity::Unsure) worst = polarity::Unsure;
+            normal += v == polarity::Normal ? 1 : 0;
+        }
+        if (worst == polarity::Unsure) return worst;
+        return normal == count ? polarity::Normal : polarity::Unknown;   // not every cabinet checked yet
+    }
+    int polarityChecked() const
+    {
+        int n = 0;
+        for (int c = 0; c < count; ++c) if (const auto* p = polarityOf (c)) n += p->done() ? 1 : 0;
+        return n;
+    }
 
     xo::Processing proc;           // suggested settings for the speaker processor
 
@@ -358,6 +404,21 @@ struct SpeakerSystem
             c->setAttribute ("delayUsedMs", s.delayUsedMs);
             c->setAttribute ("offsetMs", s.offsetMs);
             c->setAttribute ("hasArrival", s.hasArrival);
+            for (int k = 0; k < (int) s.polarity.size(); ++k)
+            {
+                const auto& pc = s.polarity[(size_t) k];
+                if (! pc.done()) continue;
+                auto* pe = c->createNewChildElement ("Polarity");
+                pe->setAttribute ("cabinet", k);
+                pe->setAttribute ("verdict", pc.verdict);
+                pe->setAttribute ("own", pc.own);
+                pe->setAttribute ("phase", pc.phaseDeg);
+                pe->setAttribute ("peakInverted", pc.peakInverted);
+                pe->setAttribute ("against", pc.against);
+                pe->setAttribute ("relative", pc.relative);
+                pe->setAttribute ("when", pc.when);
+                pe->setAttribute ("mic", pc.mic);
+            }
             c->setAttribute ("arrivalMs", s.arrivalMs);
             c->setAttribute ("nearField", s.nearField);
             if (s.measureMic >= 0) c->setAttribute ("measureMic", s.measureMic);
@@ -428,6 +489,21 @@ struct SpeakerSystem
             s.hasArrival = c->getBoolAttribute ("hasArrival");
             s.arrivalMs = c->getDoubleAttribute ("arrivalMs");
             s.nearField = c->getBoolAttribute ("nearField");
+            for (const auto* pe : c->getChildWithTagNameIterator ("Polarity"))
+            {
+                const int k = pe->getIntAttribute ("cabinet", -1);
+                if (k < 0 || k >= 16) continue;
+                if ((int) s.polarity.size() <= k) s.polarity.resize ((size_t) k + 1);
+                auto& pc = s.polarity[(size_t) k];
+                pc.verdict = juce::jlimit (0, 4, pe->getIntAttribute ("verdict"));
+                pc.own = juce::jlimit (0, 4, pe->getIntAttribute ("own"));
+                pc.phaseDeg = pe->getDoubleAttribute ("phase");
+                pc.peakInverted = pe->getBoolAttribute ("peakInverted");
+                pc.against = pe->getIntAttribute ("against", -1);
+                pc.relative = juce::jlimit (0, 4, pe->getIntAttribute ("relative"));
+                pc.when = pe->getStringAttribute ("when");
+                pc.mic = pe->getStringAttribute ("mic");
+            }
             s.measureMic = juce::jlimit (-1, kMaxMics - 1, c->getIntAttribute ("measureMic", -1));
             s.proc.hp = loadFilter (*c, "hp");
             s.proc.lp = loadFilter (*c, "lp");

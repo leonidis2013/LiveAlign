@@ -122,8 +122,8 @@ public:
             g.drawText (t, row.removeFromLeft (juce::jmin (row.getWidth() / 2, 360)), juce::Justification::centredLeft, true);
             g.setColour (p.textDim);
             g.setFont (font (13.0f));
-            if (measured) g.setColour (p.good);
-            g.drawText (measured ? juce::String ("measured")
+            if (measured) g.setColour (sp.problem ? p.bad : p.good);
+            g.drawText (measured ? juce::String (sp.problem ? "measured: needs a look" : "measured")
                         : sp.how.isNotEmpty() ? sp.how
                                         : sp.up ? juce::String (juce::CharPointer_UTF8 ("pointing straight up (90\xc2\xb0 calibration)"))
                                                 : juce::String (juce::CharPointer_UTF8 ("aimed at the speaker (0\xc2\xb0 calibration)")),
@@ -160,7 +160,7 @@ public:
         {
             fill = 1.0f;
             line = source.guidedStatus();
-            lineCol = resultOk ? p.good : p.warn;
+            lineCol = resultOk && ! problem() ? p.good : p.warn;
         }
         else if (allDone())
         {
@@ -179,7 +179,7 @@ public:
         g.fillRoundedRectangle (bar, 4.0f);
         if (fill > 0.0f)
         {
-            g.setColour (state == State::Done ? (resultOk ? p.good : p.warn) : p.accent);
+            g.setColour (state == State::Done ? (resultOk && ! problem() ? p.good : p.warn) : p.accent);
             g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.0f, 1.0f, fill)), 4.0f);
         }
 
@@ -199,7 +199,7 @@ public:
         {
             const auto c = juce::Point<float> (x + step * 0.5f, (float) dots.getCentreY());
             const bool done = sp.state == GuideSpot::Done || sp.state == GuideSpot::JustDone;
-            g.setColour (done ? p.good : sp.state == GuideSpot::Now ? p.accent : p.border);
+            g.setColour (done ? (sp.problem ? p.bad : p.good) : sp.state == GuideSpot::Now ? p.accent : p.border);
             if (sp.state == GuideSpot::ToDo) g.drawEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre (c), 1.5f);
             else g.fillEllipse (juce::Rectangle<float> (sp.state == GuideSpot::Now ? 12.0f : 10.0f, sp.state == GuideSpot::Now ? 12.0f : 10.0f).withCentre (c));
             x += step;
@@ -262,6 +262,12 @@ private:
     static constexpr double kCountIn = 3.0;
 
     double countInLeft() const { return juce::jmax (0.0, kCountIn - (juce::Time::getMillisecondCounterHiRes() - countInStart) / 1000.0); }
+
+    bool problem() const
+    {
+        for (const auto& sp : spots) if (sp.state == GuideSpot::JustDone && sp.problem) return true;
+        return false;
+    }
 
     bool allDone() const
     {

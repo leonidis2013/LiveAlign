@@ -50,6 +50,7 @@ struct GuideSpot
     int speaker = -1;        // a close-up spot: the speaker it is in front of
     int aimAt = -1;          // not up: the speaker it points at (the plan works out the angle)
     juce::String how;        // how to set the mic up there, when the usual words do not fit
+    bool problem = false;    // measured, but something needs a look (polarity inverted or unclear)
 };
 
 struct VenuePlan

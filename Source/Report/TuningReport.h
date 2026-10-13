@@ -138,6 +138,16 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         L.picture (plan, L.bottom() - L.y - 10.0f);
     }
 
+    // the polarity of a speaker's cabinets, for the table
+    auto polarityCell = [] (const SpeakerSource& s)
+    {
+        const int v = s.polaritySummary(), n = s.polarityChecked();
+        if (v == polarity::Normal) return juce::String ("normal") + (s.count > 1 ? " (all " + juce::String (s.count) + ")" : juce::String());
+        if (v == polarity::Inverted) return juce::String ("INVERTED");
+        if (v == polarity::Unsure) return juce::String ("check");
+        return n > 0 ? juce::String (n) + " of " + juce::String (s.count) + " checked" : juce::String ("not checked");
+    };
+
     // ---------- speakers ----------
     if (has ("speakers"))
     {
@@ -150,10 +160,29 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                 rows.push_back ({ s.name, s.model.isNotEmpty() ? s.model : juce::String ("-"), speakerRoleNames()[s.role], speakerChannelNames()[s.channel],
                                   s.output == 0 ? juce::String ("all") : juce::String (s.output), juce::String (s.count),
                                   s.hasResponse() ? (s.imported ? "imported" : s.nearField ? "measured close up" : "measured")
-                                                  : sys.master (i) != i ? "as " + sys.sources[(size_t) sys.master (i)].name : juce::String ("not measured") });
+                                                  : sys.master (i) != i ? "as " + sys.sources[(size_t) sys.master (i)].name : juce::String ("not measured"),
+                                  polarityCell (s) });
             }
             L.sub ("The system");
-            L.table ({ 2.0f, 2.4f, 1.3f, 1.2f, 0.7f, 0.7f, 1.8f }, { "Speaker", "Model", "Role", "Channel", "Out", "Qty", "Response" }, rows);
+            L.table ({ 2.0f, 2.2f, 1.2f, 1.1f, 0.6f, 0.6f, 1.7f, 1.5f }, { "Speaker", "Model", "Role", "Channel", "Out", "Qty", "Response", "Polarity" }, rows);
+            // the cabinets that need a look
+            juce::StringArray issues;
+            for (int i = 0; i < (int) sys.sources.size(); ++i)
+            {
+                const auto& s = sys.sources[(size_t) i];
+                for (int c = 0; c < s.count; ++c)
+                    if (const auto* pc = s.polarityOf (c); pc != nullptr && (pc->verdict == polarity::Inverted || pc->verdict == polarity::Unsure))
+                    {
+                        juce::String t = s.name + (s.count > 1 ? " cabinet " + juce::String (c + 1) : juce::String()) + ": "
+                                         + (pc->verdict == polarity::Inverted ? "polarity looks inverted" : "polarity not clear");
+                        if (pc->against >= 0 && pc->against < (int) sys.sources.size() && pc->against != i)
+                            t << (pc->relative == polarity::Inverted ? ", opposite to " : pc->relative == polarity::Normal ? ", matches " : ", compared with ")
+                              << sys.sources[(size_t) pc->against].name;
+                        t << " (" << pc->when << ")";
+                        issues.add (t);
+                    }
+            }
+            if (! issues.isEmpty()) { L.sub ("Polarity to check"); for (const auto& t : issues) L.para (t, 9.5f); }
         }
         {
             std::vector<juce::StringArray> rows;

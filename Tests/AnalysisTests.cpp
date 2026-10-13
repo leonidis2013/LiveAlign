@@ -1,6 +1,7 @@
 // Tests for the LiveAlign measurement engine (plain C++, no JUCE). Known signals in, known answers out.
 //   g++ -std=c++17 -O2 -ISource Tests/AnalysisTests.cpp -o analysis_tests && ./analysis_tests
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <random>
 #include <string>
@@ -19,6 +20,7 @@
 #include "Analysis/CrossoverPair.h"
 #include "Analysis/RoomAcoustics.h"
 #include "Analysis/FeedbackDetector.h"
+#include "Analysis/Polarity.h"
 #include "Analysis/EqFit.h"
 
 using namespace la;
@@ -672,6 +674,102 @@ static void testFeedbackDetector()
     check (none == 0, "Feedback: noise alone gives no rings", none, 0);
 }
 
+// A speaker measured close up: Butterworth high-pass `hpOrder` at `hp` Hz and low-pass `lpOrder` at `lp` Hz
+// (minimum phase), a small timing error, optionally inverted, with a little phase noise.
+static la::FreqTable speakerTf (double hp, int hpOrder, double lp, int lpOrder, bool inverted, double tauMs, unsigned seed = 1, double noiseDeg = 8.0)
+{
+    using C = std::complex<double>;
+    la::FreqTable t;
+    unsigned st = seed;
+    auto rnd = [&st] { st = st * 1664525u + 1013904223u; return (double) (st >> 8) / (double) (1u << 24) - 0.5; };
+    auto bw = [] (C s, int order, bool high)
+    {
+        // normalised Butterworth poles; s already scaled by the corner (high-pass: 1/s)
+        C h (1.0, 0.0);
+        const double pi = 3.14159265358979323846;
+        for (int k = 0; k < order; ++k)
+        {
+            const double a = pi * (2.0 * k + order + 1) / (2.0 * order);
+            const C pole (std::cos (a), std::sin (a));
+            h *= (high ? C (1.0, 0.0) : -pole) / (s - pole) * (high ? s : C (1.0, 0.0)) / (high ? C (1.0, 0.0) : C (1.0, 0.0));
+        }
+        return h;
+    };
+    for (int i = 0; i < 537; ++i)
+    {
+        const double f = 20.0 * std::pow (1000.0, i / 536.0);
+        const C jw (0.0, f);
+        C h = bw (C (0.0, f / lp), lpOrder, false);
+        // high-pass: H_hp(s) = H_lp(wc / s)
+        h *= bw (C (0.0, -hp / f), hpOrder, false);
+        if (inverted) h = -h;
+        h *= std::exp (C (0.0, -2.0 * 3.14159265358979323846 * f * tauMs * 0.001));
+        t.freq.push_back (f);
+        t.db.push_back (20.0 * std::log10 (std::abs (h) + 1e-12));
+        double ph = std::arg (h) * 180.0 / 3.14159265358979323846 + noiseDeg * rnd();
+        while (ph > 180.0) ph -= 360.0;
+        while (ph < -180.0) ph += 360.0;
+        t.phase.push_back (ph);
+        t.extra.push_back (0.95);
+        (void) jw;
+    }
+    return t;
+}
+
+static void testPolarity()
+{
+    using namespace la::polarity;
+    // a top, crossover bypassed: 2nd order at 70 Hz, rolling off above 18 kHz; timed 0.03 ms off
+    const auto top = speakerTf (70.0, 2, 18000.0, 2, false, 0.03);
+    const auto topInv = speakerTf (70.0, 2, 18000.0, 2, true, -0.04, 7);
+    auto a = absolute (top, 0.4, true, false);
+    check (a.verdict == Normal, "Polarity: top wired normally", a.band.phaseDeg, 0.0);
+    a = absolute (topInv, 0.4, true, true);
+    check (a.verdict == Inverted, "Polarity: top inverted", a.band.phaseDeg, 180.0);
+    a = absolute (topInv, 0.4, true, false);
+    check (a.verdict == Unsure, "Polarity: phase and impulse disagree gives check", a.verdict, Unsure);
+    a = absolute (topInv, 0.4, false, false);
+    check (a.verdict == Inverted, "Polarity: inverted from the phase alone", a.band.phaseDeg, 180.0);
+
+    // a sub, crossover bypassed: ported (4th order at 35 Hz), the driver rolling off above about 600 Hz
+    const auto sub = speakerTf (35.0, 4, 600.0, 2, false, 0.1, 3);
+    const auto subInv = speakerTf (35.0, 4, 600.0, 2, true, 0.1, 4);
+    a = absolute (sub, 0.4, true, false);
+    check (a.verdict == Normal, "Polarity: sub wired normally", a.band.phaseDeg, 0.0);
+    a = absolute (subInv, 0.4, true, true);
+    check (a.verdict == Inverted, "Polarity: sub inverted", a.band.phaseDeg, 180.0);
+
+    // a sub timed 4 ms late by the timing search (its impulse is long), with the processor's low-pass left in: still clear
+    const auto subLate = speakerTf (30.0, 2, 110.0, 4, false, 4.0, 13);
+    const auto subLateInv = speakerTf (30.0, 2, 110.0, 4, true, 4.0, 14);
+    a = absolute (subLate, 0.4, true, false);
+    check (a.verdict == Normal, "Polarity: sub timed 4 ms late, normal", a.band.phaseDeg, 0.0);
+    a = absolute (subLateInv, 0.4, true, true);
+    check (a.verdict == Inverted, "Polarity: sub timed 4 ms late, inverted", a.band.phaseDeg, 180.0);
+    a = absolute (subLate, 0.4, true, true);
+    check (a.verdict == Normal, "Polarity: a sub's ringing impulse peak does not decide", a.band.phaseDeg, 0.0);
+
+    // Main R against Main L (same model): same, then one wired the other way round
+    const auto right = speakerTf (70.0, 2, 18000.0, 2, false, -0.05, 9);
+    const auto rightInv = speakerTf (70.0, 2, 18000.0, 2, true, 0.02, 11);
+    auto r = relative (right, top, 0.4);
+    check (r.verdict == Normal, "Polarity: Main R matches Main L", r.band.phaseDeg, 0.0);
+    r = relative (rightInv, top, 0.4);
+    check (r.verdict == Inverted, "Polarity: Main R opposite to Main L", r.band.phaseDeg, 180.0);
+    // the second sub of a pair, opposite to the first
+    r = relative (subInv, sub, 0.4);
+    check (r.verdict == Inverted, "Polarity: second sub opposite to the first", r.band.phaseDeg, 180.0);
+
+    // nothing but noise: no answer
+    auto junk = top;
+    unsigned st = 5;
+    for (auto& p : junk.phase) { st = st * 1664525u + 1013904223u; p = (double) (st >> 8) / (double) (1u << 24) * 360.0 - 180.0; }
+    a = absolute (junk, 0.4, true, false);
+    check (a.verdict == Unsure, "Polarity: random phase gives check", a.band.spread, 1.0);
+    std::printf ("  polarity: top %.0f deg, sub %.0f deg (spread %.2f)\n", absolute (top, 0.4, false, false).band.phaseDeg,
+                 absolute (sub, 0.4, false, false).band.phaseDeg, absolute (sub, 0.4, false, false).band.spread);
+}
+
 int main()
 {
     testTargets();
@@ -690,6 +788,7 @@ int main()
     testCrossoverPair();
     testRoomAcoustics();
     testFeedbackDetector();
+    testPolarity();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

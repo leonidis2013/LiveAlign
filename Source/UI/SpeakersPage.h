@@ -263,6 +263,21 @@ public:
             g.setColour (s.show ? sourceColour (i) : p.textFaint);
             if (s.show) g.fillEllipse (eye.reduced (3.0f));
             g.drawEllipse (eye.reduced (1.0f), 1.3f);
+            // polarity: + normal, - inverted, ? not clear, an empty ring when not checked yet
+            {
+                r.removeFromRight (6.0f);
+                auto pb = r.removeFromRight (18.0f).withSizeKeepingCentre (18.0f, 18.0f);
+                const int v = s.polaritySummary();
+                const int checked = s.polarityChecked();
+                const auto pc = v == polarity::Normal ? p.good : v == polarity::Inverted ? p.bad : v == polarity::Unsure ? p.warn : p.textFaint;
+                g.setColour (pc.withAlpha (v == polarity::Unknown ? 0.0f : 0.2f));
+                g.fillEllipse (pb);
+                g.setColour (pc);
+                g.drawEllipse (pb.reduced (0.6f), 1.2f);
+                g.setFont (monoFont (12.0f, true));
+                const char* sym = v == polarity::Normal ? "+" : v == polarity::Inverted ? "-" : v == polarity::Unsure ? "?" : (checked > 0 ? "." : "");
+                g.drawText (sym, pb.translated (0.0f, -0.5f), juce::Justification::centred);
+            }
 
             g.setColour (sourceColour (i));
             g.fillRoundedRectangle (r.removeFromLeft (4.0f).withSizeKeepingCentre (4.0f, 20.0f), 2.0f);
@@ -453,6 +468,11 @@ public:
         outputBox.setTooltip ("The interface output that feeds this speaker or group while it is measured. "
                               "Or play all outputs and mute the others in your processor.");
         measureButton.onClick = [this] { if (phase == Phase::Idle) requestMeasure(); else cancelMeasure ("Stopped."); };
+        polarityButton.setTooltip ("A quick measurement close to the speaker that only checks its polarity: for speakers set \"Same as\" "
+                                   "another (Main R), and each cabinet when several share an output. Speakers measured on their own "
+                                   "have theirs checked with the measurement.");
+        polarityButton.onClick = [this] { checkPolarityOfSelected(); };
+        addChildComponent (polarityButton);
         guidedToggle.setButtonText ("Guided");
         guidedToggle.setTooltip ("Step by step in a pop-up: the venue plan shows which speaker plays and where the mic goes, then Measure and Next point");
         guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
@@ -676,6 +696,8 @@ public:
         measureButton.setButtonText (resp ? "Stop" : "Measure " + nameOf (selected));
         measureButton.setColour (juce::TextButton::buttonColourId, resp ? pal().bad : pal().accent);
         measureButton.setEnabled (! arr && (proc.isStandalone() || proc.uiAsStandalone));
+        polarityButton.setButtonText ("Check polarity of " + nameOf (selected));
+        polarityButton.setEnabled (! busyNow && (proc.isStandalone() || proc.uiAsStandalone));
         alMeasureButton.setButtonText (arr ? "Stop" : alignmentActionText());
         alMeasureButton.setColour (juce::TextButton::buttonColourId, arr ? pal().bad : pal().accent);
         alMeasureButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
@@ -764,58 +786,137 @@ public:
 
     // Same as the buttons (used by the local screenshot tool).
     void measure (int i) { select (i); startMeasure (i); }
+    void checkPolarity (int i, int cab) { select (i); startPolarity (i, cab); }
+
+    // Polarity checks still to do (speakers set "Same as" another, other cabinets), and the first speaker that looks inverted.
+    int polarityChecksLeft() const
+    {
+        int n = 0;
+        for (const auto& t : guidedTasks()) n += ! t.response && ! taskDone (t) ? 1 : 0;
+        return n;
+    }
+    juce::String invertedSpeaker() const
+    {
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+            if (sys.sources[(size_t) i].polaritySummary() == polarity::Inverted) return nameOf (i);
+        return {};
+    }
+    // The next polarity check: in the guided pop-up when Guided is on.
+    void nextPolarityCheck()
+    {
+        if (phase != Phase::Idle) return;
+        guidedNow = -1;
+        // an inverted one first: check it again once the wiring is fixed
+        for (const auto& t : guidedTasks())
+            if (const auto* pc = sys.sources[(size_t) t.spk].polarityOf (t.cab); pc != nullptr && pc->verdict == polarity::Inverted) { guidedNow = t.id(); break; }
+        if (GuidedSource::enabled() && onGuided) { onGuided (*this); return; }
+        const auto tasks = guidedTasks();
+        const int k = guidedCurrentIndex();
+        guidedNow = -1;
+        if (k < 0) return;
+        select (tasks[(size_t) k].spk);
+        if (tasks[(size_t) k].response) startMeasure (tasks[(size_t) k].spk);
+        else startPolarity (tasks[(size_t) k].spk, tasks[(size_t) k].cab);
+    }
 
     // Measure the selected speaker: in the guided pop-up when Guided is on, otherwise right here.
     void requestMeasure()
     {
         if (phase != Phase::Idle) return;
         guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
-        if (GuidedSource::enabled() && onGuided) { guidedNow = selected; onGuided (*this); }
+        if (GuidedSource::enabled() && onGuided)
+        {
+            const bool own = sys.master (selected) == selected && ! sys.sources[(size_t) selected].imported;
+            guidedNow = SpkTask { own, selected, 0 }.id();
+            onGuided (*this);
+        }
         else startMeasure (selected);
     }
 
     // ---- guided measuring: one point per speaker that needs its own measurement ----
     juce::String guidedTitle() const override { return "Speaker response"; }
 
-    int guidedCurrent() const
+    // The guided points: each speaker's response (the ones measured on their own), then a polarity check of every
+    // cabinet the responses do not cover (speakers set "Same as" another, and the other cabinets on one output).
+    struct SpkTask { bool response = true; int spk = 0, cab = 0; int id() const { return (response ? 0 : 10000) + spk * 100 + cab; } };
+
+    std::vector<SpkTask> guidedTasks() const
     {
-        const int n = (int) sys.sources.size();
-        if (guidedNow >= 0 && guidedNow < n && sys.master (guidedNow) == guidedNow) return guidedNow;
-        for (int i = 0; i < n; ++i) if (sys.master (i) == i && ! sys.covered (i)) return i;
+        std::vector<SpkTask> out;
+        const int n = juce::jmin ((int) sys.sources.size(), VenuePlan::kMaxSpeakers);
+        for (int i = 0; i < n; ++i) if (sys.master (i) == i && ! sys.sources[(size_t) i].imported) out.push_back ({ true, i, 0 });
+        for (int i = 0; i < n; ++i)
+            for (int c = 0; c < sys.sources[(size_t) i].count; ++c)
+                if (sys.master (i) != i || c > 0) out.push_back ({ false, i, c });
+        return out;
+    }
+
+    bool taskDone (const SpkTask& t) const
+    {
+        const auto& s = sys.sources[(size_t) t.spk];
+        if (t.response) return s.hasResponse();
+        const auto* pc = s.polarityOf (t.cab);
+        return pc != nullptr && pc->done();
+    }
+
+    bool taskProblem (const SpkTask& t) const
+    {
+        const auto* pc = sys.sources[(size_t) t.spk].polarityOf (t.cab);
+        return pc != nullptr && (pc->verdict == polarity::Inverted || pc->verdict == polarity::Unsure);
+    }
+
+    // The task now: the one picked (Measure again, or the selected speaker), otherwise the first not done.
+    int guidedCurrentIndex() const
+    {
+        const auto tasks = guidedTasks();
+        for (size_t k = 0; k < tasks.size(); ++k) if (tasks[k].id() == guidedNow) return (int) k;
+        for (size_t k = 0; k < tasks.size(); ++k) if (! taskDone (tasks[k])) return (int) k;
         return -1;
+    }
+    int guidedCurrent() const   // the speaker of the task now
+    {
+        const auto tasks = guidedTasks();
+        const int k = guidedCurrentIndex();
+        return k >= 0 ? tasks[(size_t) k].spk : -1;
     }
 
     std::vector<GuideSpot> guidedSpots() override
     {
         std::vector<GuideSpot> out;
-        const int n = juce::jmin ((int) sys.sources.size(), VenuePlan::kMaxSpeakers);
-        const int now = guidedCurrent();
+        const auto tasks = guidedTasks();
+        const int now = guidedCurrentIndex();
         const int micCount = proc.tuningMicCount();
-        for (int i = 0; i < n; ++i)
+        for (int k = 0; k < (int) tasks.size(); ++k)
         {
-            if (sys.master (i) != i) continue;   // "same as" another: nothing to measure
+            const auto& t = tasks[(size_t) k];
+            const int i = t.spk;
             const auto& sym = proc.plan.speakers[(size_t) i];
             GuideSpot sp;
-            sp.id = i;
-            sp.label = nameOf (i);
+            sp.id = t.id();
+            sp.label = t.response ? nameOf (i) : cabinetName (i, t.cab) + " polarity";
             const float a = juce::degreesToRadians (sym.angle);
-            sp.x = juce::jlimit (0.02f, 0.98f, sym.x + std::cos (a) * 0.06f);
-            sp.y = juce::jlimit (0.02f, 0.98f, sym.y + std::sin (a) * 0.09f);
+            const float side = 0.035f * (float) t.cab;   // the other cabinets beside the first
+            sp.x = juce::jlimit (0.02f, 0.98f, sym.x + std::cos (a) * 0.06f - std::sin (a) * side);
+            sp.y = juce::jlimit (0.02f, 0.98f, sym.y + std::sin (a) * 0.09f + std::cos (a) * side);
             sp.up = false;
             sp.aimAt = i;
-            sp.state = i == now ? GuideSpot::Now : sys.covered (i) ? GuideSpot::Done : GuideSpot::ToDo;
+            sp.state = k == now ? GuideSpot::Now : taskDone (t) ? GuideSpot::Done : GuideSpot::ToDo;
+            sp.problem = taskProblem (t);
             if (sp.state == GuideSpot::Now)
             {
                 sp.mic = sys.micFor (i, micCount);
                 sp.speaker = i;
-                if (sys.placement == 1)
+                if (t.response && sys.placement == 1)
                 {
                     // one spot: the mic stays where it is for every speaker
                     sp.x = proc.plan.mics[(size_t) sp.mic].x;
                     sp.y = proc.plan.mics[(size_t) sp.mic].y;
                     sp.how = "stays in the same place for every speaker, aimed at " + nameOf (i);
                 }
-                else sp.how = "about 12 in (30 cm) from the cone, on its axis, pointing at it";
+                else if (! t.response && sys.sources[(size_t) i].role == (int) SpeakerRole::Sub && sys.sources[(size_t) i].count > 1)
+                    sp.how = "a few inches from this cabinet's cone, pointing at it (the others play too)";
+                else sp.how = t.response ? "about 12 in (30 cm) from the cone, on its axis, pointing at it"
+                                         : "about 12 in (30 cm) from the cone, pointing at it: a quick polarity check";
             }
             out.push_back (sp);
         }
@@ -824,22 +925,51 @@ public:
 
     juce::String guidedHowTo() const override
     {
-        const int now = guidedCurrent();
-        const auto who = now >= 0 ? nameOf (now) : juce::String ("the speaker");
+        const auto tasks = guidedTasks();
+        const int k = guidedCurrentIndex();
+        if (k < 0) return "Every speaker is measured and its polarity checked.";
+        const auto& t = tasks[(size_t) k];
+        const auto who = nameOf (t.spk);
+        if (! t.response)
+            return "Only " + who + "'s output plays. Polarity is compared with " + (sys.master (t.spk) != t.spk ? nameOf (sys.master (t.spk)) : who + "'s first cabinet")
+                   + "; leave the processor's polarity for this output at normal.";
         if (sys.placement == 1)
             return "Only " + who + " plays. Bypass its crossover filters in the processor while it is measured. Keep the mic where it is.";
-        return "Only " + who + " plays. Bypass its crossover filters in the processor while it is measured. Midway between the woofer and "
-               "the horn on a two-way cabinet.";
+        return "Only " + who + " plays. Bypass its crossover filters, and leave its polarity at normal, while it is measured. Midway between "
+               "the woofer and the horn on a two-way cabinet.";
     }
 
     bool guidedStart() override
     {
-        const int now = guidedCurrent();
-        if (now < 0) { status = "Every speaker is measured."; return false; }
-        guidedNow = now;
-        select (now);
-        startMeasure (now);
+        const auto tasks = guidedTasks();
+        const int k = guidedCurrentIndex();
+        if (k < 0) { status = "Every speaker is measured and checked."; return false; }
+        const auto t = tasks[(size_t) k];
+        guidedNow = t.id();
+        select (t.spk);
+        if (t.response) startMeasure (t.spk);
+        else startPolarity (t.spk, t.cab);
         return phase != Phase::Idle;
+    }
+
+    bool guidedCanSkip() const override
+    {
+        const auto tasks = guidedTasks();
+        const int k = guidedCurrentIndex();
+        return k >= 0 && ! tasks[(size_t) k].response;
+    }
+    void guidedSkip() override
+    {
+        const auto tasks = guidedTasks();
+        const int k = guidedCurrentIndex();
+        if (k < 0 || tasks[(size_t) k].response) return;
+        if (auto* pc = sys.sources[(size_t) tasks[(size_t) k].spk].polarityOf (tasks[(size_t) k].cab))
+        {
+            *pc = {};
+            pc->verdict = polarity::Skipped;
+        }
+        guidedNow = -1;
+        systemChanged (false);
     }
     void guidedStop() override { cancelMeasure ("Stopped."); }
     bool guidedBusy() const override { return phase != Phase::Idle; }
@@ -911,6 +1041,13 @@ public:
             else t << "Not measured yet.";
             if (s->hasArrival) t << "\nArrives " << juce::String (s->arrivalMs, 2) << " ms after the reference";
             g.drawFittedText (t, selInfo, juce::Justification::topLeft, 3);
+            const auto pol = polarityLine (selected, true);
+            if (pol.first.isNotEmpty())
+            {
+                g.setColour (pol.second);
+                g.setFont (font (11.5f, true));
+                g.drawFittedText (pol.first, selInfo.withTrimmedTop (selInfo.getHeight() - 16), juce::Justification::topLeft, 1);
+            }
         }
 
         // measurement guidance and status
@@ -925,6 +1062,8 @@ public:
                 else t << "Timing is found on the first measurement, then locked so every speaker keeps its true arrival.";
             }
             else t << "Each speaker is timed to its own arrival; line them up afterwards in Time alignment.";
+            const auto pol = polarityLine (selected, false);
+            if (pol.first.isNotEmpty()) { t = pol.first; c = pol.second; }
             if (phase != Phase::Idle) { t = phaseText(); c = p.accent; }
             g.setColour (c);
             g.setFont (font (11.5f, phase != Phase::Idle));
@@ -1107,6 +1246,8 @@ public:
                 mrow.removeFromRight (6);
                 measureButton.setBounds (mrow);
             }
+            c.removeFromTop (6);
+            polarityButton.setBounds (c.removeFromTop (28));
             c.removeFromTop (8);
             measureInfo = c.removeFromTop (40);
             c.removeFromTop (8);
@@ -1520,9 +1661,23 @@ private:
     }
 
     // ---- measuring one source ----
+    // A polarity check of one cabinet: measured like a close-up response (timed to its own arrival), but only its
+    // polarity is kept. For speakers set "Same as" another, and for the other cabinets on one output.
+    void startPolarity (int i, int cab)
+    {
+        if (i < 0 || i >= (int) sys.sources.size()) return;
+        startMeasure (i);
+        if (phase == Phase::Idle) return;
+        polarityMode = true;
+        polarityCab = juce::jlimit (0, juce::jmax (0, sys.sources[(size_t) i].count - 1), cab);
+        measureNear = true;
+    }
+
     void startMeasure (int i)
     {
         if (i < 0 || i >= (int) sys.sources.size()) return;
+        polarityMode = false;
+        peakKnown = false;
         if (settings.refSource.load() == 0)
         {
             status = "Set a reference on Mic setup (the loopback, or the generator) to measure speakers.";
@@ -1556,6 +1711,7 @@ private:
         phase = Phase::Idle;
         measuring = -1;
         arrivalMode = false;
+        polarityMode = false;
         arrivalQueue.clear();
         status = why;
         refreshMeasureButton();
@@ -1570,6 +1726,8 @@ private:
 
     juce::String phaseText() const
     {
+        if (polarityMode && phase != Phase::Idle && measuring >= 0)
+            return phase == Phase::Settling ? "Playing pink noise from " + nameOf (measuring) + "..." : "Checking the polarity of " + cabinetName (measuring, polarityCab) + "...";
         const auto who = nameOf (measuring);
         switch (phase)
         {
@@ -1682,7 +1840,10 @@ private:
             {
                 auto& s = sys.sources[(size_t) measuring];
                 const bool valid = mic < rep.micCount && rep.valid[(size_t) mic];
-                if (valid) { s.hasArrival = true; s.arrivalMs = rep.ms[(size_t) mic]; }
+                peakKnown = valid && rep.confidenceDb[(size_t) mic] >= 12.0;
+                peakInverted = valid && rep.inverted[(size_t) mic];
+                if (polarityMode) { /* a polarity check does not change the speaker's timing */ }
+                else if (valid) { s.hasArrival = true; s.arrivalMs = rep.ms[(size_t) mic]; }
                 else s.hasArrival = false;
                 if (measureNear)
                 {
@@ -1774,11 +1935,13 @@ private:
             t.extra.push_back (i < r.tfCoh.size() ? r.tfCoh[i] : 0.0);
         }
         if (t.freq.size() < 16) { cancelMeasure ("Not enough of the response was clear enough to keep. Raise the level or reduce the noise."); return; }
+        if (polarityMode) { finishPolarity (mic, t); return; }
         auto& s = sys.sources[(size_t) measuring];
         s.response = std::move (t);
         s.imported = false;
         s.nearField = measureNear;
         if (measureNear) s.measureMic = mic;   // remember which mic measured it
+        notePolarity (measuring, 0, mic, s.response);
         s.delayUsedMs = measureNear ? nearDelayMs : sys.lockedDelayMs;
         if (measureNear) for (int m = 0; m < kMaxMics; ++m) settings.micDelayMs[m] = savedDelays[(size_t) m];
         const int calAngle = proc.activeCalAngle (mic);
@@ -1805,6 +1968,152 @@ private:
                          + "% of it is reliable: raise the level or reduce the noise and measure again.";
         }
         if (allMeasured()) status = "Every speaker is measured. Next: Crossover.";
+        status << " " << polaritySentence (idxOf (s), 0);
+    }
+
+    // The button: the next cabinet of the selected speaker not checked yet (or the first again). A speaker measured on
+    // its own with one cabinet was checked with its measurement: measure it again to check again.
+    void checkPolarityOfSelected()
+    {
+        if (phase != Phase::Idle || selected < 0 || selected >= (int) sys.sources.size()) return;
+        const auto& s = sys.sources[(size_t) selected];
+        const bool own = sys.master (selected) == selected;
+        if (own && ! s.hasResponse()) { status = "Measure " + nameOf (selected) + " first: its polarity is checked with the measurement."; repaint(); return; }
+        if (own && s.count == 1)
+        {
+            const auto t = polaritySentence (selected, 0);
+            status = t.isNotEmpty() ? t + " (from its measurement; measure it again to check again)" : "Measure " + nameOf (selected) + " again to check its polarity.";
+            repaint();
+            return;
+        }
+        int cab = -1;
+        for (int c = own ? 1 : 0; c < s.count && cab < 0; ++c)
+            if (const auto* pc = s.polarityOf (c); pc == nullptr || ! pc->done()) cab = c;
+        if (cab < 0) cab = own ? 1 : 0;
+        startPolarity (selected, cab);
+    }
+
+    // The selected speaker's polarity in a line (short: for the speaker card), and its colour.
+    std::pair<juce::String, juce::Colour> polarityLine (int i, bool shortForm) const
+    {
+        const auto& p = pal();
+        if (i < 0 || i >= (int) sys.sources.size()) return {};
+        const auto& s = sys.sources[(size_t) i];
+        const int v = s.polaritySummary(), n = s.polarityChecked();
+        if (n == 0)
+        {
+            if (sys.master (i) != i || s.count > 1)
+                return { shortForm ? juce::String ("Polarity: not checked") : "Polarity not checked yet: press Check polarity of " + nameOf (i) + ".", p.textDim };
+            return {};
+        }
+        if (s.count == 1)
+        {
+            if (shortForm) return { juce::String ("Polarity: ") + polarity::verdictName (v == polarity::Unknown ? s.polarityOf (0)->verdict : v),
+                                    v == polarity::Normal ? p.good : v == polarity::Inverted ? p.bad : p.warn };
+            return { polaritySentence (i, 0), v == polarity::Normal ? p.good : v == polarity::Inverted ? p.bad : p.warn };
+        }
+        juce::StringArray parts;
+        for (int c = 0; c < s.count; ++c)
+        {
+            const auto* pc = s.polarityOf (c);
+            parts.add ("cab " + juce::String (c + 1) + " " + (pc != nullptr ? polarity::verdictName (pc->verdict) : "not checked"));
+        }
+        const auto col = v == polarity::Normal ? p.good : v == polarity::Inverted ? p.bad : v == polarity::Unsure ? p.warn : p.textDim;
+        return { "Polarity: " + parts.joinIntoString (", ") + (shortForm || v != polarity::Inverted ? juce::String() : ". Check the wiring of the inverted one."), col };
+    }
+
+    int idxOf (const SpeakerSource& s) const { return (int) (&s - sys.sources.data()); }
+
+    // Works out a cabinet's polarity from a measurement `t` timed to its own arrival (or, from one spot, to the
+    // locked timing) and the impulse sign from the timing search; compares it with the speaker it should match.
+    void notePolarity (int i, int cab, int mic, const FreqTable& measured)
+    {
+        if (i < 0 || i >= (int) sys.sources.size()) return;
+        auto& s = sys.sources[(size_t) i];
+        auto* pc = s.polarityOf (cab);
+        if (pc == nullptr) return;
+        FreqTable t = measured;
+        double maxTau = 1.0;
+        if (! measureNear && s.hasArrival)
+        {
+            // from one spot: take out the time between the locked timing and this speaker's own arrival
+            const double d = s.arrivalMs - sys.lockedDelayMs;
+            for (size_t k = 0; k < t.freq.size(); ++k) t.phase[k] = std::remainder (t.phase[k] + 360.0 * t.freq[k] * d * 0.001, 360.0);
+            maxTau = 2.0;
+        }
+        const double minCoh = juce::jmax (0.2f, settings.coherenceBlank.load());
+        const auto own = polarity::absolute (t, minCoh, peakKnown, peakInverted, maxTau);
+        *pc = {};
+        pc->own = own.verdict;
+        pc->verdict = own.verdict;
+        pc->phaseDeg = own.band.phaseDeg;
+        pc->peakInverted = peakInverted;
+        pc->when = LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
+        pc->mic = proc.mics.nameOf (mic);
+        // against the speaker it should match: its "Same as" speaker, or its own first cabinet
+        const int m = sys.master (i);
+        const int refIdx = m != i ? m : (cab > 0 ? i : -1);
+        if (refIdx >= 0)
+        {
+            const auto& ref = sys.sources[(size_t) refIdx];
+            const auto* refPc = ref.polarityOf (0);
+            if (ref.hasResponse() && ! ref.imported && ref.nearField)
+            {
+                const auto rel = polarity::relative (t, ref.response, minCoh);
+                pc->against = refIdx;
+                pc->relative = rel.verdict;
+                const int refV = refPc != nullptr ? refPc->verdict : polarity::Unknown;
+                if ((rel.verdict == polarity::Normal || rel.verdict == polarity::Inverted)
+                    && (refV == polarity::Normal || refV == polarity::Inverted))
+                {
+                    const int implied = rel.verdict == polarity::Normal ? refV : (refV == polarity::Normal ? polarity::Inverted : polarity::Normal);
+                    // the comparison with a matching speaker is the firmer test; a clear disagreement with its own reading is "check"
+                    pc->verdict = (own.verdict == polarity::Normal || own.verdict == polarity::Inverted) && own.verdict != implied ? polarity::Unsure : implied;
+                }
+            }
+        }
+    }
+
+    juce::String cabinetName (int i, int cab) const
+    {
+        const auto& s = sys.sources[(size_t) i];
+        return s.count > 1 ? nameOf (i) + " cabinet " + juce::String (cab + 1) + " of " + juce::String (s.count) : nameOf (i);
+    }
+
+    // One sentence on a cabinet's polarity, for the status line.
+    juce::String polaritySentence (int i, int cab) const
+    {
+        if (i < 0 || i >= (int) sys.sources.size()) return {};
+        const auto* pc = sys.sources[(size_t) i].polarityOf (cab);
+        if (pc == nullptr || ! pc->done()) return {};
+        juce::String rel;
+        if (pc->against >= 0 && pc->against < (int) sys.sources.size() && pc->against != i
+            && (pc->relative == polarity::Normal || pc->relative == polarity::Inverted))
+            rel = pc->relative == polarity::Normal ? " (matches " + nameOf (pc->against) + ")" : " (opposite to " + nameOf (pc->against) + ")";
+        switch (pc->verdict)
+        {
+            case polarity::Normal: return "Polarity: normal" + rel + ".";
+            case polarity::Inverted: return "Polarity looks INVERTED" + rel + ": check the wiring and that the processor's polarity for this output is normal.";
+            case polarity::Unsure: return "Polarity: not clear" + rel + ". Measure again closer to the cone, or check with a polarity tester.";
+            default: return {};
+        }
+    }
+
+    void finishPolarity (int mic, const FreqTable& t)
+    {
+        const int i = measuring, cab = polarityCab;
+        for (int m = 0; m < kMaxMics; ++m) settings.micDelayMs[m] = savedDelays[(size_t) m];
+        proc.setAimOverride (-1);
+        settings.genOn = false;
+        phase = Phase::Idle;
+        measuring = -1;
+        polarityMode = false;
+        notePolarity (i, cab, mic, t);
+        ++measureSerial;
+        guidedNow = -1;
+        refreshMeasureButton();
+        status = cabinetName (i, cab) + " checked. " + polaritySentence (i, cab);
+        systemChanged (false);
     }
 
     // ---- guided steps on the right ----
@@ -1817,7 +2126,7 @@ private:
     void setStepVisibility()
     {
         const bool resp = mode == 1;
-        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &placementBox, &measureButton, &guidedToggle })
+        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &placementBox, &measureButton, &guidedToggle, &polarityButton })
             c->setVisible (resp);
         relockButton.setVisible (resp && sys.placement == 1);
         const bool xo = mode == 2;
@@ -2724,6 +3033,7 @@ private:
     juce::ComboBox countBox, linkBox;
     juce::ComboBox roleBox, channelBox, outputBox, micBox, highBox, lowBox, rangeBox, typeBox, slopeBox;
     juce::ToggleButton guidedToggle;
+    juce::TextButton polarityButton;
     juce::TextButton measureButton { "Measure" }, importButton { "Import response..." }, clearButton { "Clear" }, relockButton { "Re-time" };
     juce::Slider offsetSlider, freqSlider, delaySlider, gainSlider;
     juce::ToggleButton processedToggle { "With processing" };
@@ -2758,7 +3068,8 @@ private:
     juce::Rectangle<int> systemCard, selCard, summaryCard, selInfo, measureInfo, xoInfo, liveLine, summaryArea, statusLine;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
 
-    int selected = 0, nOuts = -1, measuring = -1, measureSerial = 0, guidedNow = -1;
+    int selected = 0, nOuts = -1, measuring = -1, measureSerial = 0, guidedNow = -1, polarityCab = 0;
+    bool polarityMode = false, peakKnown = false, peakInverted = false;
     Phase phase = Phase::Idle;
     double phaseStart = 0.0;
     float progress = 0.0f;

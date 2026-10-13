@@ -120,6 +120,7 @@ public:
                 double t = 0.0, sb = 0.0, fl = 0.0;
                 // outputs: 1 / 2 main left / right, 3 sub, 4 front fill
                 if (out == 0 || out == 1 || out == 2) { t = ref; for (auto& f : top) t = f (t); for (auto& f : system) t = f (t); }
+                if (out == 2 && simRightInverted) t = -t;   // Main R wired the wrong way round
                 if (out == 0 || out == 3) { sb = ref; for (auto& f : sub) sb = f (sb); sb *= 2.0 * subGain; }
                 if (out == 4) { fl = ref; for (auto& f : fillChain) fl = f (fl); fl *= 0.5; }
                 lineTop[wp % L] = (float) t;
@@ -248,10 +249,62 @@ public:
                 {
                     const auto& s = proc.system.sources[2];
                     std::printf ("measure Sub: near=%d response=%d points=%d arrival=%.3f\n", (int) s.nearField, (int) s.hasResponse(), (int) s.response.freq.size(), s.arrivalMs);
+                    auto pol = [this] (int i, int c)
+                    {
+                        const auto* pc = proc.system.sources[(size_t) i].polarityOf (c);
+                        return pc == nullptr ? juce::String ("none")
+                                             : juce::String (la::polarity::verdictName (pc->verdict)) + " (own " + la::polarity::verdictName (pc->own) + ", excess "
+                                                   + juce::String (pc->phaseDeg, 0) + " deg, peak " + (pc->peakInverted ? "-" : "+") + ", vs " + juce::String (pc->against)
+                                                   + " " + la::polarity::verdictName (pc->relative) + ")";
+                    };
+                    std::printf ("polarity: Main L %s | Sub %s\n", pol (0, 0).toRawUTF8(), pol (2, 0).toRawUTF8());
                     shot ("response");
-                    editor->showPage ((int) P::Crossover);
-                    page.findCrossover();
-                    next (3);
+                    // Main R (same as Main L) wired the wrong way round: the polarity check finds it
+                    simRightInverted = true;
+                    page.checkPolarity (1, 0);
+                    next (30);
+                }
+                break;
+            case 30:
+                if (stageTick + 5 < ticks && (! page.busy() || timeout))
+                {
+                    const auto* pc = proc.system.sources[1].polarityOf (0);
+                    std::printf ("polarity check Main R (wired inverted): %s own=%s excess=%.0f rel=%s | %s\n", pc ? la::polarity::verdictName (pc->verdict) : "none",
+                                 pc ? la::polarity::verdictName (pc->own) : "-", pc ? pc->phaseDeg : 0.0, pc ? la::polarity::verdictName (pc->relative) : "-",
+                                 page.statusText().toRawUTF8());
+                    shot ("polarity-inverted");
+                    simRightInverted = false;   // fixed: check again
+                    page.checkPolarity (1, 0);
+                    next (31);
+                }
+                break;
+            case 31:
+                if (stageTick + 5 < ticks && (! page.busy() || timeout))
+                {
+                    const auto* pc = proc.system.sources[1].polarityOf (0);
+                    std::printf ("polarity check Main R (rewired): %s own=%s rel=%s\n", pc ? la::polarity::verdictName (pc->verdict) : "none",
+                                 pc ? la::polarity::verdictName (pc->own) : "-", pc ? la::polarity::verdictName (pc->relative) : "-");
+                    subGain = -subGain;   // the sub wired the wrong way round
+                    page.checkPolarity (2, 0);
+                    next (32);
+                }
+                break;
+            case 32:
+            case 33:
+                if (stageTick + 5 < ticks && (! page.busy() || timeout))
+                {
+                    const auto* pc = proc.system.sources[2].polarityOf (0);
+                    std::printf ("polarity check Sub (%s): %s excess=%.0f\n", stage == 32 ? "wired inverted" : "rewired",
+                                 pc ? la::polarity::verdictName (pc->verdict) : "none", pc ? pc->phaseDeg : 0.0);
+                    subGain = -subGain;
+                    if (stage == 32) { page.checkPolarity (2, 0); next (33); }
+                    else
+                    {
+                        subGain = -subGain;   // back as it was for the crossover
+                        editor->showPage ((int) P::Crossover);
+                        page.findCrossover();
+                        next (3);
+                    }
                 }
                 break;
             case 3:
@@ -499,6 +552,10 @@ public:
                              (int) proc.system.sources[2].response.freq.size(), (int) before, proc.system.sources[2].proc.lp.slope, proc.system.sources[2].proc.lp.freq,
                              (int) proc.system.alignments.size(), proc.system.alignments.empty() ? -1 : (int) proc.system.alignments[0].checked(),
                              (int) proc.system.sources[0].nearField, proc.system.placement);
+                std::printf ("venue polarity: Main L %s, Main R %s (against %d), Sub %s\n", la::polarity::verdictName (proc.system.sources[0].polaritySummary()),
+                             la::polarity::verdictName (proc.system.sources[1].polaritySummary()),
+                             proc.system.sources[1].polarityOf (0) != nullptr ? proc.system.sources[1].polarityOf (0)->against : -9,
+                             la::polarity::verdictName (proc.system.sources[2].polaritySummary()));
                 std::printf ("venue room: before=%d after=%d acoustics=%d tuned=%d feedback rings=%d asFound=%d log=%d monitorMic=%s plan monitor placed=%d\n", proc.room.count (false),
                              proc.room.count (true), proc.room.acousticsCount(), (int) proc.room.tuned, (int) proc.feedback.rings.size(), (int) proc.asFound.taken(),
                              (int) proc.splLog.points.size(), proc.monitorMic.name.toRawUTF8(), (int) proc.plan.monitorMic.placed);
@@ -693,6 +750,7 @@ public:
             }
     }
     long simSubDelay = 0, simTopDelay = 0;
+    bool simRightInverted = false;
     size_t wp = 0;
     int ticks = 0;
     double fs = 48000.0;

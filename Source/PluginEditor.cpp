@@ -426,6 +426,12 @@ void LiveAlignEditor::updateStatuses()
     else if (measured < nSrc) set (Page::Response, StepStatus::InProgress, juce::String (measured) + " of " + juce::String (nSrc), "Measure the remaining speakers.",
                                    (float) measured / (float) juce::jmax (1, nSrc));
     else set (Page::Response, StepStatus::Ready, "All measured", "Every speaker measured.");
+    for (const auto& s : sys.sources)
+        if (s.polaritySummary() == la::polarity::Inverted)
+        {
+            set (Page::Response, StepStatus::Attention, "Polarity", s.name + "'s polarity looks inverted: check its wiring.");
+            break;
+        }
 
     if (sys.pairValid() && sys.pairInverted()) set (Page::Crossover, StepStatus::Attention, "Pair upside down", "HIGH is a sub and LOW a top: swap them.");
     else if (speakerPage->crossoverDone()) set (Page::Crossover, StepStatus::Ready, speakerPage->stepSummaryText (1), "Crossover set: " + speakerPage->stepSummaryText (1) + ".");
@@ -514,7 +520,14 @@ void LiveAlignEditor::refreshNext()
         }
         case Page::Speakers: cont (processor.plan.drawn() ? Page::Response : Page::Plan); break;
         case Page::Plan: cont (Page::Response); break;
-        case Page::Response: if (speakerPage->busy()) text = "Measuring..."; else if (! speakerPage->responsesDone()) { text = "Next: measure each speaker"; action = [this] { speakerPage->requestMeasure(); }; } else cont (Page::Crossover); break;
+        case Page::Response:
+            if (speakerPage->busy()) text = "Measuring...";
+            else if (! speakerPage->responsesDone()) { text = "Next: measure each speaker"; action = [this] { speakerPage->requestMeasure(); }; }
+            else if (speakerPage->invertedSpeaker().isNotEmpty())
+            { text = "Next: fix " + speakerPage->invertedSpeaker() + "'s polarity, check again"; action = [this] { speakerPage->nextPolarityCheck(); }; }
+            else if (speakerPage->polarityChecksLeft() > 0) { text = "Next: check the polarity of the rest"; action = [this] { speakerPage->nextPolarityCheck(); }; }
+            else cont (Page::Crossover);
+            break;
         case Page::Crossover:
             if (speakerPage->busy()) text = "Searching...";
             else if (! speakerPage->crossoverDone()) { text = "Next: Find the best crossover"; action = [this] { speakerPage->findCrossover(); }; }

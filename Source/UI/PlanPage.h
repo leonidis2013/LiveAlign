@@ -629,16 +629,23 @@ private:
                 }
                 if (sp.state == GuideSpot::Done)
                 {
-                    g.setColour (p.good.withAlpha (0.85f));
+                    g.setColour ((sp.problem ? p.bad : p.good).withAlpha (0.85f));
                     g.fillEllipse (juce::Rectangle<float> (18.0f, 18.0f).withCentre (c));
-                    tick (c, 12.0f, p.onAccent);
+                    if (sp.problem)
+                    {
+                        g.setColour (p.onAccent);
+                        g.setFont (font (12.0f, true));
+                        g.drawText ("!", juce::Rectangle<float> (18.0f, 18.0f).withCentre (c), juce::Justification::centred);
+                    }
+                    else tick (c, 12.0f, p.onAccent);
                     g.setColour (p.textDim);
                     g.setFont (font (11.5f));
                     g.drawText (sp.label, juce::Rectangle<float> (c.x + 13.0f, c.y - 9.0f, 160.0f, 18.0f), juce::Justification::centredLeft, true);
                     continue;
                 }
                 const bool justDone = sp.state == GuideSpot::JustDone;
-                const auto col = justDone ? p.good : p.accent;
+                const auto doneCol = sp.problem ? p.bad : p.good;
+                const auto col = justDone ? doneCol : p.accent;
                 if (! justDone)
                     for (int k = 0; k < 2; ++k)
                     {
@@ -647,11 +654,16 @@ private:
                         g.drawEllipse (juce::Rectangle<float> (30.0f + 46.0f * ph, 30.0f + 46.0f * ph).withCentre (c), 2.0f);
                     }
                 const auto mc = sp.mic >= 0 ? micColour (sp.mic) : col;
-                g.setColour ((justDone ? p.good : mc).withAlpha (0.25f));
+                g.setColour ((justDone ? doneCol : mc).withAlpha (0.25f));
                 g.fillEllipse (juce::Rectangle<float> (30.0f, 30.0f).withCentre (c));
-                g.setColour (justDone ? p.good : mc);
+                g.setColour (justDone ? doneCol : mc);
                 g.drawEllipse (juce::Rectangle<float> (30.0f, 30.0f).withCentre (c), 2.4f);
-                if (justDone) tick (c, 18.0f, p.good);
+                if (justDone && sp.problem)
+                {
+                    g.setFont (font (18.0f, true));
+                    g.drawText ("!", juce::Rectangle<float> (30.0f, 30.0f).withCentre (c), juce::Justification::centred);
+                }
+                else if (justDone) tick (c, 18.0f, p.good);
                 else if (sp.up)
                 {
                     g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre (c));   // pointing up, out of the page
