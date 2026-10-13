@@ -38,6 +38,7 @@ public:
         refBox.onChange = [this] { settings.refSource = refBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
         row (0, "Reference", refBox);
 
+        adv = true;   // analysis details: hidden unless "Show advanced settings" is on
         header (0, "Transfer function");
         static const int sizes[] = { 8192, 16384, 32768, 65536 };
         fftBox.addItemList ({ "8k   (5.9 Hz, fast)", "16k  (2.9 Hz)", "32k  (1.5 Hz)", "64k  (0.7 Hz, slow)" }, 1);
@@ -65,6 +66,7 @@ public:
         smoothBox.setTooltip ("1/24 or 1/12 octave for tuning, 1/3 for the overall tonal shape");
         smoothBox.onChange = [this] { settings.smoothing = smooth[juce::jlimit (0, 4, smoothBox.getSelectedItemIndex())]; };
         row (0, "Smoothing", smoothBox);
+        adv = false;
 
         blankBox.addItemList ({ "Off", "20 %", "40 % (default)", "60 %", "80 % (strict)" }, 1);
         blankBox.setSelectedItemIndex (juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)), juce::dontSendNotification);
@@ -73,6 +75,7 @@ public:
                              "Raise it in a noisy room to be stricter.");
         blankBox.onChange = [this] { settings.coherenceBlank = (float) blankBox.getSelectedItemIndex() / 5.0f; };
         row (0, "Minimum coherence", blankBox);
+        adv = true;
 
         static const float ranges[] = { 12.0f, 20.0f, 30.0f, 40.0f };
         rangeBox.addItemList ({ "+/- 12 dB", "+/- 20 dB", "+/- 30 dB", "+/- 40 dB" }, 1);
@@ -100,6 +103,7 @@ public:
         peakToggle.setToggleState (settings.rtaPeakHold.load(), juce::dontSendNotification);
         peakToggle.onClick = [this] { settings.rtaPeakHold = peakToggle.getToggleState(); settings.requestClearPeak = true; };
         row (0, "Overlays", refRtaToggle, &peakToggle);
+        adv = false;
 
         // ================= right column =================
         header (1, "Screen");
@@ -120,6 +124,7 @@ public:
         themeBox.onChange = [this] { settings.theme = themeBox.getSelectedItemIndex(); if (onThemeChanged) onThemeChanged(); };
         row (1, "Theme", themeBox);
 
+        adv = true;
         header (1, "Impulse response");
         irModeBox.addItemList ({ "Linear", "Log (ETC)" }, 1);
         irModeBox.setSelectedItemIndex (settings.irMode.load(), juce::dontSendNotification);
@@ -141,6 +146,7 @@ public:
         wfRangeBox.setTooltip ("Level range from the loudest band down to the darkest colour");
         wfRangeBox.onChange = [this] { settings.wfRange = wfRangeBox.getSelectedItemIndex(); };
         row (1, "Colour range", wfRangeBox);
+        adv = false;
 
         header (1, "Environment");
         tempUnitBox.addItemList ({ juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "C  Celsius")),
@@ -181,11 +187,20 @@ public:
         autoUpdateToggle.setTooltip ("Check once each time LiveAlign starts (needs an internet connection; nothing is sent but the request)");
         autoUpdateToggle.onClick = [this] { updates.setAutoCheck (autoUpdateToggle.getToggleState()); };
         row (0, "Automatically", autoUpdateToggle);
-        updateLine = { colX (0), colY[0], kColW, 22 };
-        colY[0] += 26;
         refreshUpdate();
 
-        setSize (2 * kColW + kColGap + 2 * kPad, juce::jmax (colY[0], colY[1]) + 40);
+        showAdvanced = UserPrefs::get ("showAdvanced") == "1";
+        advancedToggle.setToggleState (showAdvanced, juce::dontSendNotification);
+        advancedToggle.setTooltip ("FFT size, averaging, smoothing, graph ranges, RTA, impulse response and waterfall options. "
+                                   "The defaults suit most tuning; LiveAlign's guided steps pick what they need.");
+        advancedToggle.onClick = [this]
+        {
+            showAdvanced = advancedToggle.getToggleState();
+            UserPrefs::set ("showAdvanced", showAdvanced ? "1" : "0");
+            layout();
+        };
+        addAndMakeVisible (advancedToggle);
+        layout();
         startTimerHz (2);
     }
 
@@ -204,6 +219,7 @@ public:
 
         for (const auto& h : headers)
         {
+            if (! h.shown) continue;
             const int x = colX (h.col);
             g.setColour (p.accent);
             g.fillRoundedRectangle ((float) x, (float) h.y + 7.0f, 3.0f, 12.0f, 1.5f);
@@ -217,6 +233,7 @@ public:
         g.setFont (font (12.5f));
         for (const auto& r : rows)
         {
+            if (! r.shown) continue;
             g.setColour (p.text);
             g.drawText (r.label, colX (r.col), r.y, kLabelW - 8, 28, juce::Justification::centredLeft);
         }
@@ -236,6 +253,7 @@ public:
     {
         for (auto& r : rows)
         {
+            if (! r.shown) continue;
             auto area = juce::Rectangle<int> (colX (r.col) + kLabelW, r.y, kColW - kLabelW, 28);
             if (r.second != nullptr)
             {
@@ -253,22 +271,53 @@ private:
     static constexpr int kColW = 400, kColGap = 48, kLabelW = 150, kRowH = 36, kTop = 44, kPad = 20;
     static int colX (int col) { return kPad + col * (kColW + kColGap); }
 
-    struct Row { juce::String label; juce::Component* comp; juce::Component* second; int col, y; };
-    struct Header { juce::String text; int col, y; };
+    struct Row { juce::String label; juce::Component* comp; juce::Component* second; int col, y; bool adv, shown; int order; };
+    struct Header { juce::String text; int col, y; bool adv, shown; int order; };
 
-    void header (int col, const juce::String& text)
-    {
-        if (colY[col] > kTop) colY[col] += 10;
-        headers.push_back ({ text, col, colY[col] });
-        colY[col] += 32;
-    }
+    void header (int col, const juce::String& text) { headers.push_back ({ text, col, 0, adv, true, order++ }); }
 
     void row (int col, const juce::String& label, juce::Component& c, juce::Component* second = nullptr)
     {
         addAndMakeVisible (c);
         if (second != nullptr) addAndMakeVisible (second);
-        rows.push_back ({ label, &c, second, col, colY[col] });
-        colY[col] += kRowH;
+        rows.push_back ({ label, &c, second, col, 0, adv, true, order++ });
+    }
+
+    // Places the headers and rows (skipping the advanced ones when hidden) and sizes the panel.
+    void layout()
+    {
+        int y[2] { kTop, kTop };
+        int hi = 0, ri = 0;
+        while (hi < (int) headers.size() || ri < (int) rows.size())
+        {
+            const bool takeHeader = ri >= (int) rows.size() || (hi < (int) headers.size() && headers[(size_t) hi].order < rows[(size_t) ri].order);
+            if (takeHeader)
+            {
+                auto& h = headers[(size_t) hi++];
+                h.shown = showAdvanced || ! h.adv;
+                if (! h.shown) continue;
+                if (y[h.col] > kTop) y[h.col] += 10;
+                h.y = y[h.col];
+                y[h.col] += 32;
+            }
+            else
+            {
+                auto& r = rows[(size_t) ri++];
+                r.shown = showAdvanced || ! r.adv;
+                r.comp->setVisible (r.shown);
+                if (r.second != nullptr) r.second->setVisible (r.shown);
+                if (! r.shown) continue;
+                r.y = y[r.col];
+                y[r.col] += kRowH;
+            }
+        }
+        updateLine = { colX (0), y[0], kColW, 22 };
+        y[0] += 26;
+        const int bottom = juce::jmax (y[0], y[1]);
+        advancedToggle.setBounds (kPad, bottom + 6, 340, 26);
+        setSize (2 * kColW + kColGap + 2 * kPad, bottom + 6 + 26 + 40);
+        resized();
+        repaint();
     }
 
     void setupTemperatureSlider()
@@ -320,7 +369,9 @@ private:
     juce::Rectangle<int> updateLine;
     std::vector<Row> rows;
     std::vector<Header> headers;
-    int colY[2] { kTop, kTop };
+    bool adv = false, showAdvanced = false;
+    int order = 0;
+    juce::ToggleButton advancedToggle { "Show advanced analysis settings" };
 
     juce::TextButton deviceButton { "Audio device..." };
     juce::ComboBox refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,

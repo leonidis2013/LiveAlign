@@ -7,6 +7,7 @@
 // their serial numbers and calibration, this session's checks, and the measured responses and traces.
 #include "PdfWriter.h"
 #include "../PluginProcessor.h"
+#include "../UI/RoomPage.h"
 #include "../UI/SpeakersPage.h"
 
 namespace la::report
@@ -248,7 +249,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
     if (p.venueNotes.isNotEmpty()) { L.sub ("Venue notes"); L.para (p.venueNotes); }
 
     L.sub ("Contents");
-    L.para ("1  Venue plan        2  Speakers and processor settings        3  Measurement mics and checks        4  Measurements", 9.5f, dim);
+    L.para ("1  Venue plan      2  Speakers and processor settings      3  Measurement mics and checks      4  Room tuning      5  Measurements", 9.5f, dim);
 
     // ---------- plan ----------
     if (plan.isValid())
@@ -282,6 +283,27 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         L.sub ("Settings for the speaker processor");
         L.table ({ 2.0f, 2.2f, 2.2f, 1.2f, 1.2f, 1.0f }, { "Speaker", "High-pass", "Low-pass", "Delay", "Polarity", "Gain" }, rows);
         L.para ("BW Butterworth, LR Linkwitz-Riley; slopes in dB/octave. Delay, polarity and gain are applied on each speaker's output.", 8.0f, dim);
+    }
+    {
+        std::vector<juce::StringArray> rows;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            const auto& s = sys.sources[(size_t) i];
+            if (sys.master (i) != i) continue;
+            int k = 0;
+            for (const auto& b : s.proc.eq)
+            {
+                ++k;
+                rows.push_back ({ k == 1 ? s.name : juce::String(), juce::String (k), juce::String (juce::roundToInt (b.freq)) + " Hz",
+                                  (b.gainDb >= 0.0 ? "+" : "") + juce::String (b.gainDb, 1) + " dB", juce::String (b.q, 2) });
+            }
+        }
+        if (! rows.empty())
+        {
+            L.sub ("Parametric EQ (from room tuning)");
+            L.table ({ 2.4f, 0.6f, 1.4f, 1.4f, 1.0f }, { "Speaker", "Band", "Frequency", "Gain", "Q" }, rows);
+            L.para ("Peaking (bell) filters. Speakers that share settings with another (e.g. Main R with Main L) take the same EQ.", 8.0f, dim);
+        }
     }
     if (sys.pairValid() && sys.sources[(size_t) sys.xoHigh].proc.hp.active())
     {
@@ -328,6 +350,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         for (const auto& s : sys.sources) any = any || s.hasResponse();
         if (any)
         {
+            L.need (360.0f);
             L.sub ("Measured responses with the processing, and their predicted sum");
             L.picture (img, 330.0f);
         }
@@ -349,7 +372,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             rows.push_back ({ juce::String (m + 1) + "  " + p.mics.nameOf (m), ms.isNotEmpty() ? ms : juce::String ("-"),
                               p.mics.position[(size_t) m].isNotEmpty() ? p.mics.position[(size_t) m] : juce::String ("-"),
                               "In " + juce::String (st.micInput[m].load() + 1), cal,
-                              p.mics.aim[(size_t) m] == 0 ? juce::String ("at speaker (0 deg)") : juce::String ("pointing up (90 deg)"), spl });
+                              p.ownAim (m) == 0 ? juce::String ("at speaker (0 deg)") : juce::String ("pointing up (90 deg)"), spl });
         }
         L.sub ("Mics");
         L.table ({ 1.6f, 1.7f, 1.1f, 0.6f, 2.4f, 1.3f, 1.6f }, { "Mic", "Model / serial", "Position", "Input", "Calibration files", "Aim", "Sound level" }, rows, 8.0f);
@@ -375,6 +398,79 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         L.keyValues (checks);
     }
 
+    // ---------- room tuning ----------
+    L.newPage();
+    L.heading ("4  Room tuning");
+    {
+        const auto& rt = p.room;
+        if (rt.count (false) == 0 && rt.count (true) == 0)
+            L.para ("The room was not measured in this session.", 9.5f, dim);
+        else
+        {
+            double lo, hi;
+            rt.eqRange (sys, lo, hi);
+            std::vector<std::pair<juce::String, juce::String>> rkv;
+            rkv.push_back ({ "Target", targets::list()[(size_t) juce::jlimit (0, targets::count() - 1, rt.target)].name });
+            rkv.push_back ({ "EQ on", rt.eqSpeaker >= 0 && rt.eqSpeaker < (int) sys.sources.size() ? sys.sources[(size_t) rt.eqSpeaker].name : juce::String ("-") });
+            rkv.push_back ({ "EQ range", juce::String (juce::roundToInt (lo)) + " Hz - " + juce::String (juce::roundToInt (hi)) + " Hz" });
+            auto dev = [&] (bool after)
+            {
+                double rms, mx;
+                rt.deviation (rt.average (after), lo, hi, rms, mx);
+                juce::String t = juce::String (rms, 1) + " dB RMS from the target (worst " + juce::String (mx, 1) + " dB), "
+                                 + juce::String (rt.count (after)) + (rt.count (after) == 1 ? " position" : " positions");
+                const double spread = rt.levelSpread (after);
+                if (std::isfinite (spread) && rt.count (after) > 1) t << "; level across positions " << juce::String (spread, 1) << " dB";
+                return t;
+            };
+            if (rt.count (false) > 0) rkv.push_back ({ "Before EQ", dev (false) });
+            if (rt.count (true) > 0) rkv.push_back ({ "After EQ", dev (true) });
+            rkv.push_back ({ "Status", rt.tuned ? "Marked as tuned " + rt.tunedOn : juce::String ("Not marked as tuned") });
+            L.keyValues (rkv);
+
+            const auto* saved = ui::currentPalette();
+            ui::currentPalette() = &ui::lightPalette();
+            ui::RoomGraph graph (p);
+            graph.setBounds (0, 0, 820, 420);
+            graph.setRange (lo, hi);
+            graph.setShow (true, true, true, rt.count (true) == 0);
+            const auto img = graph.createComponentSnapshot (graph.getLocalBounds(), true, 2.0f);
+            ui::currentPalette() = saved;
+            L.need (330.0f);
+            L.sub ("Average of the positions against the target");
+            L.picture (img, 300.0f);
+            L.para ("Each position is levelled to its own 500 Hz - 4 kHz average, so the curves compare tonal balance. Dark: before EQ; green: after "
+                    "EQ; dashed green with a shaded band: the target, +/-3 dB; dashed teal: before EQ with the suggested EQ (when not yet measured after).", 8.0f, dim);
+
+            std::vector<juce::StringArray> rows;
+            for (const auto& m : rt.meas)
+            {
+                const double l = m.levelDb();
+                rows.push_back ({ m.position, m.after ? "after EQ" : "before EQ", m.micName, m.calUsed, m.time,
+                                  std::isfinite (l) ? juce::String (l, 1) + " dB" : juce::String ("-"), m.include ? "yes" : "no" });
+            }
+            L.sub ("Measurements at the listening positions");
+            L.table ({ 1.6f, 1.0f, 1.2f, 2.6f, 0.7f, 0.9f, 0.8f }, { "Position", "When", "Mic", "Calibration used", "Time", "Level", "Averaged" }, rows, 8.0f);
+
+            if (! rt.suggested.empty())
+            {
+                std::vector<juce::StringArray> eqRows;
+                for (size_t i = 0; i < rt.suggested.size(); ++i)
+                {
+                    const auto& b = rt.suggested[i];
+                    eqRows.push_back ({ juce::String ((int) i + 1), juce::String (juce::roundToInt (b.freq)) + " Hz",
+                                        (b.gainDb >= 0.0 ? "+" : "") + juce::String (b.gainDb, 1) + " dB", juce::String (b.q, 2) });
+                }
+                L.sub ("Suggested EQ");
+                L.table ({ 0.6f, 1.4f, 1.4f, 1.0f }, { "Band", "Frequency", "Gain", "Q" }, eqRows);
+                L.para ("Limits: " + juce::String (rt.maxBands) + " bands, cuts to " + juce::String (rt.maxCutDb, 0) + " dB, "
+                        + (rt.maxBoostDb > 0.0 ? "boosts to " + juce::String (rt.maxBoostDb, 0) + " dB (wide dips only)." : juce::String ("no boosts."))
+                        + (rt.baseEq.empty() ? juce::String() : " Added to the " + juce::String ((int) rt.baseEq.size()) + " bands already on the speaker when measured."),
+                        8.0f, dim);
+            }
+        }
+    }
+
     // ---------- measurements ----------
     std::vector<const Trace*> tf, rta;
     for (const auto& t : p.traces.all())
@@ -383,7 +479,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         (t.kind == Trace::Transfer ? tf : rta).push_back (&t);
     }
     L.newPage();
-    L.heading ("4  Measurements");
+    L.heading ("5  Measurements");
     if (tf.empty() && rta.empty()) L.para ("No traces were captured in this session. Capture them on Monitoring (Capture, key C).", 9.5f, dim);
     auto listTraces = [&] (const std::vector<const Trace*>& v)
     {

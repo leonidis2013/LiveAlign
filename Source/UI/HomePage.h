@@ -20,6 +20,7 @@ struct StepInfo
 class HomePage : public juce::Component, private juce::Timer
 {
 public:
+    std::function<void()> onNewVenueFromThis;
     std::function<void()> onNewVenue, onOpenVenue, onSave, onSaveAs, onNewSession, onChanged, onReport;
     std::function<void (int)> onGoTo, onRenameSession, onDeleteSession;
 
@@ -38,7 +39,19 @@ public:
         }
         nameEditor.setFont (font (16.0f, true));
 
-        setupButton (newVenueButton, [this] { if (onNewVenue) onNewVenue(); }, "Start a new venue file");
+        setupButton (newVenueButton, [this]
+        {
+            juce::PopupMenu m;
+            m.addItem (1, "Blank venue");
+            m.addItem (2, "Based on this one  (same mics, speakers, positions and plan)");
+            juce::Component::SafePointer<HomePage> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&newVenueButton), [safe] (int r)
+            {
+                if (safe == nullptr) return;
+                if (r == 1 && safe->onNewVenue) safe->onNewVenue();
+                if (r == 2 && safe->onNewVenueFromThis) safe->onNewVenueFromThis();
+            });
+        }, "Start a new venue file: blank, or based on this one (for a touring rig or a similar room)");
         setupButton (openButton, [this] { if (onOpenVenue) onOpenVenue(); }, "Open a venue file");
         setupButton (saveButton, [this] { if (onSave) onSave(); }, "Save the venue and all its sessions (Cmd/Ctrl+S)");
         setupButton (saveAsButton, [this] { if (onSaveAs) onSaveAs(); }, "Save under a new name");
@@ -407,7 +420,7 @@ private:
 
     LiveAlignProcessor& proc;
     juce::TextEditor nameEditor, notesEditor;
-    juce::TextButton newVenueButton { "New venue" }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
+    juce::TextButton newVenueButton { "New venue..." }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
         newSessionButton { "New session" }, openSessionButton { "Open" }, compareButton { "Compare" }, renameButton { "Rename" },
         deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" }, reportButton { "Tuning report (PDF)..." };
     juce::Rectangle<int> summaryArea;

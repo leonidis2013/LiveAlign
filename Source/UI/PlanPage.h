@@ -227,8 +227,7 @@ public:
             for (const auto& it : plan.items)
                 if (it.kind == PlanItem::Marker && toPx (it.x, it.y).getDistanceFrom (c) < 18.0f)
                 {
-                    proc.mics.position[(size_t) selIndex_] = it.text;
-                    if (! proc.positions.contains (it.text)) proc.positions.add (it.text);
+                    proc.setMicPosition (selIndex_, it.text);
                     s.x = it.x;
                     s.y = it.y;
                     repaint();
@@ -394,7 +393,7 @@ private:
         if (! s.placed) return;
         const auto col = forExport ? micColour (m).darker (0.25f) : micColour (m);
         const auto c = toPx (s.x, s.y);
-        const bool up = proc.mics.aim[(size_t) m] == 1;
+        const bool up = proc.ownAim (m) == 1;
         g.setColour (col.withAlpha (0.2f));
         g.fillEllipse (juce::Rectangle<float> (22.0f, 22.0f).withCentre (c));
         g.setColour (col);
@@ -541,9 +540,7 @@ public:
         positionBox.onChange = [this]
         {
             if (canvas.selType() != PlanCanvas::Sel::Mic) return;
-            const auto t = positionBox.getText().trim();
-            proc.mics.position[(size_t) canvas.selIndex()] = t;
-            if (t.isNotEmpty() && ! proc.positions.contains (t)) proc.positions.add (t);
+            proc.setMicPosition (canvas.selIndex(), positionBox.getText());
             changed();
         };
         addAndMakeVisible (positionBox);
@@ -700,7 +697,7 @@ private:
         }
         renameButton.setVisible (item);
         deleteButton.setVisible (item);
-        if (t == PlanCanvas::Sel::Mic) aimBox.setSelectedItemIndex (proc.mics.aim[(size_t) i], juce::dontSendNotification);
+        if (t == PlanCanvas::Sel::Mic) aimBox.setSelectedItemIndex (proc.ownAim (i), juce::dontSendNotification);
 
         if (t == PlanCanvas::Sel::Speaker && i < (int) proc.system.sources.size())
         {

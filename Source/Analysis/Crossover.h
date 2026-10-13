@@ -12,6 +12,7 @@
 #include <vector>
 #include "Fft.h"
 #include "FreqTable.h"
+#include "EqFit.h"
 
 namespace la::xo
 {
@@ -235,11 +236,13 @@ struct Processing
     Filter hp, lp;
     double gainDb = 0.0, delayMs = 0.0;
     bool invert = false;
+    std::vector<eq::Band> eq;   // parametric EQ from room tuning
 
     cplx at (double f) const
     {
         cplx g = response (hp, true, f) * response (lp, false, f) * std::pow (10.0, gainDb / 20.0);
         g *= std::polar (1.0, -2.0 * kPi * f * delayMs * 0.001);
+        for (const auto& b : eq) g *= eq::response (b, f);
         return invert ? -g : g;
     }
 };

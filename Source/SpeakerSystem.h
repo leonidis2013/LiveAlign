@@ -229,6 +229,13 @@ struct SpeakerSystem
             c->setAttribute ("gainDb", s.proc.gainDb);
             c->setAttribute ("delayMs", s.proc.delayMs);
             c->setAttribute ("invert", s.proc.invert);
+            for (const auto& b : s.proc.eq)
+            {
+                auto* q = c->createNewChildElement ("Eq");
+                q->setAttribute ("freq", b.freq);
+                q->setAttribute ("gain", b.gainDb);
+                q->setAttribute ("q", b.q);
+            }
             if (s.hasResponse())
             {
                 juce::String text;
@@ -284,6 +291,9 @@ struct SpeakerSystem
             s.proc.gainDb = c->getDoubleAttribute ("gainDb");
             s.proc.delayMs = c->getDoubleAttribute ("delayMs");
             s.proc.invert = c->getBoolAttribute ("invert");
+            for (const auto* q : c->getChildWithTagNameIterator ("Eq"))
+                s.proc.eq.push_back ({ juce::jlimit (10.0, 20000.0, q->getDoubleAttribute ("freq", 1000.0)),
+                                       juce::jlimit (-24.0, 24.0, q->getDoubleAttribute ("gain")), juce::jlimit (0.1, 20.0, q->getDoubleAttribute ("q", 1.0)) });
             if (const auto* r = c->getChildByName ("Response"))
             {
                 juce::StringArray lines;

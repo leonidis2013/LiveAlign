@@ -3,6 +3,7 @@
 
 #pragma once
 #include <array>
+#include <map>
 #include <atomic>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Settings.h"
@@ -13,6 +14,7 @@
 #include "MicLocker.h"
 #include "MicCalibration.h"
 #include "VenuePlan.h"
+#include "RoomTuning.h"
 #include "UpdateChecker.h"
 #include "Analysis/Generator.h"
 
@@ -61,12 +63,19 @@ public:
     juce::String loadCalibrationFile (int mic, const juce::File&, int angle = -1);   // returns an error message, or empty
     void clearCalibration (int mic, int angle = -1);                                  // -1: both
     const la::MicCalSet& calibrations (int mic) const { return cals[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)]; }
-    void setMicAim (int mic, int aim);
-    void swapCalibrationAngle (int mic);        // a single file that was taken for the wrong angle          // 0 = at the speaker, 1 = pointing up
+    // The aim belongs to the measurement position: a mic moved to another position takes that position's aim (and so
+    // its 0 or 90 degree calibration file). A mic without a position keeps its own aim.
+    void setMicAim (int mic, int aim);          // 0 = at the speaker, 1 = pointing up
+    void swapCalibrationAngle (int mic);        // a single file that was taken for the wrong angle
+    void setMicPosition (int mic, const juce::String& position);
+    int positionAimOf (const juce::String& position) const;   // -1 when not set
+    void setPositionAim (const juce::String& position, int aim);
+    std::map<juce::String, int> positionAim;  // venue: aim at each named position
     // A page that needs a particular aim while it measures (Speakers: at the speaker). -1 = each mic's own aim.
     void setAimOverride (int aim);
     int aimOverride() const { return aimOverrideValue; }
     int effectiveAim (int mic) const;
+    int ownAim (int mic) const;                 // the aim of the mic's position (or its own), ignoring any page override
     int activeCalAngle (int mic) const { return calibrations (mic).pick (effectiveAim (mic)); }   // -1: no file
     void addMic();
     void removeMic (int mic);
@@ -93,8 +102,20 @@ public:
     juce::String saveProject (const juce::File&);
     juce::String openProject (const juce::File&);
     void newProject();
+    // A new venue that starts from this one: same mics, speakers (names, models, outputs, crossover filters), positions and
+    // plan; nothing measured, no delays, EQ or alignments, one new session.
+    void newVenueFrom (const juce::String& name);
     static juce::String projectExtension() { return ".lavenue"; }
     bool projectChanged() const;   // differs from the last save / open
+
+    // ---- autosave and crash recovery (standalone) ----
+    // Every few minutes the open venue, if changed, is copied to a recovery file (the venue file itself is only written
+    // by Save). A flag file marks LiveAlign as running; finding it at the next start means it did not close cleanly.
+    static juce::File recoveryFile();
+    static juce::File runningFlag();
+    void autosave();
+    juce::String restoreRecovery();   // returns an error message, or empty
+    void clearRecovery();
 
     void newSession (const juce::String& name);
     void switchSession (int index);
@@ -116,6 +137,7 @@ public:
     la::SpeakerSystem system;
     la::VenuePlan plan;                 // sketch of the setup (venue)           // sources, responses and crossover (venue)
     la::SessionChecks checks;           // the open session's checks
+    la::RoomTuning room;                // the open session's room tuning
 
     la::Settings settings;
     la::Analyzer analyzer { settings };
@@ -144,6 +166,7 @@ private:
     std::vector<la::SessionInfo> sessions;
     int current = 0;
     juce::String savedProjectText;
+    int lastAutosaveHash = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LiveAlignProcessor)
 };

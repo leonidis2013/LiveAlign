@@ -250,6 +250,57 @@ public:
         else if (stage == 4 && ticks == stageTick + 60)
         {
             shot ("monitor-waterfall");
+            // room tuning: the three mics at three listening positions, before EQ
+            proc.setMicPosition (0, "FOH");
+            proc.setMicPosition (1, "Balcony");
+            proc.setMicPosition (2, "Row 8");
+            editor->showPage (3);
+            editor->roomPageForPreview().setMeasuringAfter (false);
+            editor->roomPageForPreview().measure();
+            stage = 10;
+            stageTick = ticks;
+        }
+        else if (stage == 10 && ticks == stageTick + 40) shot ("room-measuring");
+        else if (stage == 10 && (! editor->roomPageForPreview().busy() || timeout))
+        {
+            auto& rp = editor->roomPageForPreview();
+            std::printf ("room before: %s (%d ticks) count=%d spread=%.1f\n", rp.statusText().toRawUTF8(), ticks - stageTick, proc.room.count (false), proc.room.levelSpread (false));
+            rp.suggestNow();
+            std::printf ("room suggest: %s\n", rp.statusText().toRawUTF8());
+            for (const auto& b : proc.room.suggested) std::printf ("  band %.0f Hz %.1f dB Q %.2f\n", b.freq, b.gainDb, b.q);
+            rp.applyNow();
+            // the processor now has the EQ: put it in the simulated system
+            for (const auto& b : proc.system.sources[(size_t) proc.room.eqSpeaker].proc.eq) system.push_back (Biquad::make (fs, b.freq, b.q, b.gainDb, 1));
+            shot ("room-suggested");
+            rp.measure();
+            stage = 11;
+            stageTick = ticks;
+        }
+        else if (stage == 11 && (! editor->roomPageForPreview().busy() || timeout))
+        {
+            double lo, hi, rb, mb, ra, ma;
+            proc.room.eqRange (proc.system, lo, hi);
+            proc.room.deviation (proc.room.average (false), lo, hi, rb, mb);
+            proc.room.deviation (proc.room.average (true), lo, hi, ra, ma);
+            std::printf ("room after: %s count=%d  rms before %.2f (max %.1f) after %.2f (max %.1f) range %.0f-%.0f\n", editor->roomPageForPreview().statusText().toRawUTF8(),
+                         proc.room.count (true), rb, mb, ra, ma, lo, hi);
+            proc.room.tuned = true;
+            proc.room.tunedOn = LiveAlignProcessor::today();
+            editor->updateStatuses();
+            editor->roomPageForPreview().refresh();
+            stage = 12;
+            stageTick = ticks;
+        }
+        else if (stage == 12 && ticks == stageTick + 5)
+        {
+            shot ("room");
+            editor->showPage (2);
+        }
+        else if (stage == 12 && ticks == stageTick + 10)
+        {
+            shot ("speakers-with-eq");
+            stage = 4;
+            stageTick = ticks - 60;
             // venue plan: mics 1 and 3 aimed at the speakers, a named position and a note
             proc.mics.position[1] = "Balcony";
             proc.setMicAim (0, 0);
@@ -305,13 +356,41 @@ public:
                          (int) proc.system.sources[2].response.freq.size(), (int) before, proc.system.sources[2].proc.lp.slope,
                          proc.system.sources[2].proc.lp.freq, (int) proc.system.timingLocked, (int) proc.system.alignments.size(),
                          proc.system.alignments.empty() ? -1 : (int) proc.system.alignments[0].measured(), proc.system.sources[0].channel);
+            std::printf ("venue room: before=%d after=%d suggested=%d baseEq=%d tuned=%d eqOnMain=%d positions=%s aim(Balcony)=%d\n", proc.room.count (false),
+                         proc.room.count (true), (int) proc.room.suggested.size(), (int) proc.room.baseEq.size(), (int) proc.room.tuned,
+                         (int) proc.system.sources[0].proc.eq.size(), proc.positions.joinIntoString (",").toRawUTF8(), proc.positionAimOf ("Balcony"));
             f.deleteFile();
             lockerAndUpdateChecks();
             sessionRoundTrip();
+            templateAndRecovery();
             stage = 99;
             editor.reset();
             juce::MessageManager::getInstance()->stopDispatchLoop();
         }
+    }
+
+    void templateAndRecovery()
+    {
+        proc.venueName = "Tour A";
+        proc.system.sources[0].proc.eq = { { 250.0, -3.0, 2.0 } };
+        proc.system.sources[0].proc.hp = { la::xo::Butterworth, 24, 100.0 };
+        proc.system.sources[0].response.freq = { 100, 1000, 10000 };
+        proc.system.sources[0].response.db = { 0, 0, 0 };
+        proc.positions.addIfNotAlreadyThere ("Mix riser");
+        proc.newVenueFrom ("Tour B");
+        std::printf ("template: name=%s sources=%d response=%d hp=%.0f eq=%d alignments=%d positions=%d sessions=%d changed=%d mic1=%s\n", proc.venueName.toRawUTF8(),
+                     (int) proc.system.sources.size(), (int) proc.system.sources[0].response.freq.size(), proc.system.sources[0].proc.hp.freq,
+                     (int) proc.system.sources[0].proc.eq.size(), (int) proc.system.alignments.size(), proc.positions.contains ("Mix riser") ? 1 : 0,
+                     (int) proc.getSessions().size(), (int) proc.projectChanged(), proc.mics.name[0].toRawUTF8());
+        proc.venueNotes = "Unsaved note";
+        proc.autosave();
+        const bool written = LiveAlignProcessor::recoveryFile().existsAsFile();
+        proc.newProject();
+        const auto err = proc.restoreRecovery();
+        std::printf ("recovery: written=%d err='%s' name=%s notes=%s changed=%d\n", (int) written, err.toRawUTF8(), proc.venueName.toRawUTF8(),
+                     proc.venueNotes.toRawUTF8(), (int) proc.projectChanged());
+        proc.clearRecovery();
+        std::printf ("recovery cleared: %d\n", (int) ! LiveAlignProcessor::recoveryFile().existsAsFile());
     }
 
     void lockerAndUpdateChecks()

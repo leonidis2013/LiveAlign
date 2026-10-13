@@ -30,6 +30,7 @@ public:
     }
 
     StepState getState() const { return state; }
+    const juce::String& getTitle() const { return title; }
     bool isComplete() const { return state != StepState::Todo; }
     juce::Rectangle<int> controlArea() const { return getLocalBounds().reduced (12, 0).removeFromRight (kControlsW).withSizeKeepingCentre (kControlsW, 28); }
 
@@ -117,12 +118,11 @@ public:
 
         positionBox.setEditableText (true);
         positionBox.setTextWhenNothingSelected ("Position");
-        positionBox.setTooltip ("Where the mic is. Type a new name to add a position to the venue.");
+        positionBox.setTooltip ("Where the mic is now. Type a new name to add a position to the venue. The mic uses the aim (and "
+                                "so the calibration file) of the position it is at; move it in Room tuning between measurements.");
         positionBox.onChange = [this]
         {
-            const auto t = positionBox.getText().trim();
-            proc.mics.position[(size_t) index] = t;
-            if (t.isNotEmpty() && ! proc.positions.contains (t)) proc.positions.add (t);
+            proc.setMicPosition (index, positionBox.getText());
             changed();
         };
         addAndMakeVisible (positionBox);
@@ -131,8 +131,9 @@ public:
         addAndMakeVisible (lockerButton);
         aimBox.addItem (calAngleName (Cal0) + "  at speaker", 1);
         aimBox.addItem (calAngleName (Cal90) + "  pointing up", 2);
-        aimBox.setTooltip ("How the mic is aimed, so the matching calibration file is used: at the speaker (0 degrees) or "
-                           "pointing up at the ceiling (90 degrees). The Speakers step uses 0 degrees while it measures.");
+        aimBox.setTooltip ("How the mic is aimed at this position, so the matching calibration file is used: at the speaker "
+                           "(0 degrees) or pointing up at the ceiling (90 degrees). Every mic placed at this position uses the same "
+                           "aim. The Speakers step uses 0 degrees while it measures."); 
         aimBox.onChange = [this] { proc.setMicAim (index, aimBox.getSelectedItemIndex()); changed(); };
         addAndMakeVisible (aimBox);
         calFileButton.onClick = [this] { if (onCalFileMenu) onCalFileMenu(); };
@@ -173,7 +174,7 @@ public:
         const int active = proc.activeCalAngle (index);
         calFileButton.setTooltip (cs.any() ? "Calibration: " + cs.names() + ". In use now: " + calAngleName (active) + "."
                                            : "Load this mic's calibration file(s): select the 0 and 90 degree files together if you have both");
-        aimBox.setSelectedItemIndex (proc.mics.aim[(size_t) index], juce::dontSendNotification);
+        aimBox.setSelectedItemIndex (proc.ownAim (index), juce::dontSendNotification);
         aimBox.setEnabled (cs.both());
         aimBox.setAlpha (cs.both() ? 1.0f : 0.55f);
 
@@ -342,6 +343,17 @@ public:
         return n;
     }
     static constexpr int kSteps = 7;
+    // The first step not done yet (empty when all are), and scrolling it into view.
+    juce::String nextHint() const
+    {
+        for (const auto& c : cards) if (! c.isComplete()) return c.getTitle();
+        return {};
+    }
+    void showNextStep()
+    {
+        for (const auto& c : cards)
+            if (! c.isComplete()) { viewport.setViewPosition (0, juce::jmax (0, c.getY() - 8)); return; }
+    }
     bool hasWarning() const
     {
         for (const auto& c : cards) if (c.getState() == StepState::Warn) return true;

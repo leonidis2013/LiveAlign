@@ -700,6 +700,15 @@ public:
     }
 
     // Opens the first step that is not done yet (after a venue is opened).
+    // What is left on this page (empty when the speakers are set up).
+    juce::String nextHint() const
+    {
+        if (! allMeasured()) return "Measure each speaker";
+        if (sys.pairValid() && ! crossoverSet()) return "Find the crossover";
+        if (alignmentNeeded() && ! alignmentDone()) return "Time-align the fills";
+        if (! proc.speakers.configured) return "Mark the speakers as set up";
+        return {};
+    }
     void chooseStep() { openStepAt (! allMeasured() ? 0 : ! crossoverSet() ? 1 : ! alignmentDone() ? 2 : openStep); }
 
     void sourceImported() { systemChanged (true); }
@@ -2076,6 +2085,18 @@ private:
             if (a.refLevelDb > -150.0f && a.alignLevelDb > -150.0f)
                 out << "; level " << signedText (a.alignLevelDb - a.refLevelDb, 1) << " dB";
             out << "\n";
+        }
+        // parametric EQ (from room tuning) on the speakers that have it
+        head = false;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            const auto& s = sys.sources[(size_t) i];
+            if (s.proc.eq.empty() || sys.master (i) != i) continue;
+            if (! head) { out << (forScreen ? "#EQ (ROOM TUNING)\n" : "\nParametric EQ (room tuning):\n"); head = true; }
+            juce::StringArray b;
+            for (const auto& e : s.proc.eq)
+                b.add (freqLabel (e.freq) + " Hz " + signedText ((float) e.gainDb, 1) + " dB Q" + juce::String (e.q, forScreen ? 1 : 2));
+            out << nameOf (i) << ": " << b.joinIntoString (", ") << "\n";
         }
         if (! forScreen) out << "\nFilters: HPF high-pass, LPF low-pass; BW Butterworth, LR Linkwitz-Riley; slopes in dB/octave.\n";
         return out;

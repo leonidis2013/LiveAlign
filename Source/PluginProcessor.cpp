@@ -162,13 +162,50 @@ void LiveAlignProcessor::swapCalibrationAngle (int mic)
 
 int LiveAlignProcessor::effectiveAim (int mic) const
 {
-    return aimOverrideValue >= 0 ? aimOverrideValue : mics.aim[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)];
+    if (aimOverrideValue >= 0) return aimOverrideValue;
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    const int a = positionAimOf (mics.position[(size_t) mic]);
+    return a >= 0 ? a : mics.aim[(size_t) mic];
+}
+
+int LiveAlignProcessor::ownAim (int mic) const
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    const int a = positionAimOf (mics.position[(size_t) mic]);
+    return a >= 0 ? a : mics.aim[(size_t) mic];
+}
+
+int LiveAlignProcessor::positionAimOf (const juce::String& position) const
+{
+    if (position.isEmpty()) return -1;
+    const auto it = positionAim.find (position);
+    return it != positionAim.end() ? it->second : -1;
+}
+
+void LiveAlignProcessor::setPositionAim (const juce::String& position, int aim)
+{
+    if (position.isEmpty()) return;
+    positionAim[position] = aim == 0 ? 0 : 1;
+    for (int m = 0; m < la::kMaxMics; ++m)
+        if (mics.position[(size_t) m] == position) { mics.aim[(size_t) m] = aim == 0 ? 0 : 1; applyCalibration (m); }
 }
 
 void LiveAlignProcessor::setMicAim (int mic, int aim)
 {
     mic = juce::jlimit (0, la::kMaxMics - 1, mic);
     mics.aim[(size_t) mic] = aim == 0 ? 0 : 1;
+    if (mics.position[(size_t) mic].isNotEmpty()) setPositionAim (mics.position[(size_t) mic], aim);
+    applyCalibration (mic);
+}
+
+void LiveAlignProcessor::setMicPosition (int mic, const juce::String& position)
+{
+    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    const auto p = position.trim();
+    mics.position[(size_t) mic] = p;
+    if (p.isNotEmpty() && ! positions.contains (p)) positions.add (p);
+    // a new position starts with the aim this mic had
+    if (p.isNotEmpty() && positionAimOf (p) < 0) positionAim[p] = mics.aim[(size_t) mic];
     applyCalibration (mic);
 }
 
@@ -397,6 +434,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::sessionBody() const
     for (int m = 0; m < la::kMaxMics; ++m) d->setAttribute ("mic" + juce::String (m), settings.micDelayMs[m].load());
     checks.save (*b);
     traces.save (*b);
+    room.save (*b);
     return b;
 }
 
@@ -404,6 +442,7 @@ void LiveAlignProcessor::loadSessionBody (const juce::XmlElement* b)
 {
     checks = {};
     traces.clear();
+    room.load (b);
     for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
     if (b == nullptr) return;
     if (const auto* d = b->getChildByName ("Delays"))
@@ -480,10 +519,12 @@ void LiveAlignProcessor::resetVenue()
     aimOverrideValue = -1;
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     positions = { "FOH", "Centre", "Rear", "Balcony" };
+    positionAim.clear();
     speakers = {};
     system = la::SpeakerSystem::defaults();
     plan = la::VenuePlan::defaults();
     checks = {};
+    room = {};
     traces.clear();
     sessions.clear();
     la::SessionInfo s;
@@ -512,7 +553,12 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     mics.save (*x);
     saveMicCalibrations (*x);
     auto* pos = x->createNewChildElement ("Positions");
-    for (const auto& p : positions) pos->createNewChildElement ("Position")->setAttribute ("name", p);
+    for (const auto& p : positions)
+    {
+        auto* e = pos->createNewChildElement ("Position");
+        e->setAttribute ("name", p);
+        if (positionAimOf (p) >= 0) e->setAttribute ("aim", positionAimOf (p) == 0 ? 0 : 90);
+    }
     speakers.save (*x);
     system.save (*x);
     plan.save (*x);
@@ -555,7 +601,12 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     if (const auto* pos = x.getChildByName ("Positions"))
     {
         positions.clear();
-        for (const auto* p : pos->getChildWithTagNameIterator ("Position")) positions.add (p->getStringAttribute ("name"));
+        for (const auto* p : pos->getChildWithTagNameIterator ("Position"))
+        {
+            positions.add (p->getStringAttribute ("name"));
+            if (p->hasAttribute ("aim")) positionAim[p->getStringAttribute ("name")] = p->getIntAttribute ("aim") == 0 ? 0 : 1;
+        }
+        for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     }
     speakers.load (x);
     system.load (x);
@@ -629,9 +680,88 @@ void LiveAlignProcessor::newProject()
     savedProjectText = createProjectXml()->toString();
 }
 
+void LiveAlignProcessor::newVenueFrom (const juce::String& name)
+{
+    const auto keepMics = mics;
+    const auto keepCals = cals;
+    const auto keepPositions = positions;
+    const auto keepAim = positionAim;
+    const auto keepPlan = plan;
+    auto keepSystem = system;
+    resetVenue();
+    venueName = name.trim().isNotEmpty() ? name.trim() : juce::String ("Untitled venue");
+    mics = keepMics;
+    cals = keepCals;
+    for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
+    positions = keepPositions;
+    positionAim = keepAim;
+    plan = keepPlan;
+    for (auto& s : keepSystem.sources)
+    {
+        s.response = {};
+        s.imported = false;
+        s.source.clear();
+        s.delayUsedMs = s.offsetMs = s.arrivalMs = 0.0;
+        s.hasArrival = false;
+        s.proc.delayMs = 0.0;
+        s.proc.eq.clear();
+    }
+    keepSystem.alignments.clear();
+    keepSystem.lastResult = {};
+    keepSystem.timingLocked = false;
+    keepSystem.lockedDelayMs = 0.0;
+    system = std::move (keepSystem);
+    settings.genOn = false;
+    settings.requestResetAverages = true;
+    settings.requestResetLeq = true;
+    savedProjectText = createProjectXml()->toString();
+}
+
 bool LiveAlignProcessor::projectChanged() const
 {
     return createProjectXml()->toString() != savedProjectText;
+}
+
+// ---------------------------------------------------------------------------- autosave
+
+juce::File LiveAlignProcessor::recoveryFile() { return la::TraceStore::userFolder().getChildFile ("Autosave").getChildFile ("Recovery" + projectExtension()); }
+juce::File LiveAlignProcessor::runningFlag() { return la::TraceStore::userFolder().getChildFile ("Autosave").getChildFile ("running.flag"); }
+
+void LiveAlignProcessor::autosave()
+{
+    auto x = createProjectXml();
+    const auto text = x->toString();
+    if (text == savedProjectText)   // nothing unsaved: nothing to recover
+    {
+        if (lastAutosaveHash != 0) recoveryFile().deleteFile();
+        lastAutosaveHash = 0;
+        return;
+    }
+    if (text.hashCode() == lastAutosaveHash) return;
+    x->setAttribute ("recoveredFrom", projectFile.getFullPathName());
+    x->setAttribute ("autosaved", juce::Time::getCurrentTime().formatted ("%d %b %Y %H:%M"));
+    const auto f = recoveryFile();
+    f.getParentDirectory().createDirectory();
+    const auto tmp = f.getSiblingFile ("Recovery.tmp");
+    if (x->writeTo (tmp) && tmp.moveFileTo (f)) lastAutosaveHash = text.hashCode();
+}
+
+juce::String LiveAlignProcessor::restoreRecovery()
+{
+    const auto f = recoveryFile();
+    auto x = juce::XmlDocument::parse (f);
+    if (x == nullptr || ! x->hasTagName ("LiveAlignProject")) return "The autosaved venue could not be read.";
+    loadProjectXml (*x);
+    const auto from = x->getStringAttribute ("recoveredFrom");
+    projectFile = from.isNotEmpty() && juce::File::isAbsolutePath (from) ? juce::File (from) : juce::File();
+    savedProjectText.clear();   // restored work is unsaved until the user saves it
+    return {};
+}
+
+void LiveAlignProcessor::clearRecovery()
+{
+    recoveryFile().deleteFile();
+    lastAutosaveHash = 0;
 }
 
 // ---------------------------------------------------------------------------- state

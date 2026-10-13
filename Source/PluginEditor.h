@@ -10,6 +10,7 @@
 #include "UI/MicSetupPage.h"
 #include "UI/SpeakersPage.h"
 #include "UI/PlanPage.h"
+#include "UI/RoomPage.h"
 #include "UI/MicLockerPanel.h"
 #include "UI/Pages.h"
 #include "UI/MeasurePane.h"
@@ -31,12 +32,13 @@ public:
     void setPaneViews (int a, int b, int c);   // used by the local screenshot tool
     la::ui::SpeakersPage& speakersPage() { return *speakerPage; }
     la::ui::PlanPage& planPageForPreview() { return *planPage; }
+    la::ui::RoomPage& roomPageForPreview() { return *roomPage; }
+    void updateStatuses();
 
 private:
     void timerCallback() override;
     void applyTheme (int theme);
     void layoutPanes();
-    void updateStatuses();
     void refreshMicPicker();
 
     void openSettings();
@@ -80,7 +82,7 @@ private:
     std::unique_ptr<la::ui::HomePage> homePage;
     std::unique_ptr<la::ui::MicSetupPage> micPage;
     std::unique_ptr<la::ui::SpeakersPage> speakerPage;
-    std::unique_ptr<la::ui::PlaceholderPage> roomPage;
+    std::unique_ptr<la::ui::RoomPage> roomPage;
     std::unique_ptr<la::ui::PlanPage> planPage;
     std::unique_ptr<la::ui::MicLockerPage> lockerPage;
 
@@ -95,6 +97,10 @@ private:
     la::ui::GeneratorStrip generator;
 
     juce::TextButton runButton, resetButton { "RESET AVG" };
+    juce::TextButton nextButton;            // header: the one next action on this page
+    std::function<void()> nextAction;
+    void refreshNext();
+    void offerRecovery();
     juce::TooltipWindow tooltip { this, 600 };
 
     std::unique_ptr<juce::FileChooser> chooser;

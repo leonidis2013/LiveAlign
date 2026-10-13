@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -20,11 +20,21 @@ Everything runs from the **navigation pane** on the left, grouped into **Configu
 **Tuning** (Room tuning, Venue plan) and **Monitoring**. **Mic locker** and **Settings** are at the bottom. The window
 uses the system's own title bar: on macOS the red / yellow / green buttons (green for full screen), on Windows the
 usual minimise / maximise / close. Each step has its own icon and a live status: a green tick
-when it is ready, an amber `!` when it needs attention, a progress ring while it is under way, and a dash for steps
-that come in a later stage. The venue and session are at the bottom of the pane, with Settings and Full screen.
+when it is ready, an amber `!` when it needs attention, a progress ring while it is under way.
+The venue and session are at the bottom of the pane, above Mic locker and Settings.
 Steps that are required but not done yet have an amber outline (on Home and on the Mic setup checklist); click
 anywhere on a step on the Home page to open it. The generator strip only appears on the pages that play test
 signals (Speakers, Room tuning, Monitoring); leaving for the other pages stops it.
+
+**Next button:** the top right of every page shows the one thing to do next (the first unfinished Mic setup check, the
+next Speakers step, the next Room tuning step) and, once a page is done, **Continue to** the next one. On Home it
+starts where you left off; on the Venue plan it exports the tuning report.
+
+**Autosave:** every two minutes, unsaved changes are copied to a recovery file in LiveAlign's user folder (your
+venue file is only written by Save). If LiveAlign did not close normally, the next start offers to restore them.
+
+**New venue... > Based on this one** (Home) starts a venue with the same mics, speakers (names, models, outputs,
+crossover filters), positions and plan, and nothing measured: handy for a touring rig or a similar room.
 
 | Page | Status | What it does |
 |------|--------|--------------|
@@ -32,7 +42,7 @@ signals (Speakers, Room tuning, Monitoring); leaving for the other pages stops i
 | **Venue plan** | Built | A sketch of the setup (not to scale): speakers, mics with their aim, areas, mic positions, notes; saved as a picture |
 | **1 Mic setup** | Built | Mic table and a checklist: interface, reference, mics connected, calibration files, sound level, loopback check, room noise floor |
 | **2 Speakers** | Built | Any speakers and any speaker management system: build the system, measure (one mic) or import each speaker, overlay them with the predicted sum, crossover recommendation, settings summary |
-| **3 Room tuning** | Later | All mic positions averaged, target curve and suggested EQ, alignment at the seats, ring-out, room acoustics |
+| **3 Room tuning** | Built | Listening positions measured and averaged, target curve, suggested parametric EQ, before / after check |
 | **4 Monitoring** | Built | RTA, transfer function, impulse response, waterfall, sound level, delay finder and traces |
 
 The **VST3** shows the Monitoring page only, since it runs inside a host during the event.
@@ -83,6 +93,12 @@ A simple drawing of how the setup is laid out, seen from above, **not to scale**
 mark that the mic has none), aim, sound level (Calibrate, or Re-check level when it was calibrated in an earlier session),
 and a live level meter. **+ Add mic** adds a row; the `x` removes one. Use several mics at once on separate inputs,
 or move one mic between named positions.
+
+**Mics and positions are separate.** A *mic* is the hardware (input, calibration files, sound level); a *position* is
+a place in the room (FOH, Row 8, Balcony). One mic can measure many positions one after another, and a position
+keeps its measurements whichever mic took them. The **aim** belongs to the position: set FOH to 90 degrees (pointing
+up) and any mic placed there uses its 90 degree file; move it to a position aimed at the speaker and it switches to
+its 0 degree file automatically. Each measurement records the mic and the calibration file it used.
 
 **Checklist** (each turns green when done, amber when done with a warning):
 
@@ -243,14 +259,39 @@ it plays. Choose the output it plays from. `G` toggles it.
 In the **app**, outputs carry only the generator; inputs are never passed through, so the mic cannot feed back into
 the PA. In the **VST3**, audio passes through untouched unless the generator is driving a channel.
 
+### 3 Room tuning
+
+Measures the whole system at the listening positions and tunes it toward a target.
+
+- **Listening positions** (left): every position with its aim and whether it has a before / after measurement.
+  **+ Position** adds one. **Where the mics are now** says where each mic is; with one mic, **Next position** moves
+  it to the next position not measured yet (and LiveAlign does that by itself after each measurement).
+- **1 Measure:** plays pink noise (whole system or one output), finds each mic's arrival, averages, and stores each
+  mic's response at its position. Points below the minimum coherence are left out. Measuring a position again
+  replaces its earlier measurement of the same round (before or after EQ).
+- **2 Target and EQ:** the target curve, the speaker the EQ goes on (speakers that share its settings, like Main R,
+  follow), how many bands your processor has free and how much boost to allow. **Suggest EQ** fits parametric
+  (bell) bands to the average of the positions, each levelled to its own 500 Hz - 4 kHz so a far seat counts for its
+  tonal balance, not its loudness. Cuts are preferred; boosts are small and only for wide dips (a narrow dip is
+  usually a reflection EQ cannot fill); tiny or narrow bands that would barely help are left out. The range is set
+  by the speaker's crossover filters. **Copy to the speaker settings** puts the bands in the speaker's settings
+  (Speakers summary and report), added to any EQ that was already on it when you measured.
+- **3 Check:** enter the EQ in your processor, measure again with **After EQ**, and compare: deviation from the target
+  (RMS and worst) before and after, and the level spread across positions. **Mark the room as tuned** when done.
+
+The graph shows each position (thin), the before and after averages, the target with a +/-3 dB band, and the before
+average with the suggested EQ (dashed).
+
 ## Tuning report
 
 **Tuning report (PDF)...** (on Home and on the Venue plan page) writes a PDF of the open session: a cover with the
 venue, session, date, who prepared it (Settings > Reports) and the analysis settings; the venue plan; the speakers
 with model, channel, output and count; the settings for the processor (high-pass, low-pass, delay, polarity, gain),
-the crossover and the time alignments; the speakers' responses with the processing and their predicted sum; the
+the crossover, the parametric EQ and the time alignments; the speakers' responses with the processing and their predicted sum; the
 mics with model and serial number, position, input, calibration files, aim and sound level calibration; this
-session's checks (reference, loopback, noise floor); and the captured transfer functions (with the target) and
+session's checks (reference, loopback, noise floor); room tuning (target, before / after deviation, level spread
+across positions, the average against the target, each measurement with its mic and calibration file, and the
+suggested EQ); and the captured transfer functions (with the target) and
 RTA traces. Monitoring is not part of it.
 
 ## Updates
@@ -262,12 +303,15 @@ Updates > **Check for updates** checks by hand. Installing a new version keeps y
 
 ## Settings
 
-Settings (bottom of the navigation pane) holds the options that are not part of a step:
+Settings (bottom of the navigation pane) holds the options that are not part of a step. The analysis details
+(transfer function, RTA, impulse response and waterfall) are hidden until **Show advanced analysis settings** is on;
+the defaults suit most tuning.
 
 - **Inputs:** audio device (app only; this replaces the app's Options menu), reference. Mics are set up on the Mic
   setup page.
-- **Transfer function:** FFT size (8k to 64k), averaging, smoothing, coherence blanking, magnitude range.
-- **RTA:** resolution (1/1 to 1/48 octave), speed, reference overlay, peak hold.
+- **Minimum coherence** (always shown): how reliable a point must be to count.
+- **Transfer function** (advanced): FFT size (8k to 64k), averaging, smoothing, magnitude range.
+- **RTA** (advanced): resolution (1/1 to 1/48 octave), speed, reference overlay, peak hold.
 - **Screen:** number of graphs, stacked or side by side, theme.
 - **Impulse response:** linear or log (ETC), time range.
 - **Waterfall:** history length and colour range.
@@ -372,8 +416,10 @@ screenshots of every view, including measuring a simulated top and sub and findi
 
 ## Roadmap
 
-- **Room tuning (next):** all mic positions averaged, target curves with suggested EQ, alignment at the seats, feedback
-  ring-out, room acoustics (RT60, EDT, C50/C80, room modes).
+- **Room performance (next):** room acoustics from impulse responses at the positions: reverb time (RT60, EDT) per
+  octave, clarity (C50 / C80), speech intelligibility (STI estimate), room modes, coverage across the seats, and the
+  noise floor as an NC / NR rating.
+- **Room tuning additions:** top / sub alignment checked at the seats, feedback ring-out for stage mics.
 - **Speakers additions:** EQ suggestions per speaker, more than one crossover pair at a time, CLF / GLL data
   (these formats are closed or binary; FRD / CSV exports from the manufacturer's software work today).
 - **Monitoring additions:** delay tracking, trace offsets, SPL logging with alarms, PDF reports.

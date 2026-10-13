@@ -16,6 +16,7 @@
 #include "Analysis/Generator.h"
 #include "Analysis/TargetCurves.h"
 #include "Analysis/Crossover.h"
+#include "Analysis/EqFit.h"
 
 using namespace la;
 
@@ -496,6 +497,70 @@ static void testCrossover()
     near (mag.phaseAt (1000.0), std::arg (response (hp2, true, 1000.0)) * 180.0 / kPi, 3.0, "Minimum phase above the corner");
 }
 
+static void testEqFit()
+{
+    using namespace la::eq;
+    near (responseDb ({ 1000.0, -6.0, 2.0 }, 1000.0), -6.0, 0.01, "Peaking band: gain at its frequency");
+    near (responseDb ({ 1000.0, -6.0, 2.0 }, 20.0), 0.0, 0.05, "Peaking band: flat far away");
+
+    std::vector<double> f, meas, target;
+    for (double x = 20.0; x <= 20000.0; x *= std::pow (2.0, 1.0 / 24.0)) f.push_back (x);
+    // a room that is +6 dB around 250 Hz and 4 dB down over a wide area around 3 kHz, plus 2 dB louder overall
+    const Band hump { 250.0, 6.0, 2.0 }, hole { 3000.0, -4.0, 0.8 };
+    for (double x : f) { meas.push_back (2.0 + responseDb (hump, x) + responseDb (hole, x)); target.push_back (0.0); }
+    Options o;
+    o.fLo = 60.0;
+    o.fHi = 12000.0;
+    o.maxBoostDb = 6.0;
+    const auto r = fit (f, meas, target, o);
+    check (! r.bands.empty(), "EQ: bands suggested");
+    bool cut250 = false, boost3k = false;
+    for (const auto& b : r.bands)
+    {
+        cut250 |= b.freq > 200.0 && b.freq < 310.0 && b.gainDb < -4.5;
+        boost3k |= b.freq > 2000.0 && b.freq < 4500.0 && b.gainDb > 2.0;
+    }
+    check (cut250, "EQ: cut at the 250 Hz hump");
+    check (boost3k, "EQ: boost for the wide 3 kHz dip");
+    near (r.offsetDb, 2.0, 1.0, "EQ: overall level matched, not equalised");
+    check (r.maxAfter < 1.5, "EQ: within 1.5 dB of the target after", r.maxAfter, 1.0);
+
+    // a narrow, deep dip (a reflection) is not boosted
+    std::vector<double> notch;
+    const Band null { 1000.0, -12.0, 12.0 };
+    for (double x : f) notch.push_back (responseDb (null, x));
+    Options o2;
+    o2.maxBoostDb = 6.0;
+    const auto r2 = fit (f, notch, target, o2);
+    bool boosted = false;
+    for (const auto& b : r2.bands) boosted |= b.gainDb > 0.0 && b.freq > 700.0 && b.freq < 1400.0;
+    check (! boosted, "EQ: no boost into a narrow null");
+
+    // limits: no boost allowed, cuts limited
+    Options o3;
+    o3.maxBoostDb = 0.0;
+    o3.maxCutDb = 3.0;
+    const auto r3 = fit (f, meas, target, o3);
+    bool ok = true;
+    for (const auto& b : r3.bands) ok = ok && b.gainDb <= 0.0 && b.gainDb >= -3.0;
+    check (ok, "EQ: within the processor's limits");
+
+    // small, narrow wiggles are left alone; a real hump beside them is still found
+    std::vector<double> wiggle;
+    const Band tiny { 800.0, 1.6, 8.0 }, real { 4000.0, 5.0, 1.5 };
+    for (double x : f) wiggle.push_back (responseDb (tiny, x) + responseDb (real, x));
+    const auto r4 = fit (f, wiggle, target, Options {});
+    bool noTiny = true, gotReal = false;
+    for (const auto& b : r4.bands)
+    {
+        noTiny = noTiny && ! (b.freq > 600.0 && b.freq < 1100.0);
+        gotReal |= b.freq > 3000.0 && b.freq < 5500.0 && b.gainDb < -3.5;
+        noTiny = noTiny && std::abs (b.gainDb) >= 1.0;
+    }
+    check (noTiny, "EQ: no band for a small narrow wiggle");
+    check (gotReal, "EQ: the real hump next to it is cut");
+}
+
 int main()
 {
     testTargets();
@@ -510,6 +575,7 @@ int main()
     testGenerator();
     testFreqTable();
     testCrossover();
+    testEqFit();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

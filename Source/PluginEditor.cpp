@@ -48,6 +48,18 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     homePage = std::make_unique<HomePage> (p);
     homePage->onGoTo = [this] (int pg) { showPage (pg); };
     homePage->onNewVenue = [this] { confirmDiscard ([this] { newProject(); }); };
+    homePage->onNewVenueFromThis = [this]
+    {
+        confirmDiscard ([this]
+        {
+            askText ("New venue based on this one", "Keeps the mics, speakers, positions and plan. Measurements, delays, EQ and checks start fresh.",
+                     processor.venueName + " (copy)", [this] (const juce::String& name)
+            {
+                processor.newVenueFrom (name);
+                afterProjectLoaded();
+            });
+        });
+    };
     homePage->onOpenVenue = [this] { confirmDiscard ([this] { openProject(); }); };
     homePage->onSave = [this] { saveProject (false); };
     homePage->onSaveAs = [this] { saveProject (true); };
@@ -74,7 +86,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     micPage = std::make_unique<MicSetupPage> (p);
     micPage->onCalibrate = [this] (int m) { openCalibration (m, micPage->calibrateButtonFor (m)); };
     micPage->onLoadCalFile = [this] (int m, int angle) { loadCalFile (m, angle); };
-    micPage->onChanged = [this] { pickerMics = -1; refreshMicPicker(); };
+    micPage->onChanged = [this] { pickerMics = -1; refreshMicPicker(); if (roomPage != nullptr) roomPage->refresh(); };
     micPage->onManageLocker = [this] { openMicLocker(); };
     micPage->onSaveToLocker = [this] (int m)
     {
@@ -88,14 +100,16 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     speakerPage = std::make_unique<SpeakersPage> (p);
     speakerPage->onImport = [this] (int i) { importSpeaker (i); };
     speakerPage->onChanged = [this] { generator.sync(); updateStatuses(); };
-    roomPage = std::make_unique<PlaceholderPage> ((int) Page::Room, "Coming in a later stage",
-        "Measure across the listening area, compare with a target curve and tune the system.",
-        juce::StringArray { "All mic positions, averaged", "Target curve with suggested EQ cuts", "Top and sub alignment checked at the seats",
-                            "Feedback ring-out for the stage mics", "Room acoustics: reverb time, clarity, room modes" });
+    roomPage = std::make_unique<RoomPage> (p);
+    roomPage->onChanged = [this] { generator.sync(); updateStatuses(); };
+    roomPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
+    {
+        askText (title, {}, initial, std::move (done));
+    };
     addChildComponent (*speakerPage);
 
     planPage = std::make_unique<PlanPage> (p);
-    planPage->onChanged = [this] { updateStatuses(); };
+    planPage->onChanged = [this] { if (roomPage != nullptr) roomPage->refresh(); updateStatuses(); };
     planPage->onExport = [this] { exportPlan(); };
     planPage->onReport = [this] { exportReport(); };
     planPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
@@ -145,6 +159,9 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
 
     addChildComponent (generator);   // shown on the pages that play test signals
 
+    nextButton.onClick = [this] { if (nextAction) nextAction(); };
+    addChildComponent (nextButton);
+
     applyTheme (settings.theme.load());
     generator.setNumOutputs (p.numOutputs());
     generator.sync();
@@ -158,12 +175,56 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
 
     refreshUpdate();
     processor.updates.checkAtStartIfWanted();
+
+    // crash recovery: a running flag left behind means the last run did not close cleanly
+    if (processor.isStandalone())
+    {
+        const auto flag = LiveAlignProcessor::runningFlag();
+        const bool crashed = flag.existsAsFile() && LiveAlignProcessor::recoveryFile().existsAsFile();
+        flag.getParentDirectory().createDirectory();
+        flag.create();
+        if (crashed)
+        {
+            juce::Component::SafePointer<LiveAlignEditor> safe (this);
+            juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->offerRecovery(); });
+        }
+    }
     startTimerHz (30);
+}
+
+void LiveAlignEditor::offerRecovery()
+{
+    auto x = juce::XmlDocument::parse (LiveAlignProcessor::recoveryFile());
+    if (x == nullptr) { processor.clearRecovery(); return; }
+    const auto* v = x->getChildByName ("Venue");
+    const auto name = v != nullptr ? v->getStringAttribute ("name", "Untitled venue") : juce::String ("Untitled venue");
+    const auto when = x->getStringAttribute ("autosaved");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Restore unsaved work?",
+                                      "LiveAlign did not close normally last time. \"" + name + "\" had changes that were not saved"
+                                          + (when.isNotEmpty() ? " (autosaved " + when + ")" : juce::String()) + ".\n\nRestore them now? You can then save the venue.",
+                                      "Restore", "Discard", this),
+                                  [safe] (int r)
+                                  {
+                                      if (safe == nullptr) return;
+                                      if (r == 1)
+                                      {
+                                          const auto err = safe->processor.restoreRecovery();
+                                          if (err.isNotEmpty()) safe->showMessage ("Not restored", err);
+                                          safe->afterProjectLoaded();
+                                      }
+                                      else safe->processor.clearRecovery();
+                                  });
 }
 
 LiveAlignEditor::~LiveAlignEditor()
 {
     stopTimer();
+    if (processor.isStandalone())   // a clean close: nothing to recover next time
+    {
+        processor.clearRecovery();
+        LiveAlignProcessor::runningFlag().deleteFile();
+    }
     processor.updates.onResult = nullptr;
     setLookAndFeel (nullptr);
 }
@@ -209,6 +270,7 @@ void LiveAlignEditor::showPage (int page)
     if (page == (int) Page::Home) homePage->refresh();
     if (page == (int) Page::Mics) { micPage->refreshChoices(); if (snapSerial > 0) micPage->setSnapshot (snap); }
     if (page == (int) Page::Speakers) { speakerPage->refreshChoices(); speakerPage->setSnapshot (snap); }
+    if (page == (int) Page::Room) { roomPage->refresh(); roomPage->setSnapshot (snap); }
     updateStatuses();
     resized();
     repaint();
@@ -313,9 +375,19 @@ void LiveAlignEditor::updateStatuses()
     }
 
     auto& room = steps[2];
-    room.status = StepStatus::Later;
-    room.shortText = "Later stage";
-    room.detail = "Room tuning comes in a later stage.";
+    {
+        const auto& rt = processor.room;
+        const int before = rt.count (false), after = rt.count (true);
+        if (rt.tuned) { room.status = StepStatus::Ready; room.shortText = "Tuned"; room.detail = "Room tuned " + rt.tunedOn + "."; }
+        else if (before == 0) { room.status = StepStatus::NotStarted; room.shortText = "Not started"; room.detail = "Measure the system at the listening positions, then compare with the target."; }
+        else
+        {
+            room.status = StepStatus::InProgress;
+            room.fraction = after > 0 ? 0.85f : (rt.suggested.empty() ? 0.4f : 0.6f);
+            room.shortText = juce::String (before) + (before == 1 ? " position" : " positions") + (after > 0 ? ", checking" : "");
+            room.detail = roomPage->nextHint();
+        }
+    }
 
     auto& mon = steps[3];
     if (mic.status == StepStatus::Ready) { mon.status = StepStatus::Ready; mon.shortText = "Ready"; mon.detail = "Mics checked: ready to monitor."; }
@@ -328,6 +400,64 @@ void LiveAlignEditor::updateStatuses()
     const auto& list = processor.getSessions();
     const int cur = processor.currentSession();
     nav.setVenue (processor.venueName, cur < (int) list.size() ? list[(size_t) cur].name : juce::String(), unsaved);
+    refreshNext();
+}
+
+// The one next action for the shown page: finish what is left here, or go on to the next step.
+void LiveAlignEditor::refreshNext()
+{
+    juce::String text;
+    std::function<void()> action;
+    auto goTo = [this] (int pg) { return [this, pg] { showPage (pg); }; };
+    switch ((Page) shownPage)
+    {
+        case Page::Home:
+        {
+            const auto m = micPage->nextHint(), s = speakerPage->nextHint();
+            if (m.isNotEmpty()) { text = "Start: Mic setup"; action = goTo ((int) Page::Mics); }
+            else if (s.isNotEmpty()) { text = "Next: Speakers"; action = goTo ((int) Page::Speakers); }
+            else if (! processor.room.tuned) { text = "Next: Room tuning"; action = goTo ((int) Page::Room); }
+            else { text = "Export the tuning report"; action = [this] { exportReport(); }; }
+            break;
+        }
+        case Page::Mics:
+        {
+            const auto h = micPage->nextHint();
+            if (h.isNotEmpty()) { text = "Next: " + h; action = [this] { micPage->showNextStep(); }; }
+            else { text = "Continue to Speakers"; action = goTo ((int) Page::Speakers); }
+            break;
+        }
+        case Page::Speakers:
+        {
+            const auto h = speakerPage->nextHint();
+            if (h.isNotEmpty()) { text = "Next: " + h; action = [this] { speakerPage->chooseStep(); }; }
+            else { text = "Continue to Room tuning"; action = goTo ((int) Page::Room); }
+            break;
+        }
+        case Page::Room:
+        {
+            const auto h = roomPage->nextHint();
+            if (roomPage->busy()) text = "Measuring...";
+            else if (h.isNotEmpty()) { text = "Next: " + (h.startsWith ("Enter") ? juce::String ("Measure after EQ") : h); action = [this] { roomPage->doNext(); }; }
+            else { text = "Continue to the Venue plan"; action = goTo ((int) Page::Plan); }
+            break;
+        }
+        case Page::Plan: text = "Export the tuning report"; action = [this] { exportReport(); }; break;
+        case Page::Monitor:
+        case Page::Locker:
+        default: break;
+    }
+    if (text.isNotEmpty() && text != "Measuring...") text << juce::String (juce::CharPointer_UTF8 ("  \xe2\x86\x92"));
+    nextAction = std::move (action);
+    const bool show = standalone && text.isNotEmpty();
+    const bool layout = show != nextButton.isVisible() || text != nextButton.getButtonText();
+    nextButton.setButtonText (text);
+    nextButton.setEnabled (nextAction != nullptr);
+    nextButton.setTooltip (shownPage == (int) Page::Room ? roomPage->nextHint() : juce::String());
+    nextButton.setVisible (show);
+    nextButton.setColour (juce::TextButton::buttonColourId, pal().accent);
+    nextButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
+    if (layout) resized();
 }
 
 // ---------------------------------------------------------------------------- pop-ups
@@ -738,6 +868,7 @@ void LiveAlignEditor::afterProjectLoaded()
     speakerPage->refreshChoices();
     speakerPage->chooseStep();
     planPage->refresh();
+    roomPage->refresh();
     homePage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
@@ -794,6 +925,8 @@ void LiveAlignEditor::timerCallback()
             micPage->setSnapshot (snap);
         else if (shownPage == (int) Page::Speakers)
             speakerPage->setSnapshot (snap);
+        else if (shownPage == (int) Page::Room)
+            roomPage->setSnapshot (snap);
     }
 
     if (monitoring)
@@ -846,6 +979,8 @@ void LiveAlignEditor::timerCallback()
         panes[0]->setStatus (s);
     }
 
+    if (tick % 15 == 0 && shownPage != (int) Page::Monitor) refreshNext();
+    if (processor.isStandalone() && tick % (30 * 120) == 0) processor.autosave();   // every two minutes
     if (tick % 60 == 0 && processor.syncLocker() && shownPage == (int) Page::Mics) micPage->refreshChoices();
 
     if (tick % 15 == 0)
@@ -891,7 +1026,15 @@ void LiveAlignEditor::resized()
         titleArea = h;
     }
     else
-        titleArea = header;
+    {
+        auto h = header;
+        if (nextButton.isVisible())
+        {
+            const int w = juce::jlimit (160, 420, juce::GlyphArrangement::getStringWidthInt (font (12.5f, true), nextButton.getButtonText()) + 44);
+            nextButton.setBounds (h.removeFromRight (w).withSizeKeepingCentre (w, 32));
+        }
+        titleArea = h;
+    }
 
     if (generator.isVisible())
     {
