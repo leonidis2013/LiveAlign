@@ -48,6 +48,7 @@ struct SpeakerSource
     bool hasArrival = false;
     double arrivalMs = 0.0;        // measured arrival at the mic (from the reference)
     bool nearField = false;        // measured close to the speaker: its own response, timed to its own arrival
+    int measureMic = -1;           // close up: the mic used for this speaker (-1: the system's mic)
 
     xo::Processing proc;           // suggested settings for the speaker processor
 
@@ -134,7 +135,15 @@ struct SpeakerSystem
     static constexpr int kMaxSources = 8;
 
     std::vector<SpeakerSource> sources;
-    int measureMic = 0;
+    int measureMic = 0;   // one spot (and the default close up): the mic for every speaker
+
+    // The mic that measures speaker `i`: its own when measured close up, otherwise the system's.
+    int micFor (int i, int micCount) const
+    {
+        int m = measureMic;
+        if (placement == 0 && i >= 0 && i < (int) sources.size() && sources[(size_t) i].measureMic >= 0) m = sources[(size_t) i].measureMic;
+        return juce::jlimit (0, juce::jmax (0, micCount - 1), m);
+    }
     bool timingLocked = false;
     double lockedDelayMs = 0.0;    // mic delay every measurement uses, so arrivals stay comparable
 
@@ -351,6 +360,7 @@ struct SpeakerSystem
             c->setAttribute ("hasArrival", s.hasArrival);
             c->setAttribute ("arrivalMs", s.arrivalMs);
             c->setAttribute ("nearField", s.nearField);
+            if (s.measureMic >= 0) c->setAttribute ("measureMic", s.measureMic);
             saveFilter (*c, "hp", s.proc.hp);
             saveFilter (*c, "lp", s.proc.lp);
             c->setAttribute ("gainDb", s.proc.gainDb);
@@ -418,6 +428,7 @@ struct SpeakerSystem
             s.hasArrival = c->getBoolAttribute ("hasArrival");
             s.arrivalMs = c->getDoubleAttribute ("arrivalMs");
             s.nearField = c->getBoolAttribute ("nearField");
+            s.measureMic = juce::jlimit (-1, kMaxMics - 1, c->getIntAttribute ("measureMic", -1));
             s.proc.hp = loadFilter (*c, "hp");
             s.proc.lp = loadFilter (*c, "lp");
             s.proc.gainDb = c->getDoubleAttribute ("gainDb");

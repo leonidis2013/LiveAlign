@@ -31,6 +31,10 @@ public:
     virtual bool guidedCanSkip() const { return false; }
     virtual void guidedSkip() {}
     virtual void guidedClosed() {}
+    // A mic to pick for the point now (Speaker response, close up). No choices: no picker.
+    virtual juce::StringArray guidedMicChoices() const { return {}; }
+    virtual int guidedMic() const { return 0; }
+    virtual void setGuidedMic (int) {}
 
     static bool enabled() { return UserPrefs::get ("guidedMeasure", "1") == "1"; }
     static void setEnabled (bool on) { UserPrefs::set ("guidedMeasure", on ? "1" : "0"); }
@@ -57,6 +61,12 @@ public:
         skip.setButtonText ("Skip this point");
         skip.onClick = [this] { source.guidedSkip(); reload(); };
         addChildComponent (skip);
+        micPicker.onChange = [this]
+        {
+            source.setGuidedMic (micPicker.getSelectedItemIndex());
+            reload();
+        };
+        addChildComponent (micPicker);
         close.setButtonText ("Close");
         close.onClick = [this] { closeNow(); };
         addAndMakeVisible (close);
@@ -173,6 +183,13 @@ public:
             g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.0f, 1.0f, fill)), 4.0f);
         }
 
+        if (micPicker.isVisible())
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (11.0f, true));
+            g.drawText ("MIC", micLabel, juce::Justification::centredLeft);
+        }
+
         // a dot for every point
         auto dots = dotsArea;
         const int n = (int) spots.size();
@@ -212,6 +229,12 @@ public:
         primary.setBounds (buttons.removeFromRight (240));
         buttons.removeFromRight (10);
         again.setBounds (buttons.removeFromRight (170).withSizeKeepingCentre (170, 38));
+        if (micPicker.isVisible())
+        {
+            micLabel = buttons.removeFromLeft (36);
+            micPicker.setBounds (buttons.removeFromLeft (220).withSizeKeepingCentre (220, 34));
+            buttons.removeFromLeft (12);
+        }
         skip.setBounds (buttons.removeFromLeft (150).withSizeKeepingCentre (150, 34));
     }
 
@@ -290,6 +313,16 @@ private:
         }
         again.setVisible (state == State::Done && resultOk);
         skip.setVisible (state == State::Ready && ! finished && source.guidedCanSkip());
+        const auto mics = source.guidedMicChoices();
+        const bool pick = mics.size() > 1 && state == State::Ready && ! finished;
+        micPicker.setVisible (pick);
+        if (pick)
+        {
+            micPicker.clear (juce::dontSendNotification);
+            micPicker.addItemList (mics, 1);
+            micPicker.setSelectedItemIndex (source.guidedMic(), juce::dontSendNotification);
+        }
+        resized();
         int now = 0;
         for (const auto& sp : spots) now += sp.state == GuideSpot::Now ? 1 : 0;
         skip.setButtonText (now > 1 ? "Skip these points" : "Skip this point");
@@ -379,6 +412,8 @@ private:
     GuidedSource& source;
     PlanCanvas canvas;
     juce::TextButton primary, again, skip, close;
+    juce::ComboBox micPicker;
+    juce::Rectangle<int> micLabel;
     juce::Rectangle<int> card, header, instr, progressArea, dotsArea;
     std::vector<GuideSpot> spots, nowSpots, justDone;
     State state = State::Ready;

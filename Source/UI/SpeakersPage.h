@@ -473,11 +473,16 @@ public:
             addAndMakeVisible (*c);
 
         // ---- measurement ----
-        micBox.setTooltip ("The one mic used for every speaker measurement. Keep it in the same place for all of them.");
         micBox.onChange = [this]
         {
             const int m = juce::jmax (0, micBox.getSelectedItemIndex());
-            if (m != sys.measureMic) { sys.measureMic = m; sys.timingLocked = false; }
+            if (sys.placement == 0)
+            {
+                // close up: this speaker's own mic, and the one the next speakers start with
+                if (selected >= 0 && selected < (int) sys.sources.size()) sys.sources[(size_t) selected].measureMic = m;
+                sys.measureMic = m;
+            }
+            else if (m != sys.measureMic) { sys.measureMic = m; sys.timingLocked = false; }
             systemChanged (false);
         };
         placementBox.addItemList ({ "Close to each speaker (12 in / 30 cm)", "One spot for every speaker" }, 1);
@@ -691,7 +696,9 @@ public:
             micBox.addItem (label, m + 1);
         }
         sys.measureMic = juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic);
-        micBox.setSelectedItemIndex (sys.measureMic, juce::dontSendNotification);
+        micBox.setSelectedItemIndex (sys.micFor (selected, settings.micCount.load()), juce::dontSendNotification);
+        micBox.setTooltip (sys.placement == 0 ? "The mic that measures this speaker, close up. Each speaker can have its own."
+                                              : "The one mic used for every speaker measurement. Keep it in the same place for all of them.");
 
         const int outs = juce::jmax (1, proc.numOutputs());
         outputBox.clear (juce::dontSendNotification);
@@ -783,7 +790,7 @@ public:
         std::vector<GuideSpot> out;
         const int n = juce::jmin ((int) sys.sources.size(), VenuePlan::kMaxSpeakers);
         const int now = guidedCurrent();
-        const int mic = juce::jlimit (0, juce::jmax (0, proc.tuningMicCount() - 1), sys.measureMic);
+        const int micCount = proc.tuningMicCount();
         for (int i = 0; i < n; ++i)
         {
             if (sys.master (i) != i) continue;   // "same as" another: nothing to measure
@@ -799,13 +806,13 @@ public:
             sp.state = i == now ? GuideSpot::Now : sys.covered (i) ? GuideSpot::Done : GuideSpot::ToDo;
             if (sp.state == GuideSpot::Now)
             {
-                sp.mic = mic;
+                sp.mic = sys.micFor (i, micCount);
                 sp.speaker = i;
                 if (sys.placement == 1)
                 {
                     // one spot: the mic stays where it is for every speaker
-                    sp.x = proc.plan.mics[(size_t) mic].x;
-                    sp.y = proc.plan.mics[(size_t) mic].y;
+                    sp.x = proc.plan.mics[(size_t) sp.mic].x;
+                    sp.y = proc.plan.mics[(size_t) sp.mic].y;
                     sp.how = "stays in the same place for every speaker, aimed at " + nameOf (i);
                 }
                 else sp.how = "about 12 in (30 cm) from the cone, on its axis, pointing at it";
@@ -842,6 +849,25 @@ public:
     juce::String guidedStatus() const override { return status; }
     void guidedRedo (const std::vector<GuideSpot>& was) override { if (! was.empty()) guidedNow = was.front().id; }
     void guidedClosed() override { guidedNow = -1; resized(); repaint(); }
+
+    // Close up, each speaker can be measured with its own mic: picked in the pop-up for the speaker now.
+    juce::StringArray guidedMicChoices() const override
+    {
+        juce::StringArray out;
+        if (sys.placement != 0) return out;
+        for (int m = 0; m < proc.tuningMicCount(); ++m) out.add (proc.mics.nameOf (m));
+        return out;
+    }
+    int guidedMic() const override { return sys.micFor (guidedCurrent(), settings.micCount.load()); }
+    void setGuidedMic (int m) override
+    {
+        const int i = guidedCurrent();
+        if (i < 0 || m < 0 || sys.placement != 0) return;
+        sys.sources[(size_t) i].measureMic = m;
+        sys.measureMic = m;   // the next speakers start with it
+        if (i == selected) micBox.setSelectedItemIndex (m, juce::dontSendNotification);
+        systemChanged (false);
+    }
     void findCrossover() { findBest(); }
     bool busy() const { return phase != Phase::Idle || searching; }
     void newAlignment() { addAlignment(); }
@@ -1206,6 +1232,7 @@ private:
     {
         selected = juce::jlimit (0, juce::jmax (0, (int) sys.sources.size() - 1), i);
         list.setSelected (selected);
+        micBox.setSelectedItemIndex (sys.micFor (selected, settings.micCount.load()), juce::dontSendNotification);
         graph.setReliabilityView (selected, settings.coherenceBlank.load());
         graph.rebuild();
         refreshSelected();
@@ -1549,7 +1576,7 @@ private:
             case Phase::Settling: return arrivalMode ? "Playing pink noise through " + who + " (arrival at " + spotName() + ")..."
                                                      : "Playing pink noise through " + who + "...";
             case Phase::FindingTime: return arrivalMode ? "Finding when " + who + " arrives at " + spotName() + "..." : sys.timingLocked ? "Finding the arrival of " + who + "..." : "Finding the timing (first measurement)...";
-            case Phase::Averaging: return "Averaging " + who + " at " + proc.mics.nameOf (sys.measureMic) + "...";
+            case Phase::Averaging: return "Averaging " + who + " at " + proc.mics.nameOf (arrivalMode ? sys.measureMic : sys.micFor (measuring, settings.micCount.load())) + "...";
             case Phase::Idle:
             default: return {};
         }
@@ -1571,7 +1598,8 @@ private:
         }
         if (phase == Phase::Idle) return;
         const double elapsed = juce::Time::getMillisecondCounterHiRes() - phaseStart;
-        const int mic = juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic);
+        const int mic = arrivalMode ? juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic)
+                                    : sys.micFor (measuring, settings.micCount.load());
 
         if (! settings.genOn.load()) { cancelMeasure ("Stopped: the generator was turned off."); return; }
 
@@ -1750,6 +1778,7 @@ private:
         s.response = std::move (t);
         s.imported = false;
         s.nearField = measureNear;
+        if (measureNear) s.measureMic = mic;   // remember which mic measured it
         s.delayUsedMs = measureNear ? nearDelayMs : sys.lockedDelayMs;
         if (measureNear) for (int m = 0; m < kMaxMics; ++m) settings.micDelayMs[m] = savedDelays[(size_t) m];
         const int calAngle = proc.activeCalAngle (mic);
@@ -1855,7 +1884,7 @@ private:
             if (phase != Phase::Idle) return phaseText();
             int measured = 0;
             for (int i = 0; i < (int) sys.sources.size(); ++i) measured += sys.covered (i) ? 1 : 0;
-            juce::String t = proc.mics.nameOf (sys.measureMic) + "  -  " + juce::String (measured) + " of " + juce::String ((int) sys.sources.size()) + " measured";
+            juce::String t = proc.mics.nameOf (sys.micFor (selected, settings.micCount.load())) + "  -  " + juce::String (measured) + " of " + juce::String ((int) sys.sources.size()) + " measured";
             const double w = weakestReliability();
             if (w >= 0.0) t << "  -  " << juce::roundToInt (w * 100.0) << "% reliable";
             return t;
@@ -1997,7 +2026,8 @@ private:
     void updateLiveQuality()
     {
         liveQuality = -1.0;
-        const int mic = juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic);
+        const int mic = phase != Phase::Idle && ! arrivalMode ? sys.micFor (measuring, settings.micCount.load())
+                                                              : sys.micFor (selected, settings.micCount.load());
         if (snap == nullptr || mic >= (int) snap->mics.size() || ! settings.genOn.load()) return;
         const auto& m = snap->mics[(size_t) mic];
         if (m.tfFrames <= 0 || m.tfCoh.size() != snap->tfFreq.size()) return;
@@ -2587,7 +2617,8 @@ private:
 
         // the instruction
         r.reduce (6, 8);
-        const auto micName = proc.mics.nameOf (sys.measureMic), who = nameOf (selected);
+        const int guideMic = sys.micFor (selected, settings.micCount.load());
+        const auto micName = proc.mics.nameOf (guideMic), who = nameOf (selected);
         juce::String t;
         if (near)
             t << "Place " << micName << " 12 in (30 cm) from the centre of " << who << "'s woofer cone, pointed at it, "
@@ -2595,7 +2626,7 @@ private:
         else
             t << "Place " << micName << " where every speaker covers the seats (usually FOH), pointed at the speakers, and leave it "
               << "there for all of them. Then press Measure " << who << ".";
-        if (proc.calibrations (sys.measureMic).both()) t << " Its " << calAngleName (Cal0) << " calibration is used.";
+        if (proc.calibrations (guideMic).both()) t << " Its " << calAngleName (Cal0) << " calibration is used.";
         g.setColour (p.text);
         g.setFont (font (12.0f));
         g.drawFittedText (t, r, juce::Justification::topLeft, 6);
