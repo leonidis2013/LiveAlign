@@ -16,6 +16,7 @@
 #include "Analysis/Generator.h"
 #include "Analysis/TargetCurves.h"
 #include "Analysis/Crossover.h"
+#include "Analysis/CrossoverPair.h"
 #include "Analysis/EqFit.h"
 
 using namespace la;
@@ -561,6 +562,32 @@ static void testEqFit()
     check (gotReal, "EQ: the real hump next to it is cut");
 }
 
+// The crossover pair follows the roles, not the order of the list.
+static void testCrossoverPair()
+{
+    using namespace la::xo;
+    // Sub, Main L, Main R (in that order): high = Main L, low = Sub
+    const std::vector<int> subFirst { kRoleSub, kRoleMain, kRoleMain };
+    const auto p = defaultPair (subFirst);
+    check (p.high == 1 && p.low == 0, "Crossover pair: Sub + Main L + Main R gives HIGH = Main L, LOW = Sub", p.high * 10 + p.low, 10);
+    check (! pairInverted (subFirst, p), "Crossover pair: the default pair is not inverted");
+
+    // the usual order still works, and a fill does not take the sub's place
+    const auto q = defaultPair ({ kRoleMain, kRoleMain, kRoleFill, kRoleSub });
+    check (q.high == 0 && q.low == 3, "Crossover pair: Main L, Main R, Fill, Sub gives Main L / Sub", q.high * 10 + q.low, 3);
+
+    // an inverted pair (sub above, top below) is flagged; deliberate same-kind pairs are not
+    check (pairInverted (subFirst, { 0, 1 }), "Crossover pair: HIGH = Sub, LOW = Main L is flagged as inverted");
+    check (! pairInverted ({ kRoleSub, kRoleSub }, { 0, 1 }), "Crossover pair: sub to sub is allowed");
+    check (! pairInverted ({ kRoleMain, kRoleMain }, { 1, 0 }), "Crossover pair: top to top is allowed");
+
+    // no sub: the next speaker below the top; only subs: sub to sub
+    const auto r = defaultPair ({ kRoleFill, kRoleMain });
+    check (r.high == 1 && r.low == 0, "Crossover pair: without a sub the other speaker is low", r.high * 10 + r.low, 10);
+    const auto s = defaultPair ({ kRoleSub, kRoleSub });
+    check (s.valid (2), "Crossover pair: two subs make a valid pair");
+}
+
 int main()
 {
     testTargets();
@@ -576,6 +603,7 @@ int main()
     testFreqTable();
     testCrossover();
     testEqFit();
+    testCrossoverPair();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

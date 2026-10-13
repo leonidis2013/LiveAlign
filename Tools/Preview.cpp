@@ -362,11 +362,39 @@ public:
             f.deleteFile();
             lockerAndUpdateChecks();
             sessionRoundTrip();
+            crossoverPairCheck();
             templateAndRecovery();
             stage = 99;
             editor.reset();
             juce::MessageManager::getInstance()->stopDispatchLoop();
         }
+    }
+
+    // The crossover pair follows the roles: Sub first in the list still gives Main L above, Sub below.
+    void crossoverPairCheck()
+    {
+        la::SpeakerSystem s;
+        la::SpeakerSource sb, l, r;
+        sb.name = "Sub"; sb.role = (int) la::SpeakerRole::Sub;
+        l.name = "Main L"; l.role = (int) la::SpeakerRole::Main; l.channel = (int) la::SpeakerChannel::Left;
+        r = l; r.name = "Main R"; r.channel = (int) la::SpeakerChannel::Right; r.linkTo = 1;
+        s.sources = { sb, l, r };
+        s.ensurePair();
+        std::printf ("xo pair: high=%d low=%d inverted=%d", s.xoHigh, s.xoLow, (int) s.pairInverted());
+        s.xoHigh = 0; s.xoLow = 1; s.xoChosen = true;
+        std::printf ("  forced Sub/Main L: inverted=%d", (int) s.pairInverted());
+        s.swapPair();
+        std::printf ("  after swap: high=%d low=%d inverted=%d\n", s.xoHigh, s.xoLow, (int) s.pairInverted());
+        // on screen: an upside-down pair shows the warning and Find best crossover refuses it
+        std::swap (proc.system.xoHigh, proc.system.xoLow);
+        proc.system.xoChosen = true;
+        auto& page = editor->speakersPage();
+        editor->showPage (2);
+        page.refreshChoices();
+        page.findCrossover();
+        std::printf ("inverted find: status='%s'\n", page.statusText().toRawUTF8());
+        shot ("speakers-inverted-pair");
+        std::swap (proc.system.xoHigh, proc.system.xoLow);
     }
 
     void templateAndRecovery()

@@ -8,6 +8,7 @@
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "Analysis/Crossover.h"
+#include "Analysis/CrossoverPair.h"
 #include "Analysis/FreqTable.h"
 
 namespace la
@@ -77,6 +78,7 @@ struct SpeakerSystem
     double lockedDelayMs = 0.0;    // mic delay every measurement uses, so arrivals stay comparable
 
     int xoHigh = 0, xoLow = 1;     // crossover pair (indices into sources)
+    bool xoChosen = false;         // the user picked the pair; otherwise it follows the speakers' roles
     xo::Capabilities caps;
     xo::Options opt;
     xo::Result lastResult;         // shown until something changes
@@ -100,8 +102,7 @@ struct SpeakerSystem
         sub.role = (int) SpeakerRole::Sub;
         sub.output = 3;
         s.sources = { left, right, sub };
-        s.xoHigh = 0;
-        s.xoLow = 2;
+        s.ensurePair();
         return s;
     }
 
@@ -158,6 +159,33 @@ struct SpeakerSystem
         return xoHigh != xoLow && xoHigh >= 0 && xoLow >= 0 && xoHigh < (int) sources.size() && xoLow < (int) sources.size();
     }
 
+    std::vector<int> roles() const
+    {
+        std::vector<int> r;
+        for (const auto& src : sources) r.push_back (src.role);
+        return r;
+    }
+
+    // The crossover pair from the roles (first main / top above, first sub below), unless the user picked one.
+    // Call after speakers are added, removed or change role, and after a venue is opened.
+    void ensurePair()
+    {
+        if (xoChosen && pairValid()) return;
+        const auto p = xo::defaultPair (roles());
+        xoHigh = p.high;
+        xoLow = p.low;
+        xoChosen = false;
+    }
+
+    // A sub above the crossover and a top below it.
+    bool pairInverted() const { return xo::pairInverted (roles(), { xoHigh, xoLow }); }
+
+    void swapPair()
+    {
+        std::swap (xoHigh, xoLow);
+        xoChosen = true;
+    }
+
     // ---- XML ----
     static void saveFilter (juce::XmlElement& e, const juce::String& k, const xo::Filter& f)
     {
@@ -183,6 +211,7 @@ struct SpeakerSystem
         e->setAttribute ("lockedDelayMs", lockedDelayMs);
         e->setAttribute ("xoHigh", xoHigh);
         e->setAttribute ("xoLow", xoLow);
+        e->setAttribute ("xoChosen", xoChosen);
         e->setAttribute ("fMin", opt.fMin);
         e->setAttribute ("fMax", opt.fMax);
         juce::String types, slopes;
@@ -262,6 +291,7 @@ struct SpeakerSystem
         lockedDelayMs = e->getDoubleAttribute ("lockedDelayMs");
         xoHigh = e->getIntAttribute ("xoHigh", 0);
         xoLow = e->getIntAttribute ("xoLow", 1);
+        xoChosen = e->getBoolAttribute ("xoChosen", false);   // earlier versions picked the pair by list position
         opt.fMin = juce::jlimit (20.0, 2000.0, e->getDoubleAttribute ("fMin", 40.0));
         opt.fMax = juce::jlimit (opt.fMin, 5000.0, e->getDoubleAttribute ("fMax", 250.0));
         const auto types = e->getStringAttribute ("types", "0110"), slopes = e->getStringAttribute ("slopes", "01110101");
@@ -333,6 +363,7 @@ struct SpeakerSystem
             a.measuredOn = c->getStringAttribute ("measuredOn");
             alignments.push_back (a);
         }
+        ensurePair();   // an unset or invalid pair comes from the roles
     }
 
     // After source `i` is removed: drop its alignments and renumber the rest.
@@ -342,6 +373,11 @@ struct SpeakerSystem
                           alignments.end());
         for (auto& a : alignments) { if (a.ref > i) --a.ref; if (a.align > i) --a.align; }
         for (auto& s : sources) { if (s.linkTo == i) s.linkTo = -1; else if (s.linkTo > i) --s.linkTo; }
+        // the pair: renumber, and pick it again from the roles if one of its speakers went
+        if (xoHigh == i || xoLow == i) xoChosen = false;
+        if (xoHigh > i) --xoHigh;
+        if (xoLow > i) --xoLow;
+        ensurePair();
     }
 };
 } // namespace la

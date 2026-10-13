@@ -425,7 +425,7 @@ public:
         nameEditor.setFont (font (13.0f));
         nameEditor.onTextChange = [this] { if (auto* s = current()) { s->name = nameEditor.getText().trim(); systemChanged (false); refreshChoices(); } };
         roleBox.addItemList (speakerRoleNames(), 1);
-        roleBox.onChange = [this] { if (auto* s = current()) { s->role = roleBox.getSelectedItemIndex(); systemChanged (false); } };
+        roleBox.onChange = [this] { if (auto* s = current()) { s->role = roleBox.getSelectedItemIndex(); sys.ensurePair(); systemChanged (false); } };
         channelBox.addItemList (speakerChannelNames(), 1);
         channelBox.setTooltip ("Where this speaker sits: mono, stereo left, centre, stereo right, or both sides (L+R)");
         channelBox.onChange = [this] { if (auto* s = current()) { s->channel = channelBox.getSelectedItemIndex(); systemChanged (false); } };
@@ -483,8 +483,15 @@ public:
         addAndMakeVisible (processedToggle);
 
         // ---- crossover ----
-        highBox.onChange = [this] { sys.xoHigh = highBox.getSelectedItemIndex(); xoChanged(); };
-        lowBox.onChange = [this] { sys.xoLow = lowBox.getSelectedItemIndex(); xoChanged(); };
+        highBox.onChange = [this] { sys.xoHigh = highBox.getSelectedItemIndex(); sys.xoChosen = true; xoChanged(); };
+        lowBox.onChange = [this] { sys.xoLow = lowBox.getSelectedItemIndex(); sys.xoChosen = true; xoChanged(); };
+        swapPairButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\x87\x84")));   // left-right arrows
+        swapPairButton.setTooltip ("Swap the high and low speakers");
+        swapPairButton.onClick = [this] { swapPair(); };
+        invertedSwapButton.onClick = [this] { swapPair(); };
+        invertedSwapButton.setTooltip ("Put the top above the crossover and the sub below it");
+        addAndMakeVisible (swapPairButton);
+        addChildComponent (invertedSwapButton);
         highBox.setTooltip ("The speaker that plays above the crossover (the top)");
         lowBox.setTooltip ("The speaker that plays below the crossover (the sub)");
         rangeBox.addItemList ({ "Sub to top: 40 - 250 Hz", "Sub to top: 60 - 160 Hz", "Woofer to mid: 150 Hz - 1 kHz", "Mid to high: 800 Hz - 5 kHz" }, 1);
@@ -715,7 +722,7 @@ public:
 
     // Same as the buttons (used by the local screenshot tool).
     void measure (int i) { select (i); startMeasure (i); }
-    void findCrossover() { findBest(); }
+    void findCrossover() { openStepAt (1); findBest(); }
     bool busy() const { return phase != Phase::Idle || searching; }
     void newAlignment() { addAlignment(); }
     void measureAlignment (int i) { selectAlignment (i); openStepAt (2); startArrival (i); }
@@ -786,6 +793,14 @@ public:
         if (openStep == 2) paintAlignment (g);
 
         // crossover result
+        if (openStep == 1 && ! invertedArea.isEmpty())
+        {
+            g.setColour (p.warn.withAlpha (0.14f));
+            g.fillRoundedRectangle (invertedArea.toFloat().expanded (4.0f, 0.0f), 5.0f);
+            g.setColour (p.warn);
+            g.setFont (font (11.5f, true));
+            g.drawFittedText (invertedText(), invertedArea, juce::Justification::centredLeft, 2);
+        }
         if (openStep == 1)
         {
             g.setFont (font (11.5f));
@@ -793,6 +808,7 @@ public:
             juce::Colour c = p.textDim;
             if (searching) { t = "Searching every filter, frequency, delay and polarity..."; c = p.accent; }
             else if (! sys.pairValid()) t = "Pick two different speakers.";
+            else if (sys.pairInverted()) { t = "The pair is upside down: swap it, then find the crossover."; c = p.warn; }
             else if (! sys.sources[(size_t) sys.xoHigh].hasResponse() || ! sys.sources[(size_t) sys.xoLow].hasResponse())
             { t = "Measure or import both speakers first."; c = p.warn; }
             else if (sys.lastResult.valid)
@@ -945,11 +961,22 @@ public:
             auto c = content;
             auto pair = c.removeFromTop (28);
             labels.push_back ({ pair.removeFromLeft (40), "High" });
-            highBox.setBounds (pair.removeFromLeft (pair.getWidth() / 2 - 26));
-            pair.removeFromLeft (8);
+            const int boxW = (pair.getWidth() - 40 - 36) / 2;
+            highBox.setBounds (pair.removeFromLeft (boxW));
+            swapPairButton.setBounds (pair.removeFromLeft (40).reduced (5, 0));
             labels.push_back ({ pair.removeFromLeft (36), "Low" });
             lowBox.setBounds (pair);
             c.removeFromTop (8);
+            invertedSwapButton.setVisible (sys.pairInverted());
+            if (invertedSwapButton.isVisible())
+            {
+                auto w = c.removeFromTop (30);
+                invertedSwapButton.setBounds (w.removeFromRight (70).withSizeKeepingCentre (70, 26));
+                w.removeFromRight (8);
+                invertedArea = w;
+                c.removeFromTop (8);
+            }
+            else invertedArea = {};
             auto rr = c.removeFromTop (28);
             labels.push_back ({ rr.removeFromLeft (52), "Range" });
             rangeBox.setBounds (rr);
@@ -1119,6 +1146,7 @@ private:
                 case 5: add ("Centre", SpeakerRole::Main, SpeakerChannel::Centre); break;
                 default: add ("Speaker " + juce::String (system.sources.size() + 1), SpeakerRole::Other, SpeakerChannel::Mono); break;
             }
+            system.ensurePair();
             safe->select ((int) system.sources.size() - (r == 1 ? 2 : 1));
             safe->systemChanged (true);
         });
@@ -1137,10 +1165,6 @@ private:
             system.sources.erase (system.sources.begin() + i);
             system.sourceRemoved (i);
             safe->proc.plan.speakerRemoved (i);
-            auto fix = [i] (int& k) { if (k == i) k = 0; else if (k > i) --k; };
-            fix (system.xoHigh);
-            fix (system.xoLow);
-            if (system.xoHigh == system.xoLow && system.sources.size() > 1) system.xoLow = system.xoHigh == 0 ? 1 : 0;
             safe->selected = juce::jmax (0, i - 1);
             safe->systemChanged (true);
         });
@@ -1166,9 +1190,30 @@ private:
     void xoChanged()
     {
         sys.lastResult = {};
+        resized();   // the "swap them?" warning comes and goes
         refreshManual();
         graph.rebuild();
         changedOutside();
+    }
+
+    juce::String invertedText() const
+    {
+        auto word = [] (int role)
+        {
+            static const char* w[] = { "top", "Sub", "fill", "delay", "speaker of another kind" };
+            return juce::String (w[juce::jlimit (0, 4, role)]);
+        };
+        return "HIGH is a " + word (sys.sources[(size_t) sys.xoHigh].role) + " and LOW is a " + word (sys.sources[(size_t) sys.xoLow].role)
+               + " - swap them?";
+    }
+
+    void swapPair()
+    {
+        if (! sys.pairValid()) return;
+        sys.swapPair();
+        status = nameOf (sys.xoHigh) + " is now above the crossover and " + nameOf (sys.xoLow) + " below it.";
+        refreshChoices();
+        xoChanged();
     }
 
     // ---- manual controls: they show and edit the pair's processing ----
@@ -1252,6 +1297,12 @@ private:
     void findBest()
     {
         if (searching || ! sys.pairValid()) return;
+        if (sys.pairInverted())
+        {
+            status = invertedText();
+            repaint();
+            return;   // no settings from an upside-down pair
+        }
         const auto grid = xo::analysisGrid();
         auto h = sys.rawResponse (sys.xoHigh, grid), l = sys.rawResponse (sys.xoLow, grid);
         if (h.empty() || l.empty()) { repaint(); return; }
@@ -1533,8 +1584,9 @@ private:
             c->setVisible (openStep == 0);
         const bool xo = openStep == 1;
         for (auto* c : std::initializer_list<juce::Component*> { &highBox, &lowBox, &rangeBox, &findButton, &freqSlider, &typeBox, &slopeBox,
-                                                                 &delaySlider, &gainSlider, &invertButton })
+                                                                 &delaySlider, &gainSlider, &invertButton, &swapPairButton })
             c->setVisible (xo);
+        invertedSwapButton.setVisible (xo && sys.pairInverted());
         for (auto& b : typeButtons) b.setVisible (xo);
         for (auto& b : slopeButtons) b.setVisible (xo);
         for (auto* c : std::initializer_list<juce::Component*> { &alList, &alAddButton, &alRemoveButton, &alAlignBox, &alRefBox, &alSpotBox,
@@ -2119,6 +2171,8 @@ private:
     juce::ToggleButton processedToggle { "With processing" };
     juce::TextButton typeButtons[3], slopeButtons[kSlopeButtons];
     juce::TextButton findButton { "Find best crossover" }, invertButton { "Low normal" };
+    juce::TextButton swapPairButton, invertedSwapButton { "Swap" };
+    juce::Rectangle<int> invertedArea;
     juce::TextButton copyButton { "Copy settings" }, doneButton { "Mark speakers set up" };
     juce::ComboBox minCohBox;
     AlignmentList alList;
