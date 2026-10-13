@@ -4,8 +4,8 @@
 #include "PluginEditor.h"
 #include "UI/SettingsPanel.h"
 #include "UI/CalibrationPanel.h"
-#include "UI/MicLockerPanel.h"
 #include "StandaloneHooks.h"
+#include "Report/TuningReport.h"
 
 using namespace la::ui;
 
@@ -19,7 +19,8 @@ const char* pageSubtitle (int page)
         "Measure each speaker or group and work out the crossover",
         "Measure across the room and tune toward a target",
         "RTA, transfer function, impulse response and sound level",
-        "A sketch of where the speakers and mics are (not to scale)" };
+        "A sketch of where the speakers and mics are (not to scale)",
+        "The measurement mics you own: model, serial number, calibration files and sound level" };
     return subs[juce::jlimit (0, kNumPages - 1, page)];
 }
 } // namespace
@@ -35,11 +36,11 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     addAndMakeVisible (nav);
     nav.onSelect = [this] (int pg) { showPage (pg); };
     nav.onSettings = [this] { openSettings(); };
-    nav.onFullScreen = [this] { toggleFullScreen(); };
+    nav.onLocker = [this] { openMicLocker(); };
     nav.onVenue = [this] { showPage ((int) Page::Home); };
     nav.onUpdate = [this] { showUpdate(); };
     processor.updates.onResult = [this] { refreshUpdate(); };
-    nav.setFullScreenAvailable ((bool) la::StandaloneHooks::toggleFullScreen());
+    nav.setLockerAvailable (standalone);
     if (! standalone)
         for (int i = 0; i < kNumPages; ++i) nav.setPageVisible (i, i == (int) Page::Monitor);   // the VST3 shows Monitoring only
 
@@ -50,6 +51,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     homePage->onOpenVenue = [this] { confirmDiscard ([this] { openProject(); }); };
     homePage->onSave = [this] { saveProject (false); };
     homePage->onSaveAs = [this] { saveProject (true); };
+    homePage->onReport = [this] { exportReport(); };
     homePage->onNewSession = [this] { newSession(); };
     homePage->onChanged = [this] { afterProjectLoaded(); };
     homePage->onRenameSession = [this] (int i)
@@ -95,11 +97,17 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     planPage = std::make_unique<PlanPage> (p);
     planPage->onChanged = [this] { updateStatuses(); };
     planPage->onExport = [this] { exportPlan(); };
+    planPage->onReport = [this] { exportReport(); };
     planPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
     {
         askText (title, {}, initial, std::move (done));
     };
     addChildComponent (*planPage);
+
+    lockerPage = std::make_unique<MicLockerPage> (p);
+    lockerPage->onLoadCal = [this] (const juce::String& id, int angle) { loadLockerCal (id, angle); };
+    lockerPage->onChanged = [this] { micPage->refreshChoices(); pickerMics = -1; refreshMicPicker(); };
+    addChildComponent (*lockerPage);
     addChildComponent (*roomPage);
 
     // ---- monitoring page ----
@@ -116,6 +124,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     {
         const int id = micPicker.getSelectedId();
         settings.selectedMic = id == 100 ? la::kAverageMic : juce::jmax (0, id - 1);
+        monitorMicChosen = true;
         refreshMicPicker();
     };
     addChildComponent (micPicker);
@@ -180,15 +189,23 @@ void LiveAlignEditor::showPage (int page)
     speakerPage->setVisible (page == (int) Page::Speakers);
     roomPage->setVisible (page == (int) Page::Room);
     planPage->setVisible (page == (int) Page::Plan);
+    lockerPage->setVisible (page == (int) Page::Locker);
+    nav.setLockerActive (page == (int) Page::Locker);
+    if (page == (int) Page::Locker) lockerPage->refresh();
     if (page == (int) Page::Plan) planPage->refresh();
     const bool mon = page == (int) Page::Monitor;
     for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
                      (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &micPicker })
         c->setVisible (mon);
-    generator.setVisible (page == (int) Page::Speakers || page == (int) Page::Room || mon);
+    // the generator is for tuning; monitoring listens to the programme
+    generator.setVisible (page == (int) Page::Speakers || page == (int) Page::Room);
     if (! generator.isVisible() && page != (int) Page::Mics) { settings.genOn = false; generator.sync(); }
 
+    // live monitoring follows the FOH mic unless another one has been picked
+    if (mon && ! monitorMicChosen && settings.selectedMic.load() < la::kAverageMic)
+        for (int m = 0; m < settings.micCount.load(); ++m)
+            if (processor.mics.position[(size_t) m].containsIgnoreCase ("FOH")) { settings.selectedMic = m; refreshMicPicker(); break; }
     if (page == (int) Page::Home) homePage->refresh();
     if (page == (int) Page::Mics) { micPage->refreshChoices(); if (snapSerial > 0) micPage->setSnapshot (snap); }
     if (page == (int) Page::Speakers) { speakerPage->refreshChoices(); speakerPage->setSnapshot (snap); }
@@ -245,6 +262,13 @@ void LiveAlignEditor::refreshMicPicker()
     const int sel = settings.selectedMic.load();
     micPicker.setSelectedId (sel >= la::kAverageMic && n > 1 ? 100 : juce::jlimit (0, n - 1, sel) + 1, juce::dontSendNotification);
     inputPanel.setMicLabel (processor.mics.nameOf (settings.focusMic()) + "  In " + juce::String (settings.micInput[settings.focusMic()].load() + 1));
+    {
+        const int fm = settings.focusMic();
+        const bool avg = settings.selectedMic.load() >= la::kAverageMic && n > 1;
+        juce::String who = avg ? "Average of " + juce::String (n) + " mics" : processor.mics.nameOf (fm);
+        if (! avg && processor.mics.position[(size_t) fm].isNotEmpty()) who << "  -  " << processor.mics.position[(size_t) fm];
+        splPanel.setMicName ("From " + who + "  (pick the mic at the top)");
+    }
 }
 
 // Readiness of each step, for the navigation pane and the home page.
@@ -273,7 +297,7 @@ void LiveAlignEditor::updateStatuses()
     {
         const auto& srcs = processor.system.sources;
         int measured = 0;
-        for (const auto& src : srcs) measured += src.hasResponse() ? 1 : 0;
+        for (int i = 0; i < (int) srcs.size(); ++i) measured += processor.system.covered (i) ? 1 : 0;
         const int n = (int) srcs.size();
         if (processor.speakers.changed) { spk.status = StepStatus::Attention; spk.shortText = "Marked changed"; spk.detail = "The system was marked as changed: measure the speakers again."; }
         else if (processor.speakers.configured) { spk.status = StepStatus::Ready; spk.shortText = "Set up"; spk.detail = "Set up " + processor.speakers.configuredOn + ". Nothing has changed since."; }
@@ -356,29 +380,70 @@ void LiveAlignEditor::exportPlan()
     });
 }
 
-void LiveAlignEditor::openMicLocker()
+// The tuning report as a PDF, opened when written.
+void LiveAlignEditor::exportReport()
 {
-    auto panel = std::make_unique<MicLockerPanel> (processor);
-    auto* raw = panel.get();
-    juce::Component::SafePointer<MicLockerPanel> safePanel (raw);
-    panel->onChanged = [this] { micPage->refreshChoices(); };
-    panel->onRename = [this, safePanel] (const juce::String& id)
+    const auto& sessions = processor.getSessions();
+    const int cur = processor.currentSession();
+    const auto name = juce::File::createLegalFileName (processor.venueName + " - " + (cur < (int) sessions.size() ? sessions[(size_t) cur].name : juce::String ("session"))
+                                                       + " - tuning report");
+    auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory()
+                                                     : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    chooser = std::make_unique<juce::FileChooser> ("Save the tuning report", dir.getChildFile (name + ".pdf"), "*.pdf");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe] (const juce::FileChooser& fc)
     {
-        auto* e = processor.locker.find (id);
-        if (e == nullptr) return;
-        askText ("Rename mic", {}, e->name, [this, id, safePanel] (const juce::String& t)
+        if (safe == nullptr) return;
+        auto f = fc.getResult();
+        if (f == juce::File()) return;
+        f = f.withFileExtension ("pdf");
+        safe->processor.plan.placeMissing (juce::jmin ((int) safe->processor.system.sources.size(), la::VenuePlan::kMaxSpeakers), safe->settings.micCount.load());
+        const auto plan = safe->planPage->getCanvas().exportImage (1800);
+        const auto err = la::report::writeTuningReport (safe->processor, f, plan, la::UserPrefs::get ("reportAuthor"));
+        if (err.isNotEmpty()) { safe->showMessage ("Report not saved", err); return; }
+        f.startAsProcess();
+    });
+}
+
+void LiveAlignEditor::openMicLocker() { showPage ((int) Page::Locker); }
+
+// Calibration file(s) for a mic in the locker; angle -1 = one or both, placed by their names.
+void LiveAlignEditor::loadLockerCal (const juce::String& id, int angle)
+{
+    chooser = std::make_unique<juce::FileChooser> (angle < 0 ? juce::String ("Load the calibration file(s): select the 0 and 90 degree files together")
+                                                              : "Load the " + la::calAngleName (angle) + " calibration file",
+                                                   juce::File(), "*.txt;*.cal;*.frd;*.csv");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    const int chooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                             | (angle < 0 ? juce::FileBrowserComponent::canSelectMultipleItems : 0);
+    chooser->launchAsync (chooserFlags, [safe, id, angle] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        auto files = fc.getResults();
+        auto* e = safe->processor.locker.find (id);
+        if (files.isEmpty() || e == nullptr) return;
+        while (files.size() > 2) files.remove (2);
+        int angles[2] { angle, angle };
+        if (angle < 0)
         {
-            if (auto* entry = processor.locker.find (id))
-            {
-                entry->name = t;
-                processor.locker.save();
-                for (int m = 0; m < la::kMaxMics; ++m) if (processor.mics.lockerId[(size_t) m] == id) processor.mics.name[(size_t) m] = t;
-            }
-            if (safePanel != nullptr) safePanel->rebuild();
-            micPage->refreshChoices();
-        });
-    };
-    juce::CallOutBox::launchAsynchronously (std::move (panel), micPage->getBounds().withSizeKeepingCentre (10, 10), this);
+            for (int i = 0; i < files.size(); ++i) angles[i] = la::MicCalSet::angleFromName (files[i].getFileName());
+            if (files.size() == 2 && angles[0] == angles[1]) { angles[0] = la::Cal0; angles[1] = la::Cal90; }
+        }
+        juce::StringArray errors;
+        for (int i = 0; i < files.size(); ++i)
+        {
+            auto t = la::parseFreqTable (files[i].loadFileAsString().toStdString());
+            if (t.freq.size() < 3) { errors.add ("No calibration data found in " + files[i].getFileName()); continue; }
+            e->cals.table[angles[i]] = std::move (t);
+            e->cals.name[angles[i]] = files[i].getFileName();
+            e->noCalFile = false;
+        }
+        safe->processor.locker.save();
+        safe->processor.lockerEntryChanged (id);
+        if (! errors.isEmpty()) safe->showMessage ("Calibration file not loaded", errors.joinIntoString ("\n"));
+        safe->lockerPage->refresh();
+        safe->micPage->refreshChoices();
+    });
 }
 
 void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
@@ -699,7 +764,7 @@ bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
     }
     if (dynamic_cast<juce::TextEditor*> (getCurrentlyFocusedComponent()) != nullptr) return false;
     if (c == 'f' || key == juce::KeyPress (juce::KeyPress::F11Key)) { toggleFullScreen(); return true; }
-    if (c == 'g') { toggleGenerator(); return true; }
+    if (c == 'g' && generator.isVisible()) { toggleGenerator(); return true; }
     if (shownPage != (int) Page::Monitor) return false;
     if (key == juce::KeyPress::spaceKey) { settings.running = ! settings.running.load(); return true; }
     if (c == 'c') { capture(); return true; }
@@ -752,8 +817,6 @@ void LiveAlignEditor::timerCallback()
         generator.sync();
         tracesPanel.syncTarget();
         refreshMicPicker();
-        const bool fs = la::StandaloneHooks::isFullScreen() && la::StandaloneHooks::isFullScreen()();
-        nav.setFullScreenText (fs ? "EXIT FULL SCREEN" : "FULL SCREEN");
 
         juce::String s;
         if (monitoring)
@@ -842,13 +905,14 @@ void LiveAlignEditor::resized()
     speakerPage->setBounds (r);
     roomPage->setBounds (r);
     planPage->setBounds (r);
+    lockerPage->setBounds (r);
 
     auto side = r.removeFromRight (330);
     r.removeFromRight (8);
     paneArea = r;
     layoutPanes();
 
-    splPanel.setBounds (side.removeFromTop (186));
+    splPanel.setBounds (side.removeFromTop (196));
     side.removeFromTop (8);
     inputPanel.setBounds (side.removeFromTop (98));
     side.removeFromTop (8);

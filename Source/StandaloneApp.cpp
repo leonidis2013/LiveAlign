@@ -79,6 +79,9 @@ public:
         for (auto* c : mainWindow->getChildren())
             if (auto* b = dynamic_cast<juce::TextButton*> (c))
                 if (b->getButtonText() == "Options") b->setVisible (false);
+        // the system's own title bar: red / yellow / green buttons on macOS (green = full screen), the usual ones on Windows
+        mainWindow->setUsingNativeTitleBar (true);
+        mainWindow->setResizable (true, false);
         mainWindow->setVisible (true);
     }
 

@@ -10,6 +10,7 @@
 #include "UI/MicSetupPage.h"
 #include "UI/SpeakersPage.h"
 #include "UI/PlanPage.h"
+#include "UI/MicLockerPanel.h"
 #include "UI/Pages.h"
 #include "UI/MeasurePane.h"
 #include "UI/SidePanels.h"
@@ -42,7 +43,9 @@ private:
     void refreshUpdate();
     void showUpdate();
     void openMicLocker();
+    void loadLockerCal (const juce::String& id, int angle);
     void exportPlan();
+    void exportReport();
     void openCalibration (int mic, juce::Component* anchor);
     void loadCalFile (int mic, int angle = -1);
     void capture();
@@ -79,6 +82,7 @@ private:
     std::unique_ptr<la::ui::SpeakersPage> speakerPage;
     std::unique_ptr<la::ui::PlaceholderPage> roomPage;
     std::unique_ptr<la::ui::PlanPage> planPage;
+    std::unique_ptr<la::ui::MicLockerPage> lockerPage;
 
     // Monitoring page
     std::unique_ptr<la::ui::MeasurePane> panes[3];
@@ -97,7 +101,7 @@ private:
     std::unique_ptr<juce::AlertWindow> textWindow;
 
     int appliedTheme = -1, tick = 0, laidOutCount = -1, laidOutLayout = -1, shownPage = -1, pickerMics = -1;
-    bool unsaved = false;
+    bool unsaved = false, monitorMicChosen = false;
     juce::uint32 overloadUntil = 0;
     juce::Rectangle<int> paneArea, pageArea, titleArea;
 

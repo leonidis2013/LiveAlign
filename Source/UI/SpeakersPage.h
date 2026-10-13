@@ -271,8 +271,10 @@ public:
             g.drawText (s.name.isNotEmpty() ? s.name : "Speaker " + juce::String (i + 1), r.removeFromTop (row.getHeight() * 0.55f), juce::Justification::bottomLeft, true);
             // measured: how reliable it is (share of its range above the minimum coherence)
             const double rv = i < (int) rel.size() ? rel[(size_t) i] : -1.0;
-            juce::Colour sc = s.hasResponse() ? p.good : p.warn;
-            juce::String st = s.hasResponse() ? (s.imported ? "IMPORTED" : "MEASURED") : "TO MEASURE";
+            const int master = sys.master (i);
+            juce::Colour sc = s.hasResponse() ? p.good : master != i && sys.covered (i) ? p.textDim : p.warn;
+            juce::String st = s.hasResponse() ? (s.imported ? "IMPORTED" : "MEASURED")
+                            : master != i ? "AS " + sys.sources[(size_t) master].name.toUpperCase() : juce::String ("TO MEASURE");
             if (s.hasResponse() && rv >= 0.0)
             {
                 st = juce::String (juce::roundToInt (rv * 100.0)) + "% RELIABLE";
@@ -285,6 +287,8 @@ public:
             g.setFont (font (10.5f));
             juce::String info = speakerRoleNames()[s.role] + "  -  " + (s.channel == 0 ? juce::String ("Mono") : speakerChannelShort (s.channel))
                                 + "  -  " + (s.output == 0 ? juce::String ("all outs") : "out " + juce::String (s.output));
+            if (s.count > 1) info << "  -  x" << s.count;
+            if (s.model.isNotEmpty()) info << "  -  " << s.model;
             g.setColour (p.textDim);
             g.drawText (info, r.withTrimmedRight (stw), juce::Justification::topLeft, true);
 
@@ -411,18 +415,8 @@ public:
         list.onSelect = [this] (int i) { select (i); };
         list.onToggleShow = [this] (int i) { sys.sources[(size_t) i].show = ! sys.sources[(size_t) i].show; systemChanged (false); };
 
-        addButton.onClick = [this]
-        {
-            if ((int) sys.sources.size() >= SpeakerSystem::kMaxSources) return;
-            SpeakerSource s;
-            s.name = "Speaker " + juce::String (sys.sources.size() + 1);
-            s.role = (int) SpeakerRole::Fill;
-            s.output = juce::jmin ((int) sys.sources.size() + 1, juce::jmax (1, proc.numOutputs()));
-            sys.sources.push_back (s);
-            select ((int) sys.sources.size() - 1);
-            systemChanged (true);
-        };
-        addButton.setTooltip ("Add a speaker or group (up to 8): a fill, a delay, another sub ...");
+        addButton.onClick = [this] { showAddMenu(); };
+        addButton.setTooltip ("Add speakers (up to 8): a left / right pair, a sub, fills, delays ...");
         removeButton.onClick = [this] { removeSelected(); };
         addAndMakeVisible (addButton);
         addAndMakeVisible (removeButton);
@@ -435,6 +429,24 @@ public:
         channelBox.addItemList (speakerChannelNames(), 1);
         channelBox.setTooltip ("Where this speaker sits: mono, stereo left, centre, stereo right, or both sides (L+R)");
         channelBox.onChange = [this] { if (auto* s = current()) { s->channel = channelBox.getSelectedItemIndex(); systemChanged (false); } };
+        modelEditor.setFont (font (13.0f));
+        modelEditor.setTextToShowWhenEmpty ("Make and model", pal().textFaint);
+        modelEditor.onTextChange = [this] { if (auto* s = current()) { s->model = modelEditor.getText().trim(); changedOutside(); list.repaint(); } };
+        for (int n = 1; n <= 8; ++n) countBox.addItem (n == 1 ? juce::String ("1 cabinet") : juce::String (n) + " cabinets", n);
+        countBox.setTooltip ("How many cabinets this output feeds (two subs side by side, a column of two ...)");
+        countBox.onChange = [this] { if (auto* s = current()) { s->count = juce::jmax (1, countBox.getSelectedId()); systemChanged (false); } };
+        linkBox.setTooltip ("Share the crossover, level and polarity with another speaker, e.g. Main R with Main L. "
+                            "A shared speaker needs no measurement of its own.");
+        linkBox.onChange = [this]
+        {
+            if (auto* s = current())
+            {
+                const int id = linkBox.getSelectedId();
+                s->linkTo = id <= 1 ? -1 : id - 2;
+                if (s->linkTo == selected) s->linkTo = -1;
+                systemChanged (false);
+            }
+        };
         outputBox.onChange = [this] { if (auto* s = current()) { s->output = outputBox.getSelectedItemIndex(); systemChanged (false); } };
         outputBox.setTooltip ("The interface output that feeds this speaker or group while it is measured. "
                               "Or play all outputs and mute the others in your processor.");
@@ -449,7 +461,8 @@ public:
         offsetSlider.setTextValueSuffix (" ms");
         offsetSlider.setTooltip ("An imported file has no arrival time: enter how much later it arrives than the measured speakers");
         offsetSlider.onValueChange = [this] { if (auto* s = current()) { s->offsetMs = offsetSlider.getValue(); systemChanged (true); } };
-        for (auto* c : std::initializer_list<juce::Component*> { &nameEditor, &roleBox, &channelBox, &outputBox, &measureButton, &importButton, &clearButton, &offsetSlider })
+        for (auto* c : std::initializer_list<juce::Component*> { &nameEditor, &roleBox, &channelBox, &outputBox, &measureButton, &importButton, &clearButton, &offsetSlider,
+                                                                 &modelEditor, &countBox, &linkBox })
             addAndMakeVisible (*c);
 
         // ---- measurement ----
@@ -730,6 +743,8 @@ public:
             g.setFont (font (11.5f));
             juce::String t;
             if (s->hasResponse()) t << (s->imported ? "Imported: " : "Measured: ") << s->source;
+            else if (sys.master (selected) != selected)
+                t << "Follows " << nameOf (sys.master (selected)) << ": same settings, no measurement of its own needed.";
             else t << "Not measured yet.";
             if (s->hasArrival) t << "\nArrives " << juce::String (s->arrivalMs, 2) << " ms after the reference";
             g.drawFittedText (t, selInfo, juce::Justification::topLeft, 3);
@@ -852,10 +867,19 @@ public:
                 comp.setBounds (row);
                 c.removeFromTop (8);
             };
-            field ("Name", nameEditor);
-            field ("Role", roleBox);
-            field ("Channel", channelBox);
-            field ("Output", outputBox);
+            field ("Name", nameEditor, 26);
+            field ("Model", modelEditor, 26);
+            field ("Role", roleBox, 26);
+            field ("Channel", channelBox, 26);
+            field ("Output", outputBox, 26);
+            {
+                auto row = c.removeFromTop (26);
+                labels.push_back ({ row.removeFromLeft (64), "Count" });
+                countBox.setBounds (row.removeFromLeft (row.getWidth() * 45 / 100));
+                row.removeFromLeft (6);
+                linkBox.setBounds (row);
+                c.removeFromTop (8);
+            }
             c.removeFromTop (4);
             measureButton.setBounds (c.removeFromTop (34));
             c.removeFromTop (8);
@@ -1016,7 +1040,8 @@ private:
     void refreshSelected()
     {
         const auto* s = current();
-        for (auto* c : std::initializer_list<juce::Component*> { &nameEditor, &roleBox, &channelBox, &outputBox, &measureButton, &importButton, &clearButton })
+        for (auto* c : std::initializer_list<juce::Component*> { &nameEditor, &roleBox, &channelBox, &outputBox, &measureButton, &importButton, &clearButton,
+                                                                 &modelEditor, &countBox, &linkBox })
             c->setEnabled (s != nullptr);
         removeButton.setEnabled (sys.sources.size() > 1);
         addButton.setEnabled ((int) sys.sources.size() < SpeakerSystem::kMaxSources);
@@ -1024,10 +1049,70 @@ private:
         if (! nameEditor.hasKeyboardFocus (true)) nameEditor.setText (s->name, juce::dontSendNotification);
         roleBox.setSelectedItemIndex (s->role, juce::dontSendNotification);
         channelBox.setSelectedItemIndex (s->channel, juce::dontSendNotification);
+        if (! modelEditor.hasKeyboardFocus (true)) modelEditor.setText (s->model, juce::dontSendNotification);
+        modelEditor.applyColourToAllText (pal().text);
+        countBox.setSelectedId (juce::jlimit (1, 8, s->count), juce::dontSendNotification);
+        linkBox.clear (juce::dontSendNotification);
+        linkBox.addItem ("Own settings", 1);
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+            if (i != selected && sys.sources[(size_t) i].linkTo < 0) linkBox.addItem ("Same as " + nameOf (i), i + 2);
+        linkBox.setSelectedId (s->linkTo >= 0 ? s->linkTo + 2 : 1, juce::dontSendNotification);
         outputBox.setSelectedItemIndex (juce::jlimit (0, nOuts, s->output), juce::dontSendNotification);
         offsetSlider.setValue (s->offsetMs, juce::dontSendNotification);
         clearButton.setEnabled (s->hasResponse());
         refreshMeasureButton();
+    }
+
+    // Speakers come in the usual shapes: a left / right pair shares its settings, subs, fills, delays.
+    void showAddMenu()
+    {
+        const int room = SpeakerSystem::kMaxSources - (int) sys.sources.size();
+        juce::PopupMenu m;
+        m.addItem (1, "Left / right pair (mains, sharing settings)", room >= 2);
+        m.addItem (2, "Sub", room >= 1);
+        m.addItem (3, "Front fill", room >= 1);
+        m.addItem (4, "Delay speaker", room >= 1);
+        m.addItem (5, "Centre", room >= 1);
+        m.addItem (6, "Other speaker", room >= 1);
+        juce::Component::SafePointer<SpeakersPage> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton), [safe] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto& system = safe->sys;
+            const int outs = juce::jmax (1, safe->proc.numOutputs());
+            auto nextOut = [&system, outs]
+            {
+                for (int o = 1; o <= outs; ++o)
+                {
+                    bool used = false;
+                    for (const auto& s : system.sources) used = used || s.output == o;
+                    if (! used) return o;
+                }
+                return outs;
+            };
+            auto add = [&] (const juce::String& name, SpeakerRole role, SpeakerChannel ch, int link = -1)
+            {
+                SpeakerSource s;
+                s.name = name;
+                s.role = (int) role;
+                s.channel = (int) ch;
+                s.output = nextOut();
+                s.linkTo = link;
+                system.sources.push_back (s);
+                return (int) system.sources.size() - 1;
+            };
+            switch (r)
+            {
+                case 1: { const int l = add ("Main L", SpeakerRole::Main, SpeakerChannel::Left); add ("Main R", SpeakerRole::Main, SpeakerChannel::Right, l); break; }
+                case 2: add ("Sub", SpeakerRole::Sub, SpeakerChannel::Mono); break;
+                case 3: add ("Front fill", SpeakerRole::Fill, SpeakerChannel::Mono); break;
+                case 4: add ("Delay", SpeakerRole::Delay, SpeakerChannel::Mono); break;
+                case 5: add ("Centre", SpeakerRole::Main, SpeakerChannel::Centre); break;
+                default: add ("Speaker " + juce::String (system.sources.size() + 1), SpeakerRole::Other, SpeakerChannel::Mono); break;
+            }
+            safe->select ((int) system.sources.size() - (r == 1 ? 2 : 1));
+            safe->systemChanged (true);
+        });
     }
 
     void removeSelected()
@@ -1056,6 +1141,7 @@ private:
     void systemChanged (bool responses)
     {
         if (responses) { sys.lastResult = {}; }
+        sys.syncLinks();
         refreshChoices();
         changedOutside();
     }
@@ -1128,6 +1214,7 @@ private:
         hi.invert = false;
         lo.invert = invertButton.getToggleState();
         invertButton.setButtonText (lo.invert ? "Low inverted" : "Low normal");
+        sys.syncLinks();
         graph.setXoMarker (f.freq);
         graph.rebuild();
         updateLive();
@@ -1193,6 +1280,7 @@ private:
             hi.gainDb = 0.0;
             lo.gainDb = r.gainLowDb;
         }
+        sys.syncLinks();
         refreshManual();
         graph.rebuild();
         changedOutside();
@@ -1409,7 +1497,7 @@ private:
         refreshMeasureButton();
         // next speaker that still needs measuring
         for (int k = 0; k < (int) sys.sources.size(); ++k)
-            if (! sys.sources[(size_t) k].hasResponse()) { selected = k; break; }
+            if (! sys.covered (k)) { selected = k; break; }
         status = who + " measured.";
         systemChanged (true);
         {
@@ -1448,7 +1536,7 @@ private:
     bool allMeasured() const
     {
         if (sys.sources.empty()) return false;
-        for (const auto& src : sys.sources) if (! src.hasResponse()) return false;
+        for (int i = 0; i < (int) sys.sources.size(); ++i) if (! sys.covered (i)) return false;
         return true;
     }
 
@@ -1464,7 +1552,8 @@ private:
             left = left || (src.role == (int) SpeakerRole::Main && src.channel == (int) SpeakerChannel::Left);
             right = right || (src.role == (int) SpeakerRole::Main && src.channel == (int) SpeakerChannel::Right);
         }
-        return fill || (left && right);
+        juce::ignoreUnused (left, right);   // a symmetrical left / right pair needs no delay; aligning it stays optional
+        return fill;
     }
 
     bool alignmentDone() const
@@ -1493,7 +1582,7 @@ private:
         {
             if (phase != Phase::Idle) return phaseText();
             int measured = 0;
-            for (const auto& src : sys.sources) measured += src.hasResponse() ? 1 : 0;
+            for (int i = 0; i < (int) sys.sources.size(); ++i) measured += sys.covered (i) ? 1 : 0;
             juce::String t = proc.mics.nameOf (sys.measureMic) + "  -  " + juce::String (measured) + " of " + juce::String ((int) sys.sources.size()) + " measured";
             const double w = weakestReliability();
             if (w >= 0.0) t << "  -  " << juce::roundToInt (w * 100.0) << "% reliable";
@@ -1615,7 +1704,8 @@ private:
             const double rel = i < (int) reliability.size() ? reliability[(size_t) i] : -1.0;
             juce::String v;
             juce::Colour vc = p.textDim;
-            if (! sys.sources[(size_t) i].hasResponse()) { v = "not measured"; vc = p.warn; }
+            if (! sys.sources[(size_t) i].hasResponse() && sys.master (i) != i) { v = "as " + nameOf (sys.master (i)); vc = p.textDim; }
+            else if (! sys.sources[(size_t) i].hasResponse()) { v = "not measured"; vc = p.warn; }
             else if (rel < 0.0) v = "imported (no coherence)";
             else { v = juce::String (juce::roundToInt (rel * 100.0)) + "%"; vc = rel >= 0.8 ? p.good : rel >= 0.6 ? p.warn : p.bad; }
             g.setColour (vc);
@@ -1961,7 +2051,9 @@ private:
                     << out1.paddedRight (' ', 5) << filters.substring (0, 29).paddedRight (' ', 30)
                     << dly.paddedRight (' ', 11) << pol.paddedRight (' ', 10) << gain << "\n";
             else
-                out << nameOf (i) << " (" << speakerRoleNames()[s.role] << ", " << speakerChannelNames()[s.channel] << ", output " << out1 << "): "
+                out << nameOf (i) << (s.count > 1 ? " x" + juce::String (s.count) : juce::String())
+                    << (s.model.isNotEmpty() ? " [" + s.model + "]" : juce::String())
+                    << " (" << speakerRoleNames()[s.role] << ", " << speakerChannelNames()[s.channel] << ", output " << out1 << "): "
                     << filters << "; delay " << dly << "; polarity " << pol << "; gain " << gain << "\n";
         }
 
@@ -1998,6 +2090,8 @@ private:
     SourceList list;
     juce::TextButton addButton { "Add speaker" }, removeButton { "Remove" };
     juce::TextEditor nameEditor;
+    juce::TextEditor modelEditor;
+    juce::ComboBox countBox, linkBox;
     juce::ComboBox roleBox, channelBox, outputBox, micBox, highBox, lowBox, rangeBox, typeBox, slopeBox;
     juce::TextButton measureButton { "Measure" }, importButton { "Import response..." }, clearButton { "Clear" }, relockButton { "Re-time" };
     juce::Slider offsetSlider, freqSlider, delaySlider, gainSlider;

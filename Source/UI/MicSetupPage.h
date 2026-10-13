@@ -179,8 +179,9 @@ public:
 
         const auto* linked = proc.locker.find (proc.mics.lockerId[(size_t) index]);
         lockerButton.setColour (juce::TextButton::buttonColourId, linked != nullptr ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
-        lockerButton.setTooltip (linked != nullptr ? "From the mic locker: " + linked->name + ". Its calibration is kept in sync with the locker."
-                                                   : "Mic locker: use a saved mic (name, calibration file, sound level), or save this one");
+        lockerButton.setButtonText (linked != nullptr ? "Linked" : "Locker");
+        lockerButton.setTooltip (linked != nullptr ? "From the mic locker: " + linked->label() + ". Its calibration is kept in sync with the locker."
+                                                   : "Pick one of your mics from the mic locker (name, serial, calibration files, sound level), or save this one to it");
 
         const bool calibrated = proc.settings.micSplCalibrated[index].load();
         const bool verified = proc.checks.splVerified[(size_t) index];
@@ -234,7 +235,7 @@ public:
         auto take = [&r] (int px) { auto a = r.removeFromLeft (px); r.removeFromLeft (8); return a; };
         {
             auto nameCol = take (w * 16 / 100);
-            lockerButton.setBounds (nameCol.removeFromRight (26));
+            lockerButton.setBounds (nameCol.removeFromRight (64));
             nameCol.removeFromRight (4);
             nameEditor.setBounds (nameCol);
         }
@@ -256,7 +257,7 @@ private:
     const int index;
     juce::TextEditor nameEditor;
     juce::ComboBox inputBox, positionBox, aimBox;
-    juce::TextButton lockerButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xbe")) }, calFileButton, splButton, removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
+    juce::TextButton lockerButton { "Locker" }, calFileButton, splButton, removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
     juce::Rectangle<int> meterArea;
     float peakDb = -120.0f, rmsDb = -120.0f;
 };
@@ -290,10 +291,7 @@ public:
         addMicButton.onClick = [this] { proc.addMic(); rebuildRows(); changed(); };   // rows are rebuilt; the add button is not one of them
         addMicButton.setTooltip ("Add a measurement mic (up to 8)");
         addAndMakeVisible (addMicButton);
-        lockerButton.onClick = [this] { if (onManageLocker) onManageLocker(); };
-        lockerButton.setTooltip ("The mics you own, saved with their calibration file and sound level. Use the small arrow beside "
-                                 "a mic's name to put a saved mic in that row, or to save it.");
-        addAndMakeVisible (lockerButton);
+
 
         deviceButton.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
         cards[0].addAndMakeVisible (deviceButton);
@@ -371,12 +369,16 @@ public:
         refBox.addItem ("Off", 1);
         refBox.addItem ("Generator (internal copy)", 2);
         for (int i = 0; i < nIn; ++i) refBox.addItem ("Input " + juce::String (i + 1) + " (loopback)", i + 3);
-        refBox.setSelectedItemIndex (juce::jlimit (0, nIn + 1, settings.refSource.load()), juce::dontSendNotification);
+        // a reference input this interface does not have shows as nothing chosen (the step says why)
+        if (settings.refSource.load() <= nIn + 1) refBox.setSelectedItemIndex (settings.refSource.load(), juce::dontSendNotification);
+        else refBox.setSelectedId (0, juce::dontSendNotification);
+        refBox.setTextWhenNothingSelected ("Input " + juce::String (settings.refSource.load() - 1) + " (not on this interface)");
         noCalButton.setToggleState (proc.mics.noCalibrator, juce::dontSendNotification);
         bool allNoFile = true;
         for (int m = 0; m < settings.micCount.load(); ++m) allNoFile = allNoFile && proc.mics.noCalFile[(size_t) m];
         noFilesToggle.setToggleState (allNoFile, juce::dontSendNotification);
         skipLoopButton.setToggleState (checks.loopbackSkipped, juce::dontSendNotification);
+        addMicButton.setEnabled (settings.micCount.load() < maxMics());
         for (auto& r : rows) r->refresh();
         nIns = nIn;
     }
@@ -408,8 +410,8 @@ public:
             g.drawText (note, tableHint, juce::Justification::centredLeft, true);
         }
         else
-            g.drawText (juce::String (settings.micCount.load()) + " of " + juce::String (kMaxMics) + " mics. Mics, positions and calibration belong to the venue; "
-                            "the sound level is re-checked each session.",
+            g.drawText (juce::String (settings.micCount.load()) + " of " + juce::String (maxMics()) + " mics (the inputs this interface has free). "
+                            "Mics, positions and calibration belong to the venue; the sound level is re-checked each session.",
                         tableHint, juce::Justification::centredLeft, true);
     }
 
@@ -425,8 +427,6 @@ public:
         for (auto& row : rows) row->setBounds (t.removeFromTop (40));
         auto foot = t.removeFromTop (40).withSizeKeepingCentre (t.getWidth(), 30);
         addMicButton.setBounds (foot.removeFromLeft (130));
-        foot.removeFromLeft (8);
-        lockerButton.setBounds (foot.removeFromLeft (130));
         foot.removeFromLeft (14);
         tableHint = foot;
 
@@ -463,8 +463,19 @@ private:
             addAndMakeVisible (*row);
             rows.push_back (std::move (row));
         }
-        addMicButton.setEnabled (settings.micCount.load() < kMaxMics);
+        addMicButton.setEnabled (settings.micCount.load() < maxMics());
+        addMicButton.setTooltip (settings.micCount.load() < maxMics() ? "Add a measurement mic"
+                                                                      : "Every input of this interface is in use (the reference takes one)");
         resized();
+    }
+
+    // As many mics as the interface has inputs, less the one the reference uses (up to 8).
+    int maxMics() const
+    {
+        const int nIn = juce::jmax (1, proc.numInputs());
+        const int ref = settings.refSource.load();
+        const bool refUsesInput = ref >= 2 && ref - 2 < nIn;
+        return juce::jlimit (1, kMaxMics, nIn - (refUsesInput ? 1 : 0));
     }
 
     void showLockerMenu (int m)
@@ -478,7 +489,7 @@ private:
             juce::String usedBy;
             for (int k = 0; k < settings.micCount.load(); ++k)
                 if (k != m && proc.mics.lockerId[(size_t) k] == lk[(size_t) i].id) usedBy = " (now in row " + juce::String (k + 1) + ")";
-            juce::PopupMenu::Item it (lk[(size_t) i].name + usedBy);
+            juce::PopupMenu::Item it (lk[(size_t) i].label() + usedBy);
             it.setID (100 + i);
             it.setTicked (lk[(size_t) i].id == linkedId);
             menu.addItem (it);
@@ -486,9 +497,9 @@ private:
         if (lk.empty()) menu.addItem (1, "No mics saved yet", false);
         menu.addSeparator();
         const auto* linked = proc.locker.find (linkedId);
-        menu.addItem (2, linked != nullptr ? "Save changes to \"" + linked->name + "\" now" : juce::String ("Save this mic to the locker..."));
+        menu.addItem (2, linked != nullptr ? "Save changes to \"" + linked->label() + "\" now" : juce::String ("Save this mic to the locker..."));
         if (linked != nullptr) menu.addItem (3, "Unlink from the locker");
-        menu.addItem (4, "Manage the mic locker...");
+        menu.addItem (4, "Open the mic locker");
         juce::Component::SafePointer<MicSetupPage> safe (this);
         auto* target = m < (int) rows.size() ? &rows[(size_t) m]->lockerComponent() : nullptr;
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [safe, m] (int r)
@@ -593,10 +604,14 @@ private:
         // 2 reference
         {
             const int ref = settings.refSource.load();
+            const int nIn = juce::jmax (1, proc.numInputs());
             bool clash = false;
             for (int m = 0; m < count; ++m) clash = clash || settings.micInput[m].load() == ref - 2;
             if (ref == 0) cards[1].set (StepState::Todo, "Choose a reference. Without one, only the RTA and sound level work.");
-            else if (clash) cards[1].set (StepState::Warn, "A mic is on the reference input.");
+            else if (ref >= 2 && ref - 2 >= nIn)
+                cards[1].set (StepState::Warn, "Input " + juce::String (ref - 1) + " is not on this interface (it has " + juce::String (nIn)
+                                                   + (nIn == 1 ? " input" : " inputs") + "). Choose another reference.");
+            else if (clash) cards[1].set (StepState::Warn, "A mic is on the reference input (Input " + juce::String (ref - 1) + "): use separate inputs.");
             else cards[1].set (StepState::Done, ref == 1 ? "Generator copy (works only with the generator)." : "Input " + juce::String (ref - 1) + ".");
         }
 
@@ -788,7 +803,7 @@ private:
     juce::String note;
     juce::uint32 noteUntil = 0;
 
-    juce::TextButton addMicButton { "+ Add mic" }, lockerButton { "Mic locker..." }, deviceButton { "Audio device..." }, loopButton { "Run check" },
+    juce::TextButton addMicButton { "+ Add mic" }, deviceButton { "Audio device..." }, loopButton { "Run check" },
         noiseButton { "Measure (5 seconds)" };
     juce::ToggleButton noFilesToggle { "No calibration files" }, noCalButton { "No calibrator (dBFS)" }, skipLoopButton { "Skip" };
     juce::ComboBox refBox;

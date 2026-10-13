@@ -481,6 +481,10 @@ public:
         if (snap.wfFrame == lastFrame || ! settings.running.load()) { repaint(); return; }
         lastFrame = snap.wfFrame;
         if ((int) snap.wfLine.size() != bands) reset ((int) snap.wfLine.size());
+        // nothing analysed yet (start-up): wait for a real spectrum
+        float loudest = -200.0f;
+        for (float v : snap.wfLine) loudest = juce::jmax (loudest, v);
+        if (loudest < -190.0f) return;
         rows[(size_t) head] = snap.wfLine;
         head = (head + 1) % kRows;
         filled = juce::jmin (kRows, filled + 1);
@@ -551,7 +555,10 @@ public:
             if (age > span) break;
             const float y0 = plot.getY() + age / span * plot.getHeight();
             const int idxOlder = (idx - 1 + kRows) % kRows;
-            const float ageOlder = k + 1 < filled ? (float) (now - stamps[(size_t) idxOlder]) / 1000.0f : age + 0.05f;
+            // a row covers the time until the next one, but never more than a frame or two: where nothing was
+            // recorded (graphs frozen, another page shown, start-up) the waterfall stays empty instead of streaking
+            const float ageOlder = juce::jmin (k + 1 < filled ? (float) (now - stamps[(size_t) idxOlder]) / 1000.0f : age + 0.4f,
+                                               age + kMaxRowSeconds);
             const float y1 = juce::jmin (plot.getBottom(), plot.getY() + juce::jmin (span, ageOlder) / span * plot.getHeight());
             const float top0 = juce::jmax (prevY, y0);
             if (y1 - top0 < 0.25f) continue;
@@ -598,6 +605,7 @@ public:
 
 private:
     static constexpr int kRows = 2400;
+    static constexpr float kMaxRowSeconds = 0.6f;
 
     void reset (int n)
     {

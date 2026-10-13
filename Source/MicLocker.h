@@ -17,11 +17,29 @@ namespace la
 struct LockerMic
 {
     juce::String id, name, notes;
+    juce::String model, serial;    // e.g. "UMIK-1", "7012345"
     MicCalSet cals;                // 0 and 90 degree calibration files (either may be missing)
     bool noCalFile = false;        // this mic has no file (treated as flat)
     bool hasSpl = false;           // sound level calibrated at least once
     float splOffset = 120.0f;      // dB SPL at 0 dBFS, with the interface gain used then
     juce::String splDate, savedOn;
+
+    // What to call it: the name given, else model and serial number.
+    juce::String label() const
+    {
+        if (name.isNotEmpty()) return name;
+        juce::String s = model;
+        if (serial.isNotEmpty()) s << (s.isNotEmpty() ? " #" : "#") << serial;
+        return s.isNotEmpty() ? s : juce::String ("Unnamed mic");
+    }
+
+    // Model and serial for tags and reports ("UMIK-1 #7012345"), empty when neither is set.
+    juce::String modelSerial() const
+    {
+        juce::String s = model;
+        if (serial.isNotEmpty()) s << (s.isNotEmpty() ? " #" : "#") << serial;
+        return s;
+    }
 
     juce::String summary() const
     {
@@ -70,6 +88,8 @@ public:
             if (m.id.isEmpty()) continue;
             m.name = e->getStringAttribute ("name");
             m.notes = e->getStringAttribute ("notes");
+            m.model = e->getStringAttribute ("model");
+            m.serial = e->getStringAttribute ("serial");
             m.noCalFile = e->getBoolAttribute ("noCalFile");
             m.hasSpl = e->getBoolAttribute ("hasSpl");
             m.splOffset = (float) e->getDoubleAttribute ("splOffset", 120.0);
@@ -97,6 +117,8 @@ public:
             e->setAttribute ("id", m.id);
             e->setAttribute ("name", m.name);
             e->setAttribute ("notes", m.notes);
+            e->setAttribute ("model", m.model);
+            e->setAttribute ("serial", m.serial);
             e->setAttribute ("noCalFile", m.noCalFile);
             e->setAttribute ("hasSpl", m.hasSpl);
             e->setAttribute ("splOffset", m.splOffset);

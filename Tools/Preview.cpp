@@ -8,6 +8,7 @@
 #include "../Source/PluginEditor.h"
 #include "../Source/UI/SettingsPanel.h"
 #include "../Source/UI/CalibrationPanel.h"
+#include "../Source/Report/TuningReport.h"
 
 namespace
 {
@@ -73,8 +74,9 @@ public:
                 // while the Speakers page measures, only the speaker on the generator's output plays
                 const int out = proc.settings.genOn.load() ? proc.settings.genOutput.load() : 0;
                 if (out != lastOut) { std::printf ("  sim: output %d at tick %d written=%llu\n", out, ticks, (unsigned long long) proc.analyzer.samplesWritten()); lastOut = out; }
-                if (out == 1 || out == 3) { for (auto& f : top) y = f (y); if (out == 3) y *= 0.5; }
-                else if (out == 2) { for (auto& f : sub) y = f (y); y *= 2.0; }
+                // outputs: 1 / 2 main left / right, 3 sub, 4 front fill
+                if (out == 1 || out == 2 || out == 4) { for (auto& f : top) y = f (y); if (out == 4) y *= 0.5; }
+                else if (out == 3) { for (auto& f : sub) y = f (y); y *= 2.0; }
                 else for (auto& f : system) y = f (y);
                 line[wp % L] = (float) y;
                 const int inputs[] = { 0, 2, 3 };
@@ -84,8 +86,8 @@ public:
                     // the sub stands 2 ms further from the mics than the tops
                     // the sub stands 2 ms further away, the front fill (output 3) 3 ms closer
                     const int go = proc.settings.genOn.load() ? proc.settings.genOutput.load() : 0;
-                    const size_t extra = go == 2 ? 96 : 0;
-                    const size_t closer = go == 3 ? 144 : 0;
+                    const size_t extra = go == 3 ? 96 : 0;
+                    const size_t closer = go == 4 ? 144 : 0;
                     double v = pth.gain * line[(wp - (size_t) pth.delay - extra + closer + L) % L] + pth.gain * pth.refl * line[(wp - (size_t) (pth.delay + pth.reflDelay) - extra + closer + L) % L];
                     for (auto& f : pth.filters) v = f (v);
                     buf.setSample (inputs[m], i, (float) (v + nd (rng) * 0.01));
@@ -177,19 +179,19 @@ public:
             std::printf ("status: %s (%d ticks, analysis behind %.1f s)\n", page.statusText().toRawUTF8(), ticks - stageTick, (double) (proc.analyzer.samplesWritten() - proc.analyzer.samplesAnalysed()) / 48000.0);
             std::printf ("measure Main: reliable=%.2f hf=%.1f response=%d points=%d arrival=%d %.3f ms locked=%.3f\n", la::xo::usableReliability (s.response, 0.4), s.response.dbAt (8000.0), (int) s.hasResponse(), (int) s.response.freq.size(),
                          (int) s.hasArrival, s.arrivalMs, proc.system.lockedDelayMs);
-            page.measure (1);
+            page.measure (2);
             stage = 2;
             stageTick = ticks;
         }
         else if (stage == 1 && ticks == stageTick + 60) shot ("speakers-measuring");
         else if (stage == 2 && (! page.busy() || timeout))
         {
-            const auto& s = proc.system.sources[1];
+            const auto& s = proc.system.sources[2];
             std::printf ("status: %s (%d ticks, analysis behind %.1f s)\n", page.statusText().toRawUTF8(), ticks - stageTick, (double) (proc.analyzer.samplesWritten() - proc.analyzer.samplesAnalysed()) / 48000.0);
             std::printf ("measure Sub: response=%d points=%d arrival=%d %.3f ms\n", (int) s.hasResponse(), (int) s.response.freq.size(), (int) s.hasArrival, s.arrivalMs);
             for (double f : { 30.0, 60.0, 120.0, 250.0, 1000.0, 5000.0 })
                 std::printf ("  %6.0f Hz  main %6.1f dB %6.0f deg   sub %6.1f dB %6.0f deg\n", f, proc.system.sources[0].response.dbAt (f), proc.system.sources[0].response.phaseAt (f),
-                             proc.system.sources[1].response.dbAt (f), proc.system.sources[1].response.phaseAt (f));
+                             proc.system.sources[2].response.dbAt (f), proc.system.sources[2].response.phaseAt (f));
             page.findCrossover();
             stage = 3;
             stageTick = ticks;
@@ -210,9 +212,8 @@ public:
             la::SpeakerSource fill;
             fill.name = "Front fill";
             fill.role = (int) la::SpeakerRole::Fill;
-            fill.output = 3;
+            fill.output = 4;
             proc.system.sources.push_back (fill);
-            proc.system.sources[0].channel = (int) la::SpeakerChannel::Stereo;
             page.refreshChoices();
             page.newAlignment();
             page.measureAlignment (0);
@@ -226,7 +227,8 @@ public:
                          page.statusText().toRawUTF8(), a.ref, a.align, (int) a.measured(), a.refArrivalMs, a.alignArrivalMs, (double) a.refLevelDb,
                          (double) a.alignLevelDb, a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs));
             page.applyAlignmentNow();
-            std::printf ("fill delay applied: %.3f ms\n", proc.system.sources[2].proc.delayMs);
+            std::printf ("fill delay applied: %.3f ms   main R follows: hp %d@%.1f delay %.2f\n", proc.system.sources[3].proc.delayMs,
+                         proc.system.sources[1].proc.hp.slope, proc.system.sources[1].proc.hp.freq, proc.system.sources[1].proc.delayMs);
             stage = 6;
             stageTick = ticks;
         }
@@ -260,18 +262,48 @@ public:
         {
             shot ("plan");
             save (editor->planPageForPreview().getCanvas().exportImage (1600), "plan-export");
+            {
+                proc.plan.placeMissing (4, proc.settings.micCount.load());
+                la::Trace t;
+                t.name = "Before tuning (FOH)";
+                t.created = "12 Oct 2026 19:40";
+                for (double f = 20.0; f <= 20000.0; f *= 1.05) { t.data.freq.push_back (f); t.data.db.push_back (3.0 * std::sin (std::log (f) * 2.0) - (f > 8000.0 ? 4.0 : 0.0)); }
+                proc.traces.add (t);
+                proc.settings.targetCurve = 4;
+                const auto f = dir.getChildFile ("report.pdf");
+                const auto err = la::report::writeTuningReport (proc, f, editor->planPageForPreview().getCanvas().exportImage (1800), "J. Ulicki Audio");
+                std::printf ("report: err='%s' size=%d\n", err.toRawUTF8(), (int) f.getSize());
+            }
+            {
+                la::LockerMic m;
+                m.id = "preview";
+                m.model = "UMIK-1";
+                m.serial = "7012345";
+                m.cals.name[0] = "7012345.txt";
+                m.cals.table[0].freq = { 20, 1000, 20000 };
+                m.cals.table[0].db = { 1, 0, -1 };
+                m.hasSpl = true;
+                m.splOffset = 111.25f;
+                m.splDate = "12 Oct 2026";
+                proc.locker.mics.push_back (m);
+                editor->showPage (6);
+                shot ("locker");
+                proc.locker.load();
+                editor->showPage (0);
+                shot ("home");
+            }
         }
         else if (stage == 4 && ticks == stageTick + 80)
         {
             // the speaker system survives a venue save / open
             const auto f = dir.getChildFile ("speakers.lavenue");
             proc.saveProject (f);
-            const auto before = proc.system.sources[1].response.freq.size();
+            const auto before = proc.system.sources[2].response.freq.size();
             proc.newProject();
             proc.openProject (f);
             std::printf ("venue speakers: sources=%d subPoints=%d (was %d) lp=%d@%.1f locked=%d alignments=%d measured=%d fillCh=%d\n", (int) proc.system.sources.size(),
-                         (int) proc.system.sources[1].response.freq.size(), (int) before, proc.system.sources[1].proc.lp.slope,
-                         proc.system.sources[1].proc.lp.freq, (int) proc.system.timingLocked, (int) proc.system.alignments.size(),
+                         (int) proc.system.sources[2].response.freq.size(), (int) before, proc.system.sources[2].proc.lp.slope,
+                         proc.system.sources[2].proc.lp.freq, (int) proc.system.timingLocked, (int) proc.system.alignments.size(),
                          proc.system.alignments.empty() ? -1 : (int) proc.system.alignments[0].measured(), proc.system.sources[0].channel);
             f.deleteFile();
             lockerAndUpdateChecks();

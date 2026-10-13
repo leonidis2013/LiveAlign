@@ -76,6 +76,8 @@ public:
     void assignLockerMic (int mic, const juce::String& lockerId);
     void unlinkLockerMic (int mic) { mics.lockerId[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)].clear(); }
     bool syncLocker();          // linked mics' calibrations changed: update the locker (true when it was saved)
+    void lockerEntryChanged (const juce::String& lockerId);   // edited on the Mic locker page: update the rows using it
+    juce::String micModelSerial (int mic) const;              // from the locker, for tags and reports
     la::MicLocker locker;
     la::UpdateChecker updates;
 

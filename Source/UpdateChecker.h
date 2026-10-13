@@ -25,6 +25,27 @@ struct UpdateInfo
     juce::Time checkedAt;
 };
 
+// Small preferences of this computer (not venue data), in the same file as the update settings.
+namespace UserPrefs
+{
+inline juce::File file() { return TraceStore::userFolder().getChildFile ("Preferences.xml"); }
+
+inline juce::String get (const juce::String& key, const juce::String& fallback = {})
+{
+    if (auto x = juce::XmlDocument::parse (file())) return x->getStringAttribute (key, fallback);
+    return fallback;
+}
+
+inline void set (const juce::String& key, const juce::String& value)
+{
+    juce::XmlElement x ("LiveAlignPreferences");
+    if (auto old = juce::XmlDocument::parse (file())) x = *old;
+    x.setAttribute (key, value);
+    file().getParentDirectory().createDirectory();
+    x.writeTo (file());
+}
+} // namespace UserPrefs
+
 class UpdateChecker
 {
 public:

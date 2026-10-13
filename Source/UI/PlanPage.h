@@ -129,12 +129,13 @@ public:
 
     juce::Image exportImage (int width = 2000) const
     {
-        const auto s = sheet();
+        auto s = sheet();
+        if (s.getWidth() < 100.0f || s.getHeight() < 100.0f) s = { 0.0f, 0.0f, 1000.0f, 640.0f };   // not shown yet
         const int height = (int) ((float) width * s.getHeight() / juce::jmax (1.0f, s.getWidth()));
         juce::Image img (juce::Image::ARGB, width, height, true);
         juce::Graphics g (img);
         // draw at screen size, scaled up, so text and symbols keep their proportions
-        const float scale = (float) width / juce::jmax (400.0f, sheet().getWidth());
+        const float scale = (float) width / juce::jmax (400.0f, s.getWidth());
         g.addTransform (juce::AffineTransform::scale (scale));
         const auto saved = drawArea;
         render (g, juce::Rectangle<float> (0.0f, 0.0f, (float) width / scale, (float) height / scale), true);
@@ -218,6 +219,23 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        // a mic dropped on a named position takes that position's name (and sits on it)
+        if (drag == Drag::Move && selType_ == Sel::Mic)
+        {
+            auto& s = plan.mics[(size_t) selIndex_];
+            const auto c = toPx (s.x, s.y);
+            for (const auto& it : plan.items)
+                if (it.kind == PlanItem::Marker && toPx (it.x, it.y).getDistanceFrom (c) < 18.0f)
+                {
+                    proc.mics.position[(size_t) selIndex_] = it.text;
+                    if (! proc.positions.contains (it.text)) proc.positions.add (it.text);
+                    s.x = it.x;
+                    s.y = it.y;
+                    repaint();
+                    if (onSelectionChanged) onSelectionChanged();
+                    break;
+                }
+        }
         if (drag != Drag::None && onChanged) onChanged();
         drag = Drag::None;
     }
@@ -361,7 +379,9 @@ private:
         }
 
         juce::String l1 = src.name.isNotEmpty() ? src.name : "Speaker " + juce::String (i + 1);
+        if (src.count > 1) l1 << "  x" << src.count;
         juce::String l2 = speakerChannelShort (src.channel) + "  -  " + (src.output == 0 ? juce::String ("all outs") : "out " + juce::String (src.output));
+        if (src.model.isNotEmpty()) l2 = src.model + "  -  " + l2;
         if (src.proc.delayMs > 0.005) l2 << "  -  " << juce::String (src.proc.delayMs, 2) << " ms";
         drawTag (g, c, l1, l2, col, ink, s.angle);
 
@@ -401,7 +421,10 @@ private:
 
         juce::String l1 = proc.mics.nameOf (m);
         if (proc.mics.position[(size_t) m].isNotEmpty()) l1 << "  -  " << proc.mics.position[(size_t) m];
-        juce::String l2 = "In " + juce::String (proc.settings.micInput[m].load() + 1) + "  -  " + (up ? "pointing up" : "at the speaker");
+        juce::String l2 = "In " + juce::String (proc.settings.micInput[m].load() + 1);
+        const auto ms = proc.micModelSerial (m);
+        if (ms.isNotEmpty() && ms != proc.mics.nameOf (m)) l2 << "  -  " << ms;
+        l2 << "  -  " << (up ? "pointing up" : "at the speaker");
         if (proc.calibrations (m).any()) l2 << " (" << calAngleName (proc.activeCalAngle (m)) << " cal)";
         drawTag (g, c, l1, l2, col, ink, up ? -90.0f : s.angle);
 
@@ -439,7 +462,7 @@ private:
 class PlanPage : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void()> onChanged, onExport;
+    std::function<void()> onChanged, onExport, onReport;
     std::function<void (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)>)> askText;
 
     explicit PlanPage (LiveAlignProcessor& p) : proc (p), canvas (p)
@@ -459,6 +482,8 @@ public:
         setup (rotLeftButton, "Turn 15 degrees (key: [ )");
         setup (rotRightButton, "Turn 15 degrees (key: ] )");
         setup (resetButton, "Put any speakers and mics that are missing back on the drawing");
+        setup (reportButton, "A PDF of this session's tuning: plan, speakers and processor settings, mics with serials, checks and measurements");
+        reportButton.onClick = [this] { if (onReport) onReport(); };
 
         addAreaButton.onClick = [this]
         {
@@ -510,6 +535,18 @@ public:
         rotRightButton.onClick = [this] { turn (15.0f); };
         resetButton.onClick = [this] { proc.plan.placeMissing (canvas.numSpeakers(), canvas.numMics()); changed(); };
 
+        positionBox.setEditableText (true);
+        positionBox.setTextWhenNothingSelected ("Position");
+        positionBox.setTooltip ("Where this mic is (the same as Position on Mic setup). Dropping a mic on a named position also sets it.");
+        positionBox.onChange = [this]
+        {
+            if (canvas.selType() != PlanCanvas::Sel::Mic) return;
+            const auto t = positionBox.getText().trim();
+            proc.mics.position[(size_t) canvas.selIndex()] = t;
+            if (t.isNotEmpty() && ! proc.positions.contains (t)) proc.positions.add (t);
+            changed();
+        };
+        addAndMakeVisible (positionBox);
         aimBox.addItem (calAngleName (Cal0) + "  at the speaker", 1);
         aimBox.addItem (calAngleName (Cal90) + "  pointing up", 2);
         aimBox.setTooltip ("How this mic is aimed (the same setting as Aim on Mic setup)");
@@ -582,13 +619,16 @@ public:
         }
         c.removeFromTop (6);
         aimBox.setBounds (c.removeFromTop (30));
+        c.removeFromTop (6);
+        positionBox.setBounds (c.removeFromTop (30));
         const auto itemRow = rotLeftButton.getBounds().getUnion (rotRightButton.getBounds());
         renameButton.setBounds (itemRow.withWidth ((itemRow.getWidth() - 8) / 2));
         deleteButton.setBounds (itemRow.withTrimmedLeft ((itemRow.getWidth() + 8) / 2));
 
         auto bottom = side.reduced (14, 14).removeFromBottom (30);
-        exportButton.setBounds (bottom);
-        resetButton.setBounds (bottom.translated (0, -38));
+        reportButton.setBounds (bottom);
+        exportButton.setBounds (bottom.translated (0, -38));
+        resetButton.setBounds (bottom.translated (0, -76));
     }
 
 private:
@@ -651,6 +691,13 @@ private:
         rotLeftButton.setVisible (sym);
         rotRightButton.setVisible (sym);
         aimBox.setVisible (t == PlanCanvas::Sel::Mic);
+        positionBox.setVisible (t == PlanCanvas::Sel::Mic);
+        if (t == PlanCanvas::Sel::Mic && ! positionBox.hasKeyboardFocus (true))
+        {
+            positionBox.clear (juce::dontSendNotification);
+            for (int k = 0; k < proc.positions.size(); ++k) positionBox.addItem (proc.positions[k], k + 1);
+            positionBox.setText (proc.mics.position[(size_t) i], juce::dontSendNotification);
+        }
         renameButton.setVisible (item);
         deleteButton.setVisible (item);
         if (t == PlanCanvas::Sel::Mic) aimBox.setSelectedItemIndex (proc.mics.aim[(size_t) i], juce::dontSendNotification);
@@ -674,10 +721,10 @@ private:
     LiveAlignProcessor& proc;
     PlanCanvas canvas;
     juce::TextButton addAreaButton { "Area..." }, addMarkerButton { "Mic position..." }, addNoteButton { "Note..." };
-    juce::TextButton exportButton { "Save as picture..." }, resetButton { "Place missing speakers and mics" };
+    juce::TextButton reportButton { "Tuning report (PDF)..." }, exportButton { "Save as picture..." }, resetButton { "Place missing speakers and mics" };
     juce::TextButton renameButton { "Rename" }, deleteButton { "Remove" };
     juce::TextButton rotLeftButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x9f\xb2  Turn left")) }, rotRightButton { juce::String (juce::CharPointer_UTF8 ("Turn right  \xe2\x9f\xb3")) };
-    juce::ComboBox aimBox;
+    juce::ComboBox aimBox, positionBox;
     juce::Rectangle<int> side, helpArea, addLabel, selLabel, selArea;
     juce::String selectionText;
     int lastSig = -1;

@@ -31,7 +31,8 @@ public:
         refBox.addItem ("Off", 1);
         refBox.addItem ("Generator (internal copy)", 2);
         for (int i = 0; i < nIn; ++i) refBox.addItem ("Input " + juce::String (i + 1) + " (loopback)", i + 3);
-        refBox.setSelectedItemIndex (juce::jlimit (0, nIn + 1, settings.refSource.load()), juce::dontSendNotification);
+        if (settings.refSource.load() <= nIn + 1) refBox.setSelectedItemIndex (settings.refSource.load(), juce::dontSendNotification);
+        refBox.setTextWhenNothingSelected ("Input " + juce::String (settings.refSource.load() - 1) + " (not on this interface)");
         refBox.setTooltip ("What the mic is compared against. A loopback cable from the output that feeds the PA is the most "
                            "accurate. The internal generator copy works without a cable but only with the generator.");
         refBox.onChange = [this] { settings.refSource = refBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
@@ -163,6 +164,14 @@ public:
         unitBox.setSelectedItemIndex (settings.distanceUnit.load(), juce::dontSendNotification);
         unitBox.onChange = [this] { settings.distanceUnit = unitBox.getSelectedItemIndex(); };
         row (1, "Distance unit", unitBox);
+
+        header (1, "Reports");
+        authorEditor.setFont (font (13.0f));
+        authorEditor.setText (UserPrefs::get ("reportAuthor"), juce::dontSendNotification);
+        authorEditor.setTextToShowWhenEmpty ("Your name or company", pal().textFaint);
+        authorEditor.setTooltip ("Shown as \"Prepared by\" on tuning reports");
+        authorEditor.onTextChange = [this] { UserPrefs::set ("reportAuthor", authorEditor.getText().trim()); };
+        row (1, "Prepared by", authorEditor);
 
         header (0, "Updates");
         checkButton.onClick = [this] { updates.check(); refreshUpdate(); };
@@ -304,6 +313,7 @@ private:
     Settings& settings;
     UpdateChecker& updates;
     juce::TextButton checkButton { "Check for updates" };
+    juce::TextEditor authorEditor;
     juce::ToggleButton autoUpdateToggle { "Check when LiveAlign starts" };
     juce::String updateText;
     int updateState = 0;

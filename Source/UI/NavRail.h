@@ -9,16 +9,18 @@
 
 namespace la::ui
 {
-enum class Page { Home = 0, Mics = 1, Speakers = 2, Room = 3, Monitor = 4, Plan = 5 };
-constexpr int kNumPages = 6;
-// Order in the navigation pane: the venue plan sits under Home.
-constexpr int kPageOrder[kNumPages] = { 0, 5, 1, 2, 3, 4 };
+enum class Page { Home = 0, Mics = 1, Speakers = 2, Room = 3, Monitor = 4, Plan = 5, Locker = 6 };
+constexpr int kNumPages = 7;
+// The navigation pane, top to bottom. Negative entries are section headings (-1 Configuration, -2 Tuning,
+// -3 Monitoring). The mic locker is opened from its own button at the bottom.
+constexpr int kNavOrder[] = { 0, -1, 1, 2, -2, 3, 5, -3, 4 };
+inline const char* navHeading (int h) { static const char* n[] = { "CONFIGURATION", "TUNING", "MONITORING" }; return n[juce::jlimit (0, 2, -h - 1)]; }
 
 enum class StepStatus { Ready, InProgress, Attention, NotStarted, Later, None };
 
 inline const char* pageName (int i)
 {
-    static const char* names[] = { "Home", "Mic setup", "Speakers", "Room tuning", "Monitoring", "Venue plan" };
+    static const char* names[] = { "Home", "Mic setup", "Speakers", "Room tuning", "Monitoring", "Venue plan", "Mic locker" };
     return names[juce::jlimit (0, kNumPages - 1, i)];
 }
 
@@ -123,23 +125,27 @@ class NavRail : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     std::function<void (int)> onSelect;
-    std::function<void()> onSettings, onFullScreen, onVenue, onUpdate;
+    std::function<void()> onSettings, onLocker, onVenue, onUpdate;
 
     NavRail()
     {
         settingsButton.onClick = [this] { if (onSettings) onSettings(); };
-        fullScreenButton.onClick = [this] { if (onFullScreen) onFullScreen(); };
+        lockerButton.onClick = [this] { if (onLocker) onLocker(); };
         settingsButton.setTooltip ("Inputs, analysis, screen layout, units and theme");
-        fullScreenButton.setTooltip ("Fill the whole screen (key: F, Esc to leave)");
+        lockerButton.setTooltip ("The measurement mics you own: model, serial number, calibration files and sound level");
         addAndMakeVisible (settingsButton);
-        addChildComponent (fullScreenButton);
+        addAndMakeVisible (lockerButton);
         updateButton.onClick = [this] { if (onUpdate) onUpdate(); };
         addChildComponent (updateButton);
     }
 
     void setCurrent (int page) { if (page != current) { current = page; repaint(); } }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; repaint(); } }
-    void setFullScreenAvailable (bool a) { fullScreenButton.setVisible (a); resized(); }
+    void setLockerAvailable (bool a) { lockerButton.setVisible (a); resized(); }
+    void setLockerActive (bool a)
+    {
+        lockerButton.setColour (juce::TextButton::buttonColourId, a ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
+    }
     // Shown above the venue when a newer version is out.
     void setUpdate (const juce::String& version)
     {
@@ -151,7 +157,6 @@ public:
         resized();
         repaint();
     }
-    void setFullScreenText (const juce::String& t) { fullScreenButton.setButtonText (t); }
 
     void setStatus (int page, StepStatus s, const juce::String& text, float fraction = 0.0f)
     {
@@ -183,6 +188,23 @@ public:
         g.setColour (p.textFaint);
         g.setFont (font (10.5f));
         g.drawText ("v" + juce::String (JucePlugin_VersionString), juce::Rectangle<int> (15, 32, getWidth() - 20, 14), juce::Justification::centredLeft);
+
+        // section headings
+        {
+            int y = 58;
+            for (int k : kNavOrder)
+            {
+                if (k >= 0) { if (visible[k]) y += 48; continue; }
+                if (! headingVisible (k)) continue;
+                g.setColour (p.textFaint);
+                g.setFont (font (10.0f, true));
+                g.drawText (navHeading (k), juce::Rectangle<int> (16, y + 6, getWidth() - 28, 16), juce::Justification::centredLeft);
+                g.setColour (p.border);
+                g.drawHorizontalLine (y + 14, 16.0f + (float) juce::GlyphArrangement::getStringWidthInt (font (10.0f, true), navHeading (k)) + 8.0f,
+                                      (float) getWidth() - 14.0f);
+                y += 26;
+            }
+        }
 
         for (int i = 0; i < kNumPages; ++i)
         {
@@ -249,14 +271,14 @@ public:
     void resized() override
     {
         auto r = getLocalBounds().reduced (10, 10);
-        auto bottom = r.removeFromBottom (fullScreenButton.isVisible() ? 64 : 30);
+        auto bottom = r.removeFromBottom (lockerButton.isVisible() ? 64 : 30);
         settingsButton.setBounds (bottom.removeFromBottom (30));
-        if (fullScreenButton.isVisible())
+        if (lockerButton.isVisible())
         {
             bottom.removeFromBottom (4);
-            fullScreenButton.setBounds (bottom.removeFromBottom (30));
+            lockerButton.setBounds (bottom.removeFromBottom (30));
         }
-        updateButton.setBounds (settingsButton.getX(), settingsButton.getY() - (fullScreenButton.isVisible() ? 34 : 0) - 34,
+        updateButton.setBounds (settingsButton.getX(), settingsButton.getY() - (lockerButton.isVisible() ? 34 : 0) - 34,
                                 settingsButton.getWidth(), 30);
     }
 
@@ -280,14 +302,19 @@ private:
 
     juce::Rectangle<int> itemBounds (int i) const
     {
-        int slot = 0;
-        for (int o = 0; o < kNumPages && kPageOrder[o] != i; ++o) slot += visible[kPageOrder[o]] ? 1 : 0;
-        return { 6, 58 + slot * 48, getWidth() - 12, 44 };
+        int y = 58;
+        for (int k : kNavOrder)
+        {
+            if (k == i) return { 6, y, getWidth() - 12, 44 };
+            if (k < 0) { if (headingVisible (k)) y += 26; }
+            else if (visible[k]) y += 48;
+        }
+        return {};
     }
 
     juce::Rectangle<int> venueBounds() const
     {
-        const int top = settingsButton.getY() - (fullScreenButton.isVisible() ? 34 : 0) - (updateButton.isVisible() ? 34 : 0) - 78;
+        const int top = settingsButton.getY() - (lockerButton.isVisible() ? 34 : 0) - (updateButton.isVisible() ? 34 : 0) - 78;
         return { 6, top, getWidth() - 12, 72 };
     }
 
@@ -299,12 +326,24 @@ private:
     }
 
     Entry entries[kNumPages];
-    bool visible[kNumPages] { true, true, true, true, true, true };
+    bool visible[kNumPages] { true, true, true, true, true, true, false };
+
+    // A heading shows when any page under it does.
+    bool headingVisible (int h) const
+    {
+        bool under = false, seen = false;
+        for (int k : kNavOrder)
+        {
+            if (k < 0) { if (seen) break; seen = k == h; continue; }
+            if (seen && visible[k]) under = true;
+        }
+        return under;
+    }
     int current = 0, hover = -1;
     juce::Point<int> hoverPoint;
     juce::String venueName, sessionName;
     bool dirty = false;
-    juce::TextButton settingsButton { "SETTINGS" }, fullScreenButton { "FULL SCREEN" }, updateButton;
+    juce::TextButton settingsButton { "SETTINGS" }, lockerButton { "MIC LOCKER" }, updateButton;
 public:
     static constexpr int kWidth = 184;
 };

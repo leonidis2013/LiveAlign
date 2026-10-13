@@ -266,6 +266,7 @@ juce::String LiveAlignProcessor::saveMicToLocker (int mic, const juce::String& n
         entry = &locker.mics.back();
     }
     entry->name = name.isNotEmpty() ? name : mics.nameOf (mic);
+    if (entry->name == entry->modelSerial()) entry->name.clear();
     entry->cals = cals[(size_t) mic];
     entry->noCalFile = mics.noCalFile[(size_t) mic];
     entry->hasSpl = settings.micSplCalibrated[mic].load();
@@ -288,7 +289,7 @@ void LiveAlignProcessor::assignLockerMic (int mic, const juce::String& lockerId)
     // a mic can only be in one slot
     for (int m = 0; m < la::kMaxMics; ++m) if (m != mic && mics.lockerId[(size_t) m] == lockerId) mics.lockerId[(size_t) m].clear();
     mics.lockerId[(size_t) mic] = lockerId;
-    mics.name[(size_t) mic] = e->name;
+    mics.name[(size_t) mic] = e->label();
     cals[(size_t) mic] = e->cals;
     applyCalibration (mic);
     mics.noCalFile[(size_t) mic] = ! e->cals.any() && e->noCalFile;
@@ -296,6 +297,27 @@ void LiveAlignProcessor::assignLockerMic (int mic, const juce::String& lockerId)
     if (e->hasSpl) settings.micSplOffset[mic] = e->splOffset;
     checks.splVerified[(size_t) mic] = false;
     settings.requestResetAverages = true;
+}
+
+void LiveAlignProcessor::lockerEntryChanged (const juce::String& lockerId)
+{
+    const auto* e = locker.find (lockerId);
+    if (e == nullptr) return;
+    for (int m = 0; m < la::kMaxMics; ++m)
+    {
+        if (mics.lockerId[(size_t) m] != lockerId) continue;
+        mics.name[(size_t) m] = e->label();
+        cals[(size_t) m] = e->cals;
+        mics.noCalFile[(size_t) m] = ! e->cals.any() && e->noCalFile;
+        if (e->hasSpl) { settings.micSplCalibrated[m] = true; settings.micSplOffset[m] = e->splOffset; }
+        applyCalibration (m);
+    }
+}
+
+juce::String LiveAlignProcessor::micModelSerial (int mic) const
+{
+    const auto* e = locker.find (mics.lockerId[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)]);
+    return e != nullptr ? e->modelSerial() : juce::String();
 }
 
 bool LiveAlignProcessor::syncLocker()
@@ -322,7 +344,7 @@ bool LiveAlignProcessor::syncLocker()
             e->splDate = today();
             changed = true;
         }
-        if (mics.name[(size_t) m].isNotEmpty() && mics.name[(size_t) m] != e->name) { e->name = mics.name[(size_t) m]; changed = true; }
+        if (mics.name[(size_t) m].isNotEmpty() && mics.name[(size_t) m] != e->label()) { e->name = mics.name[(size_t) m]; changed = true; }
     }
     if (changed) locker.save();
     return changed;
@@ -632,7 +654,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
     {
         if (! x->hasTagName ("LiveAlign")) return;
         settings.theme = juce::jlimit (0, 1, x->getIntAttribute ("theme", 0));
-        settings.currentTab = juce::jlimit (0, 5, x->getIntAttribute ("currentTab", 0));
+        settings.currentTab = juce::jlimit (0, 6, x->getIntAttribute ("currentTab", 0));
         if (const auto* project = x->getChildByName ("LiveAlignProject"))
         {
             loadProjectXml (*project);

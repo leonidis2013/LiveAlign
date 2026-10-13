@@ -20,7 +20,7 @@ struct StepInfo
 class HomePage : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void()> onNewVenue, onOpenVenue, onSave, onSaveAs, onNewSession, onChanged;
+    std::function<void()> onNewVenue, onOpenVenue, onSave, onSaveAs, onNewSession, onChanged, onReport;
     std::function<void (int)> onGoTo, onRenameSession, onDeleteSession;
 
     explicit HomePage (LiveAlignProcessor& p) : proc (p)
@@ -42,6 +42,8 @@ public:
         setupButton (openButton, [this] { if (onOpenVenue) onOpenVenue(); }, "Open a venue file");
         setupButton (saveButton, [this] { if (onSave) onSave(); }, "Save the venue and all its sessions (Cmd/Ctrl+S)");
         setupButton (saveAsButton, [this] { if (onSaveAs) onSaveAs(); }, "Save under a new name");
+        setupButton (reportButton, [this] { if (onReport) onReport(); },
+                     "A PDF of this session's tuning: venue plan, speakers and processor settings, mics with serials, checks and measurements");
 
         setupButton (newSessionButton, [this] { if (onNewSession) onNewSession(); },
                      "Start a new visit to this venue. The mics, positions and speaker setup carry over; measurements start fresh.");
@@ -89,6 +91,24 @@ public:
         drawPanel (g, venueCard.toFloat(), "Venue");
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
         drawPanel (g, stepsCard.toFloat(), "Setup and tuning");
+        {
+            // what the outlines mean
+            auto key = stepsCard.toFloat().reduced (14.0f, 0.0f).withTrimmedTop (9.0f).withHeight (16.0f);
+            g.setFont (font (11.0f));
+            struct K { juce::Colour c; const char* t; };
+            const K keys[] = { { p.good, "done" }, { p.warn, "still to do" }, { p.warn.brighter (0.2f), "! needs attention" } };
+            for (int i = 2; i >= 0; --i)
+            {
+                const float w = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), keys[i].t) + 30.0f;
+                auto cell = key.removeFromRight (w);
+                g.setColour (keys[i].c.withAlpha (i == 2 ? 1.0f : 0.8f));
+                const auto sw = cell.removeFromLeft (20.0f).withSizeKeepingCentre (14.0f, 10.0f);
+                if (i == 2) g.fillEllipse (sw.withSizeKeepingCentre (10.0f, 10.0f));
+                else g.drawRoundedRectangle (sw, 3.0f, 1.6f);
+                g.setColour (p.textDim);
+                g.drawText (keys[i].t, cell, juce::Justification::centredLeft);
+            }
+        }
 
         // venue file line
         g.setColour (p.textFaint);
@@ -231,6 +251,7 @@ public:
             st.removeFromTop (10);
         }
         summaryArea = st.withTrimmedTop (6);
+        reportButton.setBounds (summaryArea.getRight() - 200, summaryArea.getY() + 2, 200, 26);
         speakerChangedButton.setBounds (stepRows[1].withTrimmedRight (50).removeFromRight (160).withSizeKeepingCentre (160, 28));
     }
 
@@ -388,7 +409,7 @@ private:
     juce::TextEditor nameEditor, notesEditor;
     juce::TextButton newVenueButton { "New venue" }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
         newSessionButton { "New session" }, openSessionButton { "Open" }, compareButton { "Compare" }, renameButton { "Rename" },
-        deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" };
+        deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" }, reportButton { "Tuning report (PDF)..." };
     juce::Rectangle<int> summaryArea;
     juce::Rectangle<int> venueCard, sessionsCard, stepsCard, venueFileLine, sessionsHint, listArea, changeLine;
     juce::Rectangle<int> stepRows[4];

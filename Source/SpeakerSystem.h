@@ -31,6 +31,9 @@ struct SpeakerSource
     juce::String name;
     int role = (int) SpeakerRole::Main;
     int channel = (int) SpeakerChannel::Mono;
+    juce::String model;            // e.g. "JBL CBT 70J"
+    int count = 1;                 // cabinets on this output (two subs side by side, a column of two ...)
+    int linkTo = -1;               // shares its settings with this speaker (the other side of a stereo pair), -1 = own
     int output = 0;                // generator output when measuring: 0 = all outputs, 1.. = output (n - 1)
     bool show = true;
 
@@ -83,15 +86,22 @@ struct SpeakerSystem
     static SpeakerSystem defaults()
     {
         SpeakerSystem s;
-        SpeakerSource top, sub;
-        top.name = "Main";
-        top.role = (int) SpeakerRole::Main;
-        top.output = 1;
-        top.channel = (int) SpeakerChannel::Stereo;
+        SpeakerSource left, right, sub;
+        left.name = "Main L";
+        left.role = (int) SpeakerRole::Main;
+        left.channel = (int) SpeakerChannel::Left;
+        left.output = 1;
+        right = left;
+        right.name = "Main R";
+        right.channel = (int) SpeakerChannel::Right;
+        right.output = 2;
+        right.linkTo = 0;
         sub.name = "Sub";
         sub.role = (int) SpeakerRole::Sub;
-        sub.output = 2;
-        s.sources = { top, sub };
+        sub.output = 3;
+        s.sources = { left, right, sub };
+        s.xoHigh = 0;
+        s.xoLow = 2;
         return s;
     }
 
@@ -109,6 +119,38 @@ struct SpeakerSystem
         auto r = rawResponse (i, grid);
         if (! r.empty()) r = xo::processed (r, sources[(size_t) i].proc);
         return r;
+    }
+
+    // The speaker whose settings `i` follows (itself when it has its own).
+    int master (int i) const
+    {
+        if (i < 0 || i >= (int) sources.size()) return i;
+        const int l = sources[(size_t) i].linkTo;
+        return l >= 0 && l < (int) sources.size() && l != i && sources[(size_t) l].linkTo < 0 ? l : i;
+    }
+
+    // Measured itself, or follows a speaker that is (the other side of a stereo pair need not be measured).
+    bool covered (int i) const
+    {
+        if (i < 0 || i >= (int) sources.size()) return false;
+        return sources[(size_t) i].hasResponse() || sources[(size_t) master (i)].hasResponse();
+    }
+
+    // Linked speakers take their master's filters, level and polarity, and its delay unless a time alignment set their own.
+    void syncLinks()
+    {
+        for (int i = 0; i < (int) sources.size(); ++i)
+        {
+            const int m = master (i);
+            if (m == i) { sources[(size_t) i].linkTo = -1; continue; }
+            auto& s = sources[(size_t) i];
+            const auto& from = sources[(size_t) m].proc;
+            bool aligned = false;
+            for (const auto& a : alignments) aligned = aligned || (a.align == i && a.measured());
+            const double keepDelay = s.proc.delayMs;
+            s.proc = from;
+            if (aligned) s.proc.delayMs = keepDelay;
+        }
     }
 
     bool pairValid() const
@@ -171,6 +213,9 @@ struct SpeakerSystem
             c->setAttribute ("name", s.name);
             c->setAttribute ("role", s.role);
             c->setAttribute ("channel", s.channel);
+            c->setAttribute ("model", s.model);
+            c->setAttribute ("count", s.count);
+            c->setAttribute ("linkTo", s.linkTo);
             c->setAttribute ("output", s.output);
             c->setAttribute ("show", s.show);
             c->setAttribute ("imported", s.imported);
@@ -223,6 +268,9 @@ struct SpeakerSystem
             s.name = c->getStringAttribute ("name");
             s.role = juce::jlimit (0, 4, c->getIntAttribute ("role"));
             s.channel = juce::jlimit (0, 4, c->getIntAttribute ("channel", 0));
+            s.model = c->getStringAttribute ("model");
+            s.count = juce::jlimit (1, 16, c->getIntAttribute ("count", 1));
+            s.linkTo = c->getIntAttribute ("linkTo", -1);
             s.output = juce::jlimit (0, 8, c->getIntAttribute ("output"));
             s.show = c->getBoolAttribute ("show", true);
             s.imported = c->getBoolAttribute ("imported");
@@ -283,6 +331,7 @@ struct SpeakerSystem
         alignments.erase (std::remove_if (alignments.begin(), alignments.end(), [i] (const Alignment& a) { return a.ref == i || a.align == i; }),
                           alignments.end());
         for (auto& a : alignments) { if (a.ref > i) --a.ref; if (a.align > i) --a.align; }
+        for (auto& s : sources) { if (s.linkTo == i) s.linkTo = -1; else if (s.linkTo > i) --s.linkTo; }
     }
 };
 } // namespace la

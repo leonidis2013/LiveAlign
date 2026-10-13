@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -16,7 +16,10 @@ LiveProfessor). Windows and macOS.
 
 ## Workflow
 
-Everything runs from the **navigation pane** on the left. Each step has its own icon and a live status: a green tick
+Everything runs from the **navigation pane** on the left, grouped into **Configuration** (Mic setup, Speakers),
+**Tuning** (Room tuning, Venue plan) and **Monitoring**. **Mic locker** and **Settings** are at the bottom. The window
+uses the system's own title bar: on macOS the red / yellow / green buttons (green for full screen), on Windows the
+usual minimise / maximise / close. Each step has its own icon and a live status: a green tick
 when it is ready, an amber `!` when it needs attention, a progress ring while it is under way, and a dash for steps
 that come in a later stage. The venue and session are at the bottom of the pane, with Settings and Full screen.
 Steps that are required but not done yet have an amber outline (on Home and on the Mic setup checklist); click
@@ -108,8 +111,10 @@ with one file uses it either way. The Monitoring status line shows the file in u
 files are kept in the venue and in the mic locker; venues and lockers from earlier versions keep their one file,
 placed by its name.
 
-**Mic locker:** the mics you own, saved on this computer (not in a venue), each with its calibration file and its
-last sound level calibration. The small arrow beside a mic's name opens the locker menu:
+**Mic locker** (button at the bottom of the navigation pane): the mics you own, saved on this computer (not in a
+venue). Each has a model, serial number, optional name, its 0 and 90 degree calibration files, its last sound level
+calibration and notes. **+ Add mic** adds one; **Save a mic from this venue...** copies a mic from the mic table. On
+Mic setup, the **Locker** button beside a mic's name (it reads **Linked** for a mic from the locker) offers:
 
 - **Pick a saved mic** to put it in that row: its name, calibration file and sound level offset come with it. The
   sound level still needs a quick "Still correct" check each session, since the interface gain may differ.
@@ -122,6 +127,12 @@ last sound level calibration. The small arrow beside a mic's name opens the lock
   Remove. The locker is the file `MicLocker.xml` in LiveAlign's user folder.
 
 ### 2 Speakers
+
+**Speakers are individual cabinets or outputs.** **Add speaker** offers a *left / right pair* (Main L and Main R,
+the right one sharing the left one's settings), a sub, a front fill, a delay speaker, a centre or another speaker.
+Each has a name, **model**, role, channel, output and **count** (cabinets on that output). **Same as ...** makes a
+speaker share another's filters, level and polarity (and delay, unless a time alignment gives it its own): it needs
+no measurement of its own. A new venue starts with Main L, Main R (same as Main L) and a sub.
 
 Set up once per venue, for any speakers and any speaker management system. The right-hand column walks through
 three steps: **1 Measure**, **2 Crossover** and **3 Time alignment**. The open step gets the room; the others fold to a
@@ -185,6 +196,10 @@ The speakers, their responses and the settings are saved in the venue file.
 
 ### Layout
 
+The generator is not shown here: monitoring listens to the programme (the transfer function works on music and
+speech too). The **mic picker** follows the mic whose position is FOH until you pick another one, and the Sound level
+box says which mic it is reading.
+
 The **mic picker** at the top chooses which mic the graphs and the sound level show, or the **average of all mics**
 (power average of level, mean coherence; phase is not averaged). The Monitoring page shows **one, two or three graphs** (Settings > Screen), stacked or side by side. Each graph has
 its own RTA / Transfer / Impulse buttons, so the RTA, transfer function and impulse response can all be on screen at
@@ -227,6 +242,16 @@ it plays. Choose the output it plays from. `G` toggles it.
 
 In the **app**, outputs carry only the generator; inputs are never passed through, so the mic cannot feed back into
 the PA. In the **VST3**, audio passes through untouched unless the generator is driving a channel.
+
+## Tuning report
+
+**Tuning report (PDF)...** (on Home and on the Venue plan page) writes a PDF of the open session: a cover with the
+venue, session, date, who prepared it (Settings > Reports) and the analysis settings; the venue plan; the speakers
+with model, channel, output and count; the settings for the processor (high-pass, low-pass, delay, polarity, gain),
+the crossover and the time alignments; the speakers' responses with the processing and their predicted sum; the
+mics with model and serial number, position, input, calibration files, aim and sound level calibration; this
+session's checks (reference, loopback, noise floor); and the captured transfer functions (with the target) and
+RTA traces. Monitoring is not part of it.
 
 ## Updates
 

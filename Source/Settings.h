@@ -183,7 +183,7 @@ struct Settings
         wfSeconds = i ("wfSeconds", 1, 0, 2);
         wfRange = i ("wfRange", 1, 0, 2);
         paneCount = i ("paneCount", 1, 1, 3);
-        currentTab = i ("currentTab", 0, 0, 5);
+        currentTab = i ("currentTab", 0, 0, 6);
         paneLayout = i ("paneLayout", 0, 0, 1);
         paneView2 = i ("paneView2", (int) View::Rta, 0, 3);
         paneView3 = i ("paneView3", (int) View::Impulse, 0, 3);

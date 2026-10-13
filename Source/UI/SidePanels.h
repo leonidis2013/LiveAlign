@@ -30,6 +30,7 @@ public:
     }
 
     void update (const Snapshot& snap) { data = &snap; repaint(); }
+    void setMicName (const juce::String& n) { if (n != micName) { micName = n; repaint(); } }
 
     void resized() override
     {
@@ -44,10 +45,14 @@ public:
     {
         const auto& p = pal();
         drawPanel (g, getLocalBounds().toFloat(), "Sound level");
+        // which mic the level comes from
+        g.setColour (p.textDim);
+        g.setFont (font (11.0f));
+        g.drawText (micName, juce::Rectangle<int> (12, 26, getWidth() - 24, 14), juce::Justification::centredLeft, true);
         if (data == nullptr) return;
         const bool spl = data->splIsSpl;
         auto r = getLocalBounds().reduced (12, 0);
-        r.removeFromTop (32);
+        r.removeFromTop (42);
 
         auto big = r.removeFromTop (44);
         g.setColour (p.text);
@@ -76,11 +81,12 @@ public:
         g.setFont (font (11.0f));
         const int mins = (int) (data->leqSeconds / 60.0);
         g.drawText (spl ? "Leq over " + juce::String (mins) + " min " + juce::String ((int) data->leqSeconds % 60) + " s"
-                        : "Not calibrated: levels are dBFS. Calibrate in Settings.",
+                        : "Not calibrated: levels are dBFS. Use Calibrate above, or Sound level on Mic setup.",
                     getLocalBounds().reduced (12, 6).removeFromBottom (16), juce::Justification::centredLeft);
     }
 
 private:
+    juce::String micName;
     Settings& settings;
     const Snapshot* data = nullptr;
     juce::TextButton resetButton { "Reset Leq" }, calButton { "Calibrate" };
