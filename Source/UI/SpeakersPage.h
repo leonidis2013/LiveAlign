@@ -823,6 +823,7 @@ public:
     // Same as the buttons (used by the local screenshot tool).
     void measure (int i) { select (i); startMeasure (i); }
     void checkPolarity (int i, int cab) { select (i); startPolarity (i, cab); }
+    void assumeMuted (bool b) { mutesConfirmed = b; }   // for the preview: no dialog
     void setAlignmentSignal (int sig) { alSignal = juce::jlimit (0, 2, sig); alSignalBox.setSelectedItemIndex (alSignal, juce::dontSendNotification); }
     void measureAlignmentOne (int i, int which) { selectAlignment (i); startArrivalOne (i, which); }
 
@@ -968,6 +969,7 @@ public:
         if (k < 0) return "Every speaker is measured and its polarity checked.";
         const auto& t = tasks[(size_t) k];
         const auto who = nameOf (t.spk);
+        if (const auto m = muteText ({ t.spk }); m.isNotEmpty()) return "First: " + m;
         if (! t.response)
             return "Only " + who + "'s output plays. Polarity is compared with " + (sys.master (t.spk) != t.spk ? nameOf (sys.master (t.spk)) : who + "'s first cabinet")
                    + "; leave the processor's polarity for this output at normal.";
@@ -985,8 +987,10 @@ public:
         const auto t = tasks[(size_t) k];
         guidedNow = t.id();
         select (t.spk);
+        mutesConfirmed = true;   // the pop-up showed which speakers to mute; Measure confirms it
         if (t.response) startMeasure (t.spk);
         else startPolarity (t.spk, t.cab);
+        mutesConfirmed = false;
         return phase != Phase::Idle;
     }
 
@@ -1762,26 +1766,69 @@ private:
         measureNear = true;
     }
 
-    // A speaker can only be measured on its own when nothing else plays from its output: "All outputs" plays every
-    // speaker, and two speakers on one output play together. Says what to change, or empty when it is fine.
-    juce::String outputProblem (int i) const
+    // Who else plays when `targets` are measured: speakers on the same output, or every speaker when one plays from
+    // "All outputs" (or two targets on different outputs, which plays all of them). On most systems that is fine: the
+    // others are muted at the console or processor for the measurement. Linked speakers share settings, not a feed.
+    std::vector<int> alsoPlaying (const std::vector<int>& targets) const
     {
-        if (i < 0 || i >= (int) sys.sources.size() || sys.sources.size() < 2) return {};
-        const auto& s = sys.sources[(size_t) i];
-        if (s.output == 0)
-            return nameOf (i) + " plays from All outputs, so every speaker plays while it is measured. Pick the output that feeds "
-                   + nameOf (i) + " (Speakers page, Output), then measure.";
+        std::vector<int> out;
+        if (sys.sources.size() < 2 || targets.empty()) return out;
+        std::vector<int> outs;
+        for (int t : targets) if (t >= 0 && t < (int) sys.sources.size()) outs.push_back (sys.sources[(size_t) t].output);
+        bool all = false;
+        for (int o : outs) all = all || o == 0 || o != outs.front();
         for (int k = 0; k < (int) sys.sources.size(); ++k)
-            if (k != i && sys.sources[(size_t) k].output == s.output)
-                return nameOf (i) + " and " + nameOf (k) + " are both on output " + juce::String (s.output)
-                       + ", so they play together. Give each its own output (Speakers page, Output), then measure.";
-        return {};
+        {
+            if (std::find (targets.begin(), targets.end(), k) != targets.end()) continue;
+            const int o = sys.sources[(size_t) k].output;
+            if (all || o == 0 || std::find (outs.begin(), outs.end(), o) != outs.end()) out.push_back (k);
+        }
+        return out;
+    }
+
+    // "Mute Main R and Sub so only Main L plays." Empty when nothing else plays.
+    juce::String muteText (const std::vector<int>& targets) const
+    {
+        const auto others = alsoPlaying (targets);
+        if (others.empty()) return {};
+        juce::StringArray o, t;
+        for (int k : others) o.add (nameOf (k));
+        for (int k : targets) t.add (nameOf (k));
+        auto join = [] (const juce::StringArray& a) { return a.size() <= 1 ? a.joinIntoString ("") : a.joinIntoString (", ", 0, a.size() - 1) + " and " + a[a.size() - 1]; };
+        return "Mute " + join (o) + " on the console or processor, so only " + join (t) + (t.size() == 1 ? " plays." : " play.");
+    }
+
+    // Measures `go` once the other speakers are muted: asks first when they would play too (not in the guided pop-up,
+    // where the instruction is shown and Measure confirms it).
+    void withMutes (const std::vector<int>& targets, std::function<void()> go)
+    {
+        const auto text = muteText (targets);
+        if (text.isEmpty() || mutesConfirmed) { go(); return; }
+        juce::String why;
+        for (int t : targets)
+            if (t >= 0 && t < (int) sys.sources.size() && sys.sources[(size_t) t].output == 0) { why = nameOf (t) + " plays from All outputs. "; break; }
+        if (why.isEmpty()) why = "These speakers share an output. ";
+        juce::Component::SafePointer<SpeakersPage> safe (this);
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                          .withIconType (juce::MessageBoxIconType::InfoIcon)
+                                          .withTitle ("Mute the other speakers")
+                                          .withMessage (why + text + "\n\nUnmute them again when you are done.")
+                                          .withButton ("They're muted: measure")
+                                          .withButton ("Cancel")
+                                          .withAssociatedComponent (this),
+                                      [safe, go] (int r)
+                                      {
+                                          if (safe == nullptr || r != 1) return;
+                                          safe->mutesConfirmed = true;
+                                          go();
+                                          safe->mutesConfirmed = false;
+                                      });
     }
 
     void startMeasure (int i)
     {
         if (i < 0 || i >= (int) sys.sources.size()) return;
-        if (const auto why = outputProblem (i); why.isNotEmpty()) { status = why; repaint(); return; }
+        if (! mutesConfirmed && muteText ({ i }).isNotEmpty()) { withMutes ({ i }, [this, i] { startMeasure (i); }); return; }
         polarityMode = false;
         peakKnown = false;
         if (settings.refSource.load() == 0)
@@ -2782,8 +2829,12 @@ private:
             repaint();
             return;
         }
-        for (const int who : { a->ref, a->align })
-            if (const auto why = outputProblem (who); why.isNotEmpty()) { status = why; repaint(); return; }
+        if (alSignal == 2 || muteText ({ a->ref }).isNotEmpty() || muteText ({ a->align }).isNotEmpty())
+        {
+            // the mutes change between the two: one at a time
+            startArrivalOne (index, 0);
+            return;
+        }
         a->hasRef = a->hasAlign = false;
         a->sumBandDb = -200.0f;
         a->phaseValid = false;
@@ -2983,8 +3034,12 @@ private:
             return;
         }
         if (! signalReady()) return;
-        if (alSignal != 2)
-            if (const auto why = outputProblem (which == 0 ? a->ref : a->align); why.isNotEmpty()) { status = why; repaint(); return; }
+        const int who = which == 0 ? a->ref : a->align;
+        if (alSignal != 2 && ! mutesConfirmed && muteText ({ who }).isNotEmpty())
+        {
+            withMutes ({ who }, [this, index, which] { startArrivalOne (index, which); });
+            return;
+        }
         (which == 0 ? a->hasRef : a->hasAlign) = false;
         a->sumBandDb = -200.0f;
         a->phaseValid = false;
@@ -3004,6 +3059,11 @@ private:
         auto* a = alignmentAt (index);
         if (a == nullptr || ! a->measured()) return;
         if (! signalReady()) return;
+        if (alSignal != 2 && ! mutesConfirmed && muteText ({ a->ref, a->align }).isNotEmpty())
+        {
+            withMutes ({ a->ref, a->align }, [this, index] { startCheck (index); });
+            return;
+        }
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
         arrivalMode = true;
         checkMode = true;
@@ -3098,6 +3158,7 @@ private:
             t << "Place " << micName << " where every speaker covers the seats (usually FOH), pointed at the speakers, and leave it "
               << "there for all of them. Then press Measure " << who << ".";
         if (proc.calibrations (guideMic).both()) t << " Its " << calAngleName (Cal0) << " calibration is used.";
+        if (const auto m = muteText ({ selected }); m.isNotEmpty()) t << " " << m;
         g.setColour (p.text);
         g.setFont (font (12.0f));
         g.drawFittedText (t, r, juce::Justification::topLeft, 6);
@@ -3196,6 +3257,7 @@ private:
     juce::ComboBox roleBox, channelBox, outputBox, micBox, highBox, lowBox, rangeBox, typeBox, slopeBox;
     juce::ToggleButton guidedToggle;
     juce::ComboBox alSignalBox;
+    bool mutesConfirmed = false;
     int alSignal = 0;
     juce::TextButton polarityButton;
     juce::TextButton measureButton { "Measure" }, importButton { "Import response..." }, clearButton { "Clear" }, relockButton { "Re-time" };

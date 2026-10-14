@@ -130,9 +130,11 @@ public:
                         row, juce::Justification::centredLeft, true);
             g.setFont (font (14.5f, true));
         }
-        g.setColour (p.textDim);
-        g.setFont (font (12.5f));
-        g.drawFittedText (source.guidedHowTo(), r.withTrimmedTop (2), juce::Justification::topLeft, 2);
+        const auto howTo = source.guidedHowTo();
+        const bool first = howTo.startsWith ("First:");   // something to do before measuring (mute the other speakers)
+        g.setColour (first ? p.warn : p.textDim);
+        g.setFont (font (first ? 13.5f : 12.5f, first));
+        g.drawFittedText (howTo, r.withTrimmedTop (2), juce::Justification::topLeft, 2);
 
         // progress: count-in, measuring with the time left, or the result
         auto pr = progressArea;

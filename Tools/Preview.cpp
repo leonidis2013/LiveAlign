@@ -207,12 +207,22 @@ public:
         {
             // the guided pop-up on Speaker response, before measuring
             editor->showPage ((int) la::ui::Page::Response);
+            // a stereo pair both on All outputs: the pop-up says which speaker to mute first
+            savedOuts = { proc.system.sources[0].output, proc.system.sources[1].output };
+            proc.system.sources[0].output = proc.system.sources[1].output = 0;
             editor->openGuided (editor->speakersPage());
         }
-        if (ticks == 258 && editor->guided() != nullptr) { shot ("guided-speaker"); editor->guided()->closeNow(); }
+        if (ticks == 258 && editor->guided() != nullptr)
+        {
+            shot ("guided-speaker");
+            editor->guided()->closeNow();
+            proc.system.sources[0].output = savedOuts[0];
+            proc.system.sources[1].output = savedOuts[1];
+        }
         if (ticks == 262)
         {
             editor->showPage ((int) P::Response);
+            editor->speakersPage().assumeMuted (true);   // the simulator mutes for itself
             editor->speakersPage().measure (0);
             next (1);
         }
@@ -817,6 +827,7 @@ public:
     long simSubDelay = 0, simTopDelay = 0;
     bool simRightInverted = false;
     int consoleOut = -1;
+    std::array<int, 2> savedOuts {};
     double savedSub = 0.0;   // "music from the console", routed to one output (-1: everything plays)
     std::vector<Biquad> subSystem;   // the processor's EQ on the sub
     size_t wp = 0;
