@@ -32,7 +32,15 @@ public:
     StepState getState() const { return state; }
     const juce::String& getTitle() const { return title; }
     bool isComplete() const { return state != StepState::Todo; }
-    juce::Rectangle<int> controlArea() const { return getLocalBounds().reduced (12, 0).removeFromRight (kControlsW).withSizeKeepingCentre (kControlsW, 28); }
+    juce::Rectangle<int> controlArea() const
+    {
+        if (compact) return getLocalBounds().withTrimmedLeft (48).withTrimmedRight (12).removeFromBottom (42).withSizeKeepingCentre (getWidth() - 60, 28);
+        return getLocalBounds().reduced (12, 0).removeFromRight (kControlsW).withSizeKeepingCentre (kControlsW, 28);
+    }
+    // Narrow: the controls go under the text instead of beside it.
+    void setCompact (bool c) { if (c != compact) { compact = c; repaint(); } }
+    int preferredHeight() const { return compact ? (hasControls ? kCompactHeight : kCompactHeight - 34) : kHeight; }
+    void setHasControls (bool h) { hasControls = h; }
 
     // Done: green.  Required but not done: amber border.  A problem: red.  Not used (opted out): greyed out.
     void paint (juce::Graphics& g) override
@@ -50,7 +58,7 @@ public:
         g.setColour (edge);
         g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, width);
 
-        const auto badge = juce::Rectangle<float> (22.0f, 22.0f).withCentre ({ 26.0f, r.getCentreY() });
+        const auto badge = juce::Rectangle<float> (22.0f, 22.0f).withCentre ({ 26.0f, compact ? 22.0f : r.getCentreY() });
         if (state == StepState::Done) drawStatusBadge (g, badge, StepStatus::Ready);
         else if (state == StepState::Warn)
         {
@@ -68,7 +76,8 @@ public:
             g.drawText (off ? juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93")) : juce::String (num), badge, juce::Justification::centred);
         }
 
-        auto text = getLocalBounds().withTrimmedLeft (48).withTrimmedRight (kControlsW + 22).reduced (0, 8);
+        auto text = compact ? getLocalBounds().withTrimmedLeft (48).withTrimmedRight (12).withTrimmedBottom (hasControls ? 42 : 8).reduced (0, 8)
+                            : getLocalBounds().withTrimmedLeft (48).withTrimmedRight (kControlsW + 22).reduced (0, 8);
         g.setColour (off ? p.textFaint : p.text);
         g.setFont (font (14.0f, true));
         g.drawText (title + (off ? "   (not used)" : ""), text.removeFromTop (20), juce::Justification::centredLeft, true);
@@ -82,15 +91,16 @@ public:
         else rc = p.textFaint;
         g.setColour (rc);
         g.setFont (font (11.5f, state != StepState::Skipped));
-        g.drawText (result, text, juce::Justification::centredLeft, true);
+        g.drawFittedText (result, text, juce::Justification::centredLeft, compact ? 2 : 1, 1.0f);
     }
 
-    static constexpr int kHeight = 78, kControlsW = 300;
+    static constexpr int kHeight = 78, kCompactHeight = 118, kControlsW = 300;
 
 private:
     int num;
     juce::String title, help, result;
     StepState state = StepState::Todo;
+    bool compact = false, hasControls = true;
 };
 
 //==============================================================================
@@ -103,6 +113,8 @@ public:
     MicRow (LiveAlignProcessor& p, int micIndex) : proc (p), index (micIndex)
     {
         nameEditor.setFont (font (13.0f));
+        nameEditor.setJustification (juce::Justification::centredLeft);
+        nameEditor.setIndents (8, 0);
         nameEditor.setTextToShowWhenEmpty ("Mic " + juce::String (index + 1), pal().textFaint);
         nameEditor.onTextChange = [this] { proc.mics.name[(size_t) index] = nameEditor.getText().trim(); changed(); };
         addAndMakeVisible (nameEditor);
@@ -117,9 +129,9 @@ public:
         addAndMakeVisible (inputBox);
 
         positionBox.setEditableText (true);
-        positionBox.setTextWhenNothingSelected ("Position");
-        positionBox.setTooltip ("Where the mic is now. Type a new name to add a position to the venue. The mic uses the aim (and "
-                                "so the calibration file) of the position it is at; move it in Room tuning between measurements.");
+        positionBox.setTextWhenNothingSelected ("Not attached");
+        positionBox.setTooltip ("The position this mic is attached to now. It uses that position's aim (and so its calibration "
+                                "file); Room EQ moves it between positions as it measures.");
         positionBox.onChange = [this]
         {
             proc.setMicPosition (index, positionBox.getText());
@@ -129,13 +141,6 @@ public:
 
         lockerButton.onClick = [this] { if (onLockerMenu) onLockerMenu(); };
         addAndMakeVisible (lockerButton);
-        aimBox.addItem (calAngleName (Cal0) + "  at speaker", 1);
-        aimBox.addItem (calAngleName (Cal90) + "  pointing up", 2);
-        aimBox.setTooltip ("How the mic is aimed at this position, so the matching calibration file is used: at the speaker "
-                           "(0 degrees) or pointing up at the ceiling (90 degrees). Every mic placed at this position uses the same "
-                           "aim. The Speakers step uses 0 degrees while it measures."); 
-        aimBox.onChange = [this] { proc.setMicAim (index, aimBox.getSelectedItemIndex()); changed(); };
-        addAndMakeVisible (aimBox);
         calFileButton.onClick = [this] { if (onCalFileMenu) onCalFileMenu(); };
         addAndMakeVisible (calFileButton);
         splButton.onClick = [this] { if (onCalibrate) onCalibrate(); };
@@ -174,9 +179,6 @@ public:
         const int active = proc.activeCalAngle (index);
         calFileButton.setTooltip (cs.any() ? "Calibration: " + cs.names() + ". In use now: " + calAngleName (active) + "."
                                            : "Load this mic's calibration file(s): select the 0 and 90 degree files together if you have both");
-        aimBox.setSelectedItemIndex (proc.ownAim (index), juce::dontSendNotification);
-        aimBox.setEnabled (cs.both());
-        aimBox.setAlpha (cs.both() ? 1.0f : 0.55f);
 
         const auto* linked = proc.locker.find (proc.mics.lockerId[(size_t) index]);
         lockerButton.setColour (juce::TextButton::buttonColourId, linked != nullptr ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
@@ -234,22 +236,23 @@ public:
         r.removeFromRight (8);
         const int w = r.getWidth();
         auto take = [&r] (int px) { auto a = r.removeFromLeft (px); r.removeFromLeft (8); return a; };
+        const auto cols = columnWidths (w);
         {
-            auto nameCol = take (w * 16 / 100);
+            auto nameCol = take (cols[0]);
             lockerButton.setBounds (nameCol.removeFromRight (64));
             nameCol.removeFromRight (4);
             nameEditor.setBounds (nameCol);
         }
-        inputBox.setBounds (take (w * 9 / 100));
-        positionBox.setBounds (take (w * 13 / 100));
-        calFileButton.setBounds (take (w * 16 / 100));
-        aimBox.setBounds (take (w * 10 / 100));
-        splButton.setBounds (take (w * 13 / 100));
+        inputBox.setBounds (take (cols[1]));
+        positionBox.setBounds (take (cols[2]));
+        calFileButton.setBounds (take (cols[3]));
+        splButton.setBounds (take (cols[4]));
         meterArea = r;
     }
 
     // Column positions for the table header.
-    static juce::StringArray columnNames() { return { "Name", "Input", "Position", "Calibration file", "Aim", "Sound level", "Level" }; }
+    static juce::StringArray columnNames() { return { "Mic", "Input", "Attached to", "Calibration files", "Sound level", "Level" }; }
+    static std::array<int, 5> columnWidths (int w) { return { w * 23 / 100, w * 11 / 100, w * 15 / 100, w * 17 / 100, w * 14 / 100 }; }
 
 private:
     void changed() { if (onChanged) onChanged(); }
@@ -257,10 +260,145 @@ private:
     LiveAlignProcessor& proc;
     const int index;
     juce::TextEditor nameEditor;
-    juce::ComboBox inputBox, positionBox, aimBox;
+    juce::ComboBox inputBox, positionBox;
     juce::TextButton lockerButton { "Locker" }, calFileButton, splButton, removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
     juce::Rectangle<int> meterArea;
     float peakDb = -120.0f, rmsDb = -120.0f;
+};
+
+//==============================================================================
+// One listening position: its name, how a mic there is aimed, and the mic attached to it (one of this venue's mics,
+// or one from the mic locker, which then joins the venue's mics).
+class PositionRow : public juce::Component
+{
+public:
+    std::function<void()> onChanged, onRemove, onMicsChanged;
+    std::function<int()> maxMics;
+
+    PositionRow (LiveAlignProcessor& p, const juce::String& positionName, int row) : proc (p), name (positionName), index (row)
+    {
+        nameEditor.setFont (font (13.0f, true));
+        nameEditor.setJustification (juce::Justification::centredLeft);
+        nameEditor.setIndents (8, 0);
+        nameEditor.setText (name, juce::dontSendNotification);
+        nameEditor.onReturnKey = [this] { commitName(); };
+        nameEditor.onFocusLost = [this] { commitName(); };
+        nameEditor.setTooltip ("The position's name (FOH, Row 8, Balcony ...). Renaming it renames it everywhere");
+        addAndMakeVisible (nameEditor);
+        fillAimBox (aimBox);
+        aimBox.setTooltip ("How a mic at this position is aimed, which picks its calibration file: at the speaker (0 degrees), "
+                           "pointing up at the ceiling (90 degrees, usual in the seats), or an angle in between");
+        aimBox.onChange = [this] { proc.setPositionAim (name, aimFromBox (aimBox)); if (onChanged) onChanged(); };
+        addAndMakeVisible (aimBox);
+        micBox.setTooltip ("The mic at this position: one of this venue's mics, or one from your mic locker");
+        micBox.onChange = [this] { attach(); };
+        addAndMakeVisible (micBox);
+        removeButton.setTooltip ("Remove this position everywhere (Room EQ, the venue plan) with its measurements");
+        removeButton.onClick = [this] { if (onRemove) onRemove(); };
+        addAndMakeVisible (removeButton);
+        refresh();
+    }
+
+    const juce::String& positionName() const { return name; }
+
+    void refresh()
+    {
+        const int aim = proc.positionAimOf (name);
+        setAimBox (aimBox, aim < 0 ? Cal90 : aim);
+        if (micBox.isPopupActive()) return;
+        micBox.clear (juce::dontSendNotification);
+        micBox.addItem ("No mic", 1);
+        int here = -1;
+        for (int m = 0; m < proc.settings.micCount.load(); ++m)
+        {
+            micBox.addItem (proc.mics.nameOf (m), 100 + m);
+            if (here < 0 && proc.mics.position[(size_t) m] == name) here = m;
+        }
+        bool header = false;
+        for (int k = 0; k < (int) proc.locker.mics.size(); ++k)
+        {
+            const auto& e = proc.locker.mics[(size_t) k];
+            bool inVenue = false;
+            for (int m = 0; m < proc.settings.micCount.load(); ++m) inVenue = inVenue || proc.mics.lockerId[(size_t) m] == e.id;
+            if (inVenue) continue;
+            if (! header) { micBox.addSectionHeading ("From the mic locker"); header = true; }
+            micBox.addItem (e.label(), 1000 + k);
+        }
+        micBox.setSelectedId (here >= 0 ? 100 + here : 1, juce::dontSendNotification);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        auto r = getLocalBounds();
+        g.setColour (traceColour (index + 2));
+        g.fillRoundedRectangle (r.removeFromLeft (4).toFloat().reduced (0.0f, 5.0f), 2.0f);
+        // what has been measured here
+        juce::String st;
+        if (proc.room.hasAt (name, false)) st << "measured as found";
+        if (proc.room.hasAt (name, true)) st << (st.isEmpty() ? "measured in" : ",") << " check " << proc.room.checkRound;
+        if (proc.room.skipped.contains (name)) st = "left out of Room EQ";
+        g.setColour (st.isEmpty() ? p.textFaint : p.textDim);
+        g.setFont (font (11.0f));
+        g.drawText (st.isEmpty() ? juce::String ("not measured yet") : st, statusArea, juce::Justification::centredLeft, true);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().withTrimmedLeft (14).reduced (0, 3);
+        removeButton.setBounds (r.removeFromRight (30));
+        r.removeFromRight (8);
+        const auto cols = columnWidths (r.getWidth());
+        auto take = [&r] (int px) { auto a = r.removeFromLeft (px); r.removeFromLeft (8); return a; };
+        nameEditor.setBounds (take (cols[0]));
+        aimBox.setBounds (take (cols[1]));
+        micBox.setBounds (take (cols[2]));
+        statusArea = r;
+    }
+
+    static juce::StringArray columnNames() { return { "Position", "Aim", "Mic attached", "Measured" }; }
+    static std::array<int, 3> columnWidths (int w) { return { w * 22 / 100, w * 22 / 100, w * 28 / 100 }; }
+
+private:
+    void commitName()
+    {
+        const auto t = nameEditor.getText().trim();
+        if (t.isEmpty() || t == name) { nameEditor.setText (name, juce::dontSendNotification); return; }
+        proc.renamePosition (name, t);
+        name = t;
+        if (onChanged) onChanged();
+    }
+
+    void attach()
+    {
+        const int id = micBox.getSelectedId();
+        if (id == 1)
+        {
+            for (int m = 0; m < proc.settings.micCount.load(); ++m) if (proc.mics.position[(size_t) m] == name) proc.setMicPosition (m, {});
+        }
+        else if (id >= 100 && id < 100 + kMaxMics) proc.setMicPosition (id - 100, name);
+        else if (id >= 1000 && id - 1000 < (int) proc.locker.mics.size())
+        {
+            // a mic from the locker joins the venue's mics, attached here
+            const int n = proc.settings.micCount.load();
+            if (maxMics && n >= maxMics()) { refresh(); if (onChanged) onChanged(); return; }
+            const bool reuseFirst = n == 1 && proc.mics.lockerId[0].isEmpty() && ! proc.calibrations (0).any() && proc.mics.name[0].isEmpty();
+            const int m = reuseFirst ? 0 : (proc.addMic(), proc.settings.micCount.load() - 1);
+            proc.assignLockerMic (m, proc.locker.mics[(size_t) (id - 1000)].id);
+            proc.setMicPosition (m, name);
+            if (onMicsChanged) onMicsChanged();
+            return;
+        }
+        if (onChanged) onChanged();
+    }
+
+    LiveAlignProcessor& proc;
+    juce::String name;
+    const int index;
+    juce::TextEditor nameEditor;
+    juce::ComboBox aimBox, micBox;
+    juce::TextButton removeButton { juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) };
+    juce::Rectangle<int> statusArea;
 };
 
 //==============================================================================
@@ -273,7 +411,7 @@ public:
     std::function<void()> onChanged;
 
     explicit MicSetupPage (LiveAlignProcessor& p)
-        : proc (p), settings (p.settings), checks (p.checks), rta (p.settings, p.traces),
+        : proc (p), settings (p.settings), checks (p.checks),
           cards { { 1, "Audio interface", "The interface your mics and the loopback are connected to." },
                   { 2, "Reference", "A loopback of the signal feeding the PA, compared with every mic." },
                   { 3, "Mics connected", "Every mic in the table is live on its own input." },
@@ -282,20 +420,25 @@ public:
                   { 6, "Loopback check", "Pink noise for 2 seconds from the generator: round trip, polarity and level." },
                   { 7, "Room noise floor", "5 seconds of background noise on every mic, with the PA silent." } }
     {
-        rta.setShowAllMics (true);
-        addAndMakeVisible (rta);
+        addPositionButton.onClick = [this] { addPosition(); };
+        addPositionButton.setTooltip ("Add a listening position (a row, a seat, the balcony ...); it is placed on the venue plan for you");
+        addAndMakeVisible (addPositionButton);
         viewport.setViewedComponent (&content, false);
         viewport.setScrollBarsShown (true, false);
         addAndMakeVisible (viewport);
         for (auto& c : cards) content.addAndMakeVisible (c);
 
-        addMicButton.onClick = [this] { proc.addMic(); rebuildRows(); changed(); };   // rows are rebuilt; the add button is not one of them
-        addMicButton.setTooltip ("Add a measurement mic (up to 8)");
+        addMicButton.onClick = [this] { showAddMicMenu(); };
+        addMicButton.setTooltip ("Add a mic: one from your mic locker, or a new one");
         addAndMakeVisible (addMicButton);
 
 
         deviceButton.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
         cards[0].addAndMakeVisible (deviceButton);
+        acceptButton.setButtonText ("Keep my checks");
+        acceptButton.setTooltip ("The change does not matter for the checks (the same interface, renamed): keep them as they are");
+        acceptButton.onClick = [this] { checks.setup = proc.setupFingerprint(); changed(); };
+        cards[0].addChildComponent (acceptButton);
 
         refBox.onChange = [this]
         {
@@ -363,12 +506,12 @@ public:
     // A message under the mic table for a few seconds.
     void setNote (int mic, const juce::String& text)
     {
-        note = proc.mics.nameOf (mic) + ": " + text;
+        note = mic >= 0 ? proc.mics.nameOf (mic) + ": " + text : text;
         noteUntil = juce::Time::getMillisecondCounter() + 10000;
         repaint();
     }
 
-    void setSnapshot (const Snapshot& s) { snap = &s; rta.update (s); }
+    void setSnapshot (const Snapshot& s) { snap = &s; }
     juce::Component* calibrateButtonFor (int mic) { return mic < (int) rows.size() ? &rows[(size_t) mic]->calibrateButton() : nullptr; }
     juce::Component* calFileButtonFor (int mic) { return mic < (int) rows.size() ? &rows[(size_t) mic]->calFileComponent() : nullptr; }
 
@@ -376,6 +519,8 @@ public:
     void refreshChoices()
     {
         if ((int) rows.size() != settings.micCount.load()) rebuildRows();
+        proc.syncPositionsWithPlan();
+        rebuildPositionRows();
         const int nIn = juce::jmax (1, proc.numInputs());
         refBox.clear (juce::dontSendNotification);
         refBox.addItem ("Off", 1);
@@ -397,22 +542,38 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        drawPanel (g, tableCard.toFloat(), "Microphones");
         const auto& p = pal();
-        g.setColour (p.textDim);
-        g.setFont (font (11.0f, true));
-        if (! rows.empty())
+        drawPanel (g, posCard.toFloat(), "Mic positions");
+        drawPanel (g, tableCard.toFloat(), "Mics");
+        auto header = [&g, &p] (juce::Rectangle<int> hdr, const juce::StringArray& names, const int* widths, int n)
         {
-            const auto names = MicRow::columnNames();
-            auto hdr = headerRow.withTrimmedLeft (30).withTrimmedRight (38);
-            const int w = hdr.getWidth();
-            const int widths[] = { w * 16 / 100, w * 9 / 100, w * 13 / 100, w * 16 / 100, w * 10 / 100, w * 13 / 100, 0 };
-            for (int i = 0; i < 7; ++i)
+            g.setColour (p.textDim);
+            g.setFont (font (11.0f, true));
+            for (int i = 0; i < n; ++i)
             {
-                auto cell = i < 6 ? hdr.removeFromLeft (widths[i]) : hdr;
-                if (i < 6) hdr.removeFromLeft (8);
+                auto cell = i < n - 1 ? hdr.removeFromLeft (widths[i]) : hdr;
+                if (i < n - 1) hdr.removeFromLeft (8);
                 g.drawText (names[i].toUpperCase(), cell, juce::Justification::centredLeft);
             }
+        };
+        if (! posRows.empty())
+        {
+            auto hdr = posHeader.withTrimmedLeft (14).withTrimmedRight (38);
+            const auto c = PositionRow::columnWidths (hdr.getWidth());
+            const int widths[] = { c[0], c[1], c[2], 0 };
+            header (hdr, PositionRow::columnNames(), widths, 4);
+        }
+        g.setColour (p.textFaint);
+        g.setFont (font (11.0f));
+        g.drawText (posRows.empty() ? juce::String ("No positions yet: add where you will measure (FOH, Row 8, Balcony ...).")
+                                    : juce::String ("Each position is on the venue plan. Attach a mic from your locker and it joins the mics below."),
+                    posHint, juce::Justification::centredLeft, true);
+        if (! rows.empty())
+        {
+            auto hdr = headerRow.withTrimmedLeft (30).withTrimmedRight (38);
+            const auto c = MicRow::columnWidths (hdr.getWidth());
+            const int widths[] = { c[0], c[1], c[2], c[3], c[4], 0 };
+            header (hdr, MicRow::columnNames(), widths, 6);
         }
         g.setColour (p.textFaint);
         g.setFont (font (11.0f));
@@ -423,7 +584,7 @@ public:
         }
         else
             g.drawText (juce::String (settings.micCount.load()) + " of " + juce::String (maxMics()) + " mics (the inputs this interface has free). "
-                            "Mics, positions and calibration belong to the venue; the sound level is re-checked each session.",
+                            "The sound level is re-checked each session.",
                         tableHint, juce::Justification::centredLeft, true);
     }
 
@@ -431,31 +592,121 @@ public:
     {
         auto r = getLocalBounds();
 
-        const int tableH = 36 + 24 + (int) rows.size() * 40 + 44;
-        tableCard = r.removeFromTop (tableH);
+        // top: the positions; below: the mics, with the checklist beside them
+        const int posH = 36 + 22 + (int) posRows.size() * 38 + 44;
+        posCard = r.removeFromTop (juce::jmin (posH, r.getHeight() / 2));
         r.removeFromTop (10);
-        auto t = tableCard.reduced (14, 0).withTrimmedTop (34);
-        headerRow = t.removeFromTop (20);
-        for (auto& row : rows) row->setBounds (t.removeFromTop (40));
-        auto foot = t.removeFromTop (40).withSizeKeepingCentre (t.getWidth(), 30);
-        addMicButton.setBounds (foot.removeFromLeft (130));
-        foot.removeFromLeft (14);
-        tableHint = foot;
-
-        auto right = r.removeFromRight (juce::jmax (360, r.getWidth() * 38 / 100));
+        {
+            auto t = posCard.reduced (14, 0).withTrimmedTop (34);
+            auto foot = t.removeFromBottom (44).withSizeKeepingCentre (t.getWidth(), 30);
+            posHeader = t.removeFromTop (20);
+            for (auto& row : posRows) row->setBounds (t.removeFromTop (38));
+            addPositionButton.setBounds (foot.removeFromLeft (130));
+            foot.removeFromLeft (14);
+            posHint = foot;
+        }
+        auto right = r.removeFromRight (juce::jmax (420, r.getWidth() * 40 / 100));
         r.removeFromRight (10);
-        rta.setBounds (right);
+        {
+            const int tableH = 36 + 24 + (int) rows.size() * 40 + 44;
+            tableCard = r.removeFromTop (juce::jmin (tableH, r.getHeight()));
+            auto t = tableCard.reduced (14, 0).withTrimmedTop (34);
+            headerRow = t.removeFromTop (20);
+            for (auto& row : rows) row->setBounds (t.removeFromTop (40));
+            auto foot = t.removeFromTop (40).withSizeKeepingCentre (t.getWidth(), 30);
+            addMicButton.setBounds (foot.removeFromLeft (130));
+            foot.removeFromLeft (14);
+            tableHint = foot;
+        }
+        r = right;
         viewport.setBounds (r);
         const int w = viewport.getMaximumVisibleWidth() > 0 ? viewport.getMaximumVisibleWidth() : r.getWidth();
-        content.setSize (w - 4, kSteps * (StepCard::kHeight + 8));
+        const bool compact = w < 680;
+        int y = 0;
         for (int i = 0; i < kSteps; ++i)
         {
-            cards[i].setBounds (0, i * (StepCard::kHeight + 8), content.getWidth(), StepCard::kHeight);
+            cards[i].setCompact (compact);
+            cards[i].setHasControls (i != 2);   // Mics connected has nothing to press
+            cards[i].setBounds (0, y, w - 4, cards[i].preferredHeight());
+            y += cards[i].preferredHeight() + 8;
             layoutControls (i);
         }
+        content.setSize (w - 4, y);
     }
 
 private:
+    void rebuildPositionRows()
+    {
+        bool same = (int) posRows.size() == proc.positions.size();
+        for (int i = 0; same && i < (int) posRows.size(); ++i) same = posRows[(size_t) i]->positionName() == proc.positions[i];
+        if (same) { for (auto& r : posRows) r->refresh(); return; }
+        posRows.clear();
+        for (int i = 0; i < proc.positions.size(); ++i)
+        {
+            auto row = std::make_unique<PositionRow> (proc, proc.positions[i], i);
+            row->maxMics = [this] { return maxMics(); };
+            row->onChanged = [this] { later ([] (MicSetupPage& pg) { pg.refreshChoices(); pg.changed(); }); };
+            row->onMicsChanged = [this] { later ([] (MicSetupPage& pg) { pg.rebuildRows(); pg.refreshChoices(); pg.changed(); }); };
+            const auto nm = proc.positions[i];
+            row->onRemove = [this, nm] { later ([nm] (MicSetupPage& pg) { pg.proc.removePosition (nm); pg.refreshChoices(); pg.changed(); }); };
+            addAndMakeVisible (*row);
+            posRows.push_back (std::move (row));
+        }
+        resized();
+        repaint();
+    }
+
+    // After the click or edit that asked for it has finished (it may delete the row it came from).
+    void later (std::function<void (MicSetupPage&)> f)
+    {
+        juce::Component::SafePointer<MicSetupPage> safe (this);
+        juce::MessageManager::callAsync ([safe, f] { if (safe != nullptr) f (*safe); });
+    }
+
+    void addPosition()
+    {
+        int n = proc.positions.size() + 1;
+        while (proc.positions.contains ("Position " + juce::String (n))) ++n;
+        const auto nm = "Position " + juce::String (n);
+        proc.positions.add (nm);
+        proc.syncPositionsWithPlan();
+        refreshChoices();
+        changed();
+        if (! posRows.empty()) setNote (-1, "Added " + nm + ": click its name to rename it. It is on the venue plan; drag it where it is.");
+    }
+
+    // + Add mic: one of your locker's mics not in this venue yet, or a new one.
+    void showAddMicMenu()
+    {
+        juce::PopupMenu menu;
+        const auto& lk = proc.locker.mics;
+        bool any = false;
+        for (int k = 0; k < (int) lk.size(); ++k)
+        {
+            bool inVenue = false;
+            for (int m = 0; m < settings.micCount.load(); ++m) inVenue = inVenue || proc.mics.lockerId[(size_t) m] == lk[(size_t) k].id;
+            if (inVenue) continue;
+            if (! any) menu.addSectionHeader ("From the mic locker");
+            any = true;
+            menu.addItem (100 + k, lk[(size_t) k].label());
+        }
+        if (any) menu.addSeparator();
+        menu.addItem (1, "A new mic (not in the locker)");
+        juce::Component::SafePointer<MicSetupPage> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addMicButton), [safe] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto& p = safe->proc;
+            if (p.settings.micCount.load() >= safe->maxMics()) { safe->setNote (-1, "Every input of this interface is in use."); return; }
+            p.addMic();
+            const int m = p.settings.micCount.load() - 1;
+            if (r >= 100 && r - 100 < (int) p.locker.mics.size()) p.assignLockerMic (m, p.locker.mics[(size_t) (r - 100)].id);
+            safe->rebuildRows();
+            safe->refreshChoices();
+            safe->changed();
+        });
+    }
+
     void rebuildRows()
     {
         rows.clear();
@@ -535,20 +786,22 @@ private:
     {
         const auto& cs = proc.calibrations (m);
         juce::PopupMenu menu;
-        menu.addItem (1, "Load calibration file(s)...  (0 and 90 degree files together)");
+        menu.addItem (1, "Load calibration file(s)...  (every angle's file together)");
         menu.addSeparator();
-        for (int a = 0; a < 2; ++a)
+        // the angles loaded, each with its file; then a file for another angle
+        for (int a : calSlotsInOrder())
         {
-            const auto angle = calAngleName (a);
-            menu.addSectionHeader (angle + (a == Cal0 ? "  (mic at the speaker)" : "  (mic pointing up)") + (cs.has (a) ? ":  " + cs.name[a] : juce::String (":  none")));
-            menu.addItem (10 + a, "Load the " + angle + " file...");
-            menu.addItem (20 + a, "Clear the " + angle + " file", cs.has (a));
+            if (! cs.has (a)) continue;
+            menu.addSectionHeader (calAngleName (a) + ":  " + cs.name[a]);
+            menu.addItem (10 + a, "Load another " + calAngleName (a) + " file...");
+            menu.addItem (20 + a, "Clear the " + calAngleName (a) + " file");
         }
-        if (cs.has (0) != cs.has (1))
-        {
-            const int have = cs.has (0) ? 0 : 1;
-            menu.addItem (30, "This file is really the " + calAngleName (1 - have) + " one");
-        }
+        juce::PopupMenu other;
+        for (int a : calSlotsInOrder())
+            if (! cs.has (a)) other.addItem (10 + a, calAngleName (a) + "  " + calAimText (a).upToFirstOccurrenceOf (" (", false, false) + "...");
+        menu.addSubMenu ("Load a file for another angle", other);
+        if (cs.count() == 1 || cs.count() == 2) menu.addItem (30, cs.count() == 1 ? "This file is really the " + calAngleName (cs.has (Cal0) ? Cal90 : Cal0) + " one"
+                                                                                : juce::String ("Swap the two files' angles"));
         menu.addSeparator();
         menu.addItem (3, "This mic has no file (treat as flat)", true, proc.mics.noCalFile[(size_t) m]);
         juce::Component::SafePointer<MicSetupPage> safe (this);
@@ -557,8 +810,8 @@ private:
             if (safe == nullptr || r == 0) return;
             auto& p = safe->proc;
             if (r == 1 && safe->onLoadCalFile) safe->onLoadCalFile (m, -1);
-            if ((r == 10 || r == 11) && safe->onLoadCalFile) safe->onLoadCalFile (m, r - 10);
-            if (r == 20 || r == 21) p.clearCalibration (m, r - 20);
+            if (r >= 10 && r < 10 + kCalSlots && safe->onLoadCalFile) safe->onLoadCalFile (m, r - 10);
+            if (r >= 20 && r < 20 + kCalSlots) p.clearCalibration (m, r - 20);
             if (r == 30) p.swapCalibrationAngle (m);
             if (r == 3) p.mics.noCalFile[(size_t) m] = ! p.mics.noCalFile[(size_t) m];
             safe->changed();
@@ -571,7 +824,7 @@ private:
         auto put = [&a] (juce::Component& c, int w) { c.setBounds (a.removeFromLeft (w)); a.removeFromLeft (8); };
         switch (card)
         {
-            case 0: put (deviceButton, 150); break;
+            case 0: put (deviceButton, 150); put (acceptButton, 140); break;
             case 1: put (refBox, 300); break;
             case 3: put (noFilesToggle, 220); break;
             case 4: put (noCalButton, 240); break;
@@ -612,6 +865,14 @@ private:
             const bool ok = d.isNotEmpty() && d != "No audio device";
             cards[0].set (ok ? StepState::Done : StepState::Todo, ok ? d : juce::String ("No audio device is open yet."));
         }
+        // changed since this session's checks: say what, and which checks to do again
+        const auto changes = proc.setupChanges();
+        const bool rewired = ! changes.isEmpty();
+        acceptButton.setVisible (rewired);
+        if (rewired)
+            cards[0].set (StepState::Todo, "Changed since this session's checks: " + changes.joinIntoString ("; ") + ". Measure the room noise again"
+                                               + (settings.refSource.load() >= 2 ? " and run the loopback check" : juce::String())
+                                               + (proc.interfaceChanged() ? ", and re-check each mic's sound level" : juce::String()) + ".");
 
         // 2 reference
         {
@@ -690,6 +951,8 @@ private:
             }
             else if (checks.loopbackSkipped) cards[5].set (StepState::Skipped, "Not checked this session.");
             else cards[5].set (StepState::Todo, loopMessage.isNotEmpty() ? loopMessage : juce::String ("Turn the amps down if you don't want to hear it."));
+            if (rewired && settings.refSource.load() >= 2 && loopPhase == 0)
+                cards[5].set (StepState::Todo, "Run it again: " + changes[0] + ".");
         }
 
         // 7 noise
@@ -705,6 +968,7 @@ private:
                                                    + juce::String (juce::roundToInt (worst + 15.0f)) + unit + " or louder.");
             }
             else cards[6].set (StepState::Todo, "The generator is switched off while this runs.");
+            if (rewired && ! noiseActive) cards[6].set (StepState::Todo, "Measure it again: " + changes[0] + ".");
             noiseButton.setEnabled (! noiseActive);
             noiseButton.setButtonText (noiseActive ? "Measuring..." : "Measure (5 seconds)");
         }
@@ -807,7 +1071,9 @@ private:
     SessionChecks& checks;
     const Snapshot* snap = nullptr;
 
-    RtaView rta;
+    std::vector<std::unique_ptr<PositionRow>> posRows;
+    juce::TextButton addPositionButton { "+ Position" };
+    juce::Rectangle<int> posCard, posHeader, posHint;
     juce::Viewport viewport;
     juce::Component content;
     StepCard cards[kSteps];
@@ -816,6 +1082,7 @@ private:
     juce::String note;
     juce::uint32 noteUntil = 0;
 
+    juce::TextButton acceptButton;
     juce::TextButton addMicButton { "+ Add mic" }, deviceButton { "Audio device..." }, loopButton { "Run check" },
         noiseButton { "Measure (5 seconds)" };
     juce::ToggleButton noFilesToggle { "No calibration files" }, noCalButton { "No calibrator (dBFS)" }, skipLoopButton { "Skip" };

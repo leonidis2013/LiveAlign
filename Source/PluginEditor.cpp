@@ -159,7 +159,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         addChildComponent (*panes[i]);
     }
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &eventPanel })
+                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch })
         addChildComponent (*c);
 
     micPicker.setTooltip ("Which mic the graphs and sound level show, or the average of all mics");
@@ -179,6 +179,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     resetButton.onClick = [this] { settings.requestResetAverages = true; };
     addChildComponent (resetButton);
 
+    fbWatch.onClear = [this] { la::ui::feedbackMarks().clear(); liveFb.reset(); for (auto& pane : panes) pane->repaint(); };
     splPanel.onCalibrate = [this] { openCalibration (processor.isMonitorMode() ? kMonitorMic : settings.focusMic(), &splPanel.calibrateButton()); };
     tracesPanel.onCapture = [this] { capture(); };
     tracesPanel.onImport = [this] { importTrace(); };
@@ -303,7 +304,7 @@ void LiveAlignEditor::showPage (int page)
     if (page == (int) Page::Plan) planPage->refresh();
     for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel })
+                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel, (juce::Component*) &fbWatch })
         c->setVisible (mon);
     micPicker.setVisible (false);   // monitoring has one mic
     // the generator is for tuning; monitoring listens to the programme
@@ -404,7 +405,12 @@ void LiveAlignEditor::updateStatuses()
     };
 
     // ---- setup ----
-    if (setupChanged) set (Page::Mics, StepStatus::Attention, "Wiring changed", "The interface or mic wiring changed since this session's checks.");
+    if (setupChanged)
+    {
+        const auto ch = processor.setupChanges();
+        set (Page::Mics, StepStatus::Attention, processor.interfaceChanged() ? "Interface changed" : "Wiring changed",
+             "Changed since this session's checks: " + ch.joinIntoString ("; ") + ". Measure the room noise again on Mics.");
+    }
     else if (done == total && ! micPage->hasWarning()) set (Page::Mics, StepStatus::Ready, "Ready", "All " + juce::String (total) + " checks done for this session.");
     else if (micPage->hasWarning()) set (Page::Mics, StepStatus::Attention, juce::String (done) + " of " + juce::String (total) + ", warning", "A check needs attention.");
     else set (Page::Mics, done == 0 ? StepStatus::NotStarted : StepStatus::InProgress, juce::String (done) + " of " + juce::String (total) + " done",
@@ -433,7 +439,14 @@ void LiveAlignEditor::updateStatuses()
             break;
         }
 
-    if (sys.pairValid() && sys.pairInverted()) set (Page::Crossover, StepStatus::Attention, "Pair upside down", "HIGH is a sub and LOW a top: swap them.");
+    if (! sys.xoNeeded())
+    {
+        if (! sys.strayCrossoverFilters().isEmpty())
+            set (Page::Crossover, StepStatus::Attention, "Remove filters", "No sub, so no crossover: remove the crossover filters left on "
+                                                                             + sys.strayCrossoverFilters().joinIntoString (", ") + ".");
+        else set (Page::Crossover, StepStatus::None, "Not needed", "No sub in the system: no crossover to set.");
+    }
+    else if (sys.pairValid() && sys.pairInverted()) set (Page::Crossover, StepStatus::Attention, "Pair upside down", "HIGH is a sub and LOW a top: swap them.");
     else if (speakerPage->crossoverDone()) set (Page::Crossover, StepStatus::Ready, speakerPage->stepSummaryText (1), "Crossover set: " + speakerPage->stepSummaryText (1) + ".");
     else set (Page::Crossover, measured == nSrc && nSrc > 0 ? StepStatus::InProgress : StepStatus::NotStarted, "Not set", "Find the crossover between the top and the sub.", 0.3f);
 
@@ -530,6 +543,7 @@ void LiveAlignEditor::refreshNext()
             break;
         case Page::Crossover:
             if (speakerPage->busy()) text = "Searching...";
+            else if (! processor.system.xoNeeded()) cont (speakerPage->alignmentRequired() ? Page::Align : Page::Room);
             else if (! speakerPage->crossoverDone()) { text = "Next: Find the best crossover"; action = [this] { speakerPage->findCrossover(); }; }
             else cont (speakerPage->alignmentRequired() ? Page::Align : Page::Room);
             break;
@@ -538,7 +552,7 @@ void LiveAlignEditor::refreshNext()
         {
             const auto h = roomPage->nextHint();
             if (roomPage->busy()) text = "Measuring...";
-            else if (h.isNotEmpty()) { text = "Next: " + (h.startsWith ("Enter") ? juce::String ("Measure after EQ") : h); action = [this] { roomPage->doNext(); }; }
+            else if (h.isNotEmpty()) { text = "Next: " + h; action = [this] { roomPage->doNext(); }; }
             else cont (Page::Feedback);
             break;
         }
@@ -549,7 +563,11 @@ void LiveAlignEditor::refreshNext()
             else if (! feedbackPage->isListening()) cont (Page::Acoustics);
             break;
         }
-        case Page::Acoustics: text = "Tuning report"; action = goTo (Page::TuningReport); break;
+        case Page::Acoustics:
+            if (acousticsPage->sweeping()) text = "Sweeping...";
+            else if (acousticsPage->nextHint().isNotEmpty()) { text = "Next: " + acousticsPage->nextHint(); action = [this] { acousticsPage->doNext(); }; }
+            else { text = "Tuning report"; action = goTo (Page::TuningReport); }
+            break;
         case Page::MonitorMic:
         {
             const auto h = monitorMicPage->nextHint();
@@ -669,7 +687,7 @@ void LiveAlignEditor::openMicLocker() { showPage ((int) Page::Locker); }
 // Calibration file(s) for a mic in the locker; angle -1 = one or both, placed by their names.
 void LiveAlignEditor::loadLockerCal (const juce::String& id, int angle)
 {
-    chooser = std::make_unique<juce::FileChooser> (angle < 0 ? juce::String ("Load the calibration file(s): select the 0 and 90 degree files together")
+    chooser = std::make_unique<juce::FileChooser> (angle < 0 ? juce::String ("Load the calibration file(s): select every angle's file together (0, 30, 90 degrees ...)")
                                                               : "Load the " + la::calAngleName (angle) + " calibration file",
                                                    juce::File(), "*.txt;*.cal;*.frd;*.csv");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
@@ -681,20 +699,15 @@ void LiveAlignEditor::loadLockerCal (const juce::String& id, int angle)
         auto files = fc.getResults();
         auto* e = safe->processor.locker.find (id);
         if (files.isEmpty() || e == nullptr) return;
-        while (files.size() > 2) files.remove (2);
-        int angles[2] { angle, angle };
-        if (angle < 0)
-        {
-            for (int i = 0; i < files.size(); ++i) angles[i] = la::MicCalSet::angleFromName (files[i].getFileName());
-            if (files.size() == 2 && angles[0] == angles[1]) { angles[0] = la::Cal0; angles[1] = la::Cal90; }
-        }
+        while (files.size() > la::kCalSlots) files.remove (la::kCalSlots);
+        const auto angles = safe->anglesFor (files, angle);
         juce::StringArray errors;
         for (int i = 0; i < files.size(); ++i)
         {
             auto t = la::parseFreqTable (files[i].loadFileAsString().toStdString());
             if (t.freq.size() < 3) { errors.add ("No calibration data found in " + files[i].getFileName()); continue; }
-            e->cals.table[angles[i]] = std::move (t);
-            e->cals.name[angles[i]] = files[i].getFileName();
+            e->cals.table[angles[(size_t) i]] = std::move (t);
+            e->cals.name[angles[(size_t) i]] = files[i].getFileName();
             e->noCalFile = false;
         }
         safe->processor.locker.save();
@@ -747,11 +760,21 @@ void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
     juce::CallOutBox::launchAsynchronously (std::move (panel), area, this);
 }
 
+// The angle of each file chosen: `angle` when one was picked, otherwise from its name ("_90deg", "30deg" ...). Two
+// files whose names say nothing different go to 0 and 90 degrees, in the order picked.
+std::vector<int> LiveAlignEditor::anglesFor (const juce::Array<juce::File>& files, int angle)
+{
+    std::vector<int> a;
+    for (const auto& f : files) a.push_back (angle >= 0 ? angle : la::MicCalSet::angleFromName (f.getFileName()));
+    if (angle < 0 && a.size() == 2 && a[0] == a[1]) { a[0] = la::Cal0; a[1] = la::Cal90; }
+    return a;
+}
+
 // angle -1: one or both files at once; each goes to 0 or 90 degrees from its name (e.g. miniDSP's "_90deg").
 void LiveAlignEditor::loadCalFile (int mic, int angle)
 {
     const auto who = mic == kMonitorMic ? processor.monitorMic.name : processor.mics.nameOf (mic);
-    const auto title = angle < 0 ? "Load the calibration file(s) for " + who + " (select both 0 and 90 degree files if you have them)"
+    const auto title = angle < 0 ? "Load the calibration file(s) for " + who + " (select every angle's file together: 0, 30, 90 degrees ...)"
                                  : "Load the " + la::calAngleName (angle) + " calibration file for " + who;
     chooser = std::make_unique<juce::FileChooser> (title, juce::File(), "*.txt;*.cal;*.frd;*.csv");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
@@ -762,24 +785,18 @@ void LiveAlignEditor::loadCalFile (int mic, int angle)
         if (safe == nullptr) return;
         auto files = fc.getResults();
         if (files.isEmpty()) return;
-        while (files.size() > 2) files.remove (2);
-        // two files: the one named for 90 degrees goes there, the other to 0 (if neither or both say 90, the order picked)
-        int angles[2] { angle, angle };
-        if (angle < 0)
-        {
-            for (int i = 0; i < files.size(); ++i) angles[i] = la::MicCalSet::angleFromName (files[i].getFileName());
-            if (files.size() == 2 && angles[0] == angles[1]) { angles[0] = la::Cal0; angles[1] = la::Cal90; }
-        }
+        while (files.size() > la::kCalSlots) files.remove (la::kCalSlots);
+        const auto angles = safe->anglesFor (files, angle);
         juce::StringArray done, errors;
         for (int i = 0; i < files.size(); ++i)
         {
-            const auto err = mic == kMonitorMic ? safe->processor.loadMonitorCalibration (files[i], angles[i])
-                                                : safe->processor.loadCalibrationFile (mic, files[i], angles[i]);
+            const auto err = mic == kMonitorMic ? safe->processor.loadMonitorCalibration (files[i], angles[(size_t) i])
+                                                : safe->processor.loadCalibrationFile (mic, files[i], angles[(size_t) i]);
             if (err.isNotEmpty()) errors.add (err);
-            else done.add (la::calAngleName (angles[i]) + ": " + files[i].getFileName());
+            else done.add (la::calAngleName (angles[(size_t) i]) + ": " + files[i].getFileName());
         }
         if (! errors.isEmpty()) safe->showMessage ("Calibration file not loaded", errors.joinIntoString ("\n"));
-        else if (angle < 0 && mic >= 0) safe->micPage->setNote (mic, "Loaded " + done.joinIntoString (", ") + ". Wrong angle? Use the file menu to load it as the other one.");
+        else if (angle < 0 && mic >= 0) safe->micPage->setNote (mic, "Loaded " + done.joinIntoString (", ") + ". Wrong angle? Use the file menu to load it for another angle.");
         if (mic == kMonitorMic) safe->monitorMicPage->refresh();
         else safe->micPage->refreshChoices();
     });
@@ -1080,6 +1097,18 @@ void LiveAlignEditor::timerCallback()
         {
             for (int i = 0; i < laidOutCount; ++i) panes[i]->update (snap);
             splPanel.update (snap);
+            // feedback watch: the newest spectrum of the monitoring mic
+            if (fbWatch.watching() && snap.wfFrame != liveFbFrame && ! snap.wfLine.empty())
+            {
+                liveFbFrame = snap.wfFrame;
+                for (const auto& r : liveFb.push (snap.wfFreq, snap.wfLine))
+                {
+                    fbWatch.add ({ r.freq, r.prominenceDb, r.cutDb, juce::Time::getCurrentTime().formatted ("%H:%M:%S") });
+                    auto& marks = la::ui::feedbackMarks();
+                    marks.push_back (r.freq);
+                    if (marks.size() > 6) marks.erase (marks.begin());
+                }
+            }
         }
         else if (shownPage == (int) Page::Mics)
             micPage->setSnapshot (snap);
@@ -1109,6 +1138,12 @@ void LiveAlignEditor::timerCallback()
         const int m = settings.focusMic();
         inputPanel.setLevels (processor.takeMicPeak (m), processor.micRmsDb (m), processor.takeRefPeak(), processor.refRmsDb());
         delayPanel.setReport (processor.analyzer.readDelayReport());
+        // delay tracking: find the delay on the programme every 5 seconds
+        if (delayPanel.tracking() && settings.refSource.load() >= 1 && juce::Time::getMillisecondCounter() - lastTrackRequest > 5000)
+        {
+            lastTrackRequest = juce::Time::getMillisecondCounter();
+            settings.requestFindDelay = true;
+        }
         tracesPanel.refresh();
         if (tick % 15 == 0) eventPanel.setLog (processor.splLog);
     }
@@ -1264,6 +1299,8 @@ void LiveAlignEditor::resized()
     delayPanel.setBounds (side.removeFromTop (160));
     side.removeFromTop (8);
     eventPanel.setBounds (side.removeFromTop (90));
+    side.removeFromTop (8);
+    fbWatch.setBounds (side.removeFromTop (juce::jmin (122, side.getHeight() / 2)));
     side.removeFromTop (8);
     tracesPanel.setBounds (side);
 }

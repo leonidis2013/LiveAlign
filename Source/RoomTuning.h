@@ -35,16 +35,27 @@ struct RoomMeasurement
     }
 };
 
+// Room acoustics from a sweep at one position: a long impulse response, worked out after the sweep.
+struct SweepMeasurement
+{
+    juce::String position, micName, time;
+    acoustics::Result ac;
+};
+
 struct RoomTuning
 {
     std::vector<RoomMeasurement> meas;
+    std::vector<SweepMeasurement> sweeps;   // room acoustics measured with a sweep (preferred over the Room EQ estimate)
     int target = 4;                 // targets:: index (Worship / live music)
-    int eqSpeaker = 0;              // which speaker the EQ is for (index into the speaker system)
+    // Which speakers the EQ goes on: the whole system (default), the mains, or one speaker (its index).
+    static constexpr int kWholeSystem = -1, kMains = -2;
+    int eqGroup = kWholeSystem;
+    int checkRound = 0;             // how many times an EQ has been entered: the "after" measurements are the latest check
     int maxBands = 8;
     double maxBoostDb = 3.0, maxCutDb = 12.0;
     double fLo = 0.0, fHi = 0.0;    // 0 = from the speaker's crossover filters
     std::vector<eq::Band> suggested;
-    std::vector<eq::Band> baseEq;   // EQ that was already on the speaker when the "before" positions were measured
+    std::vector<eq::Band> baseEq;   // the EQ in the processor: what was there as found, then each refinement you entered
     double offsetDb = 0.0, rmsBefore = 0.0, rmsAfter = 0.0;
     juce::StringArray skipped;      // positions left out of the measuring plan
     int use = 1;                    // what the room is for (room acoustics guide): see useNames()
@@ -60,18 +71,44 @@ struct RoomTuning
         return v;
     }
 
-    // EQ range: above the speaker's high-pass (or 30 Hz), below its low-pass (or 16 kHz), unless set.
+    // The speakers the EQ goes on (one that follows another, as Main R set Same as Main L, gets it through that one).
+    template <class System>
+    std::vector<int> eqMembers (const System& sys) const
+    {
+        std::vector<int> out;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            if (sys.master (i) != i) continue;
+            if (eqGroup == kWholeSystem || (eqGroup == kMains && sys.isMain (i)) || eqGroup == i) out.push_back (i);
+        }
+        if (out.empty())   // no mains (or the speaker went): the whole system
+            for (int i = 0; i < (int) sys.sources.size(); ++i) if (sys.master (i) == i) out.push_back (i);
+        return out;
+    }
+
+    template <class System>
+    juce::String eqGroupName (const System& sys) const
+    {
+        if (eqGroup == kWholeSystem) return "the whole system";
+        if (eqGroup == kMains) return "the mains";
+        return eqGroup >= 0 && eqGroup < (int) sys.sources.size() ? sys.sources[(size_t) eqGroup].name : juce::String ("the whole system");
+    }
+
+    // EQ range: from the lowest of the group's high-passes (or 30 Hz) to the highest of its low-passes (or 16 kHz),
+    // unless set.
     template <class System>
     void eqRange (const System& sys, double& lo, double& hi) const
     {
-        lo = 30.0;
-        hi = 16000.0;
-        if (eqSpeaker >= 0 && eqSpeaker < (int) sys.sources.size())
+        lo = 1e9;
+        hi = 0.0;
+        for (int i : eqMembers (sys))
         {
-            const auto& pr = sys.sources[(size_t) eqSpeaker].proc;
-            if (pr.hp.active()) lo = pr.hp.freq * 1.2;
-            if (pr.lp.active()) hi = pr.lp.freq / 1.2;
+            const auto& pr = sys.sources[(size_t) i].proc;
+            lo = std::min (lo, pr.hp.active() ? pr.hp.freq * 1.2 : 30.0);
+            hi = std::max (hi, pr.lp.active() ? pr.lp.freq / 1.2 : 16000.0);
         }
+        if (lo > 1e8) lo = 30.0;
+        if (hi <= 0.0) hi = 16000.0;
         if (fLo > 0.0) lo = fLo;
         if (fHi > 0.0) hi = fHi;
     }
@@ -131,16 +168,21 @@ struct RoomTuning
     }
 
     // Room acoustics averaged over the positions that have them (the latest round of each position).
+    // The sweeps when there are any (their impulse responses are long enough for any room), else the estimate from
+    // the Room EQ measurements.
     acoustics::Result acousticsAverage() const
     {
+        std::vector<const acoustics::Result*> from;
+        for (const auto& w : sweeps) if (w.ac.valid) from.push_back (&w.ac);
+        if (from.empty()) for (const auto& m : meas) if (m.ac.valid && m.include) from.push_back (&m.ac);
         acoustics::Result r;
         std::array<std::array<double, 9>, acoustics::kBands> sum {};
         std::array<std::array<int, 9>, acoustics::kBands> n {};
         double sti = 0.0;
         int nsti = 0;
-        for (const auto& m : meas)
+        for (const auto* acp : from)
         {
-            if (! m.ac.valid || ! m.include) continue;
+            struct { const acoustics::Result& ac; } m { *acp };
             r.valid = true;
             for (int b = 0; b < acoustics::kBands; ++b)
             {
@@ -160,7 +202,43 @@ struct RoomTuning
         return r;
     }
 
-    int acousticsCount() const { int k = 0; for (const auto& m : meas) k += m.ac.valid && m.include ? 1 : 0; return k; }
+    int acousticsCount() const
+    {
+        int k = 0;
+        for (const auto& w : sweeps) k += w.ac.valid ? 1 : 0;
+        if (k > 0) return k;
+        for (const auto& m : meas) k += m.ac.valid && m.include ? 1 : 0;
+        return k;
+    }
+    bool acousticsFromSweeps() const { for (const auto& w : sweeps) if (w.ac.valid) return true; return false; }
+
+    static void saveAcoustics (juce::XmlElement& c, const acoustics::Result& ac)
+    {
+        auto* a = c.createNewChildElement ("Acoustics");
+        a->setAttribute ("sti", ac.sti);
+        for (int b = 0; b < acoustics::kBands; ++b)
+        {
+            const auto& o = ac.band[(size_t) b];
+            juce::StringArray v;
+            for (double x : { o.edt, o.t20, o.t30, o.c50, o.c80, o.d50, o.mti, o.rangeDb, o.t15 }) v.add (std::isfinite (x) ? juce::String (x, 4) : juce::String ("nan"));
+            a->setAttribute ("b" + juce::String (b), v.joinIntoString (" "));
+        }
+    }
+    static void loadAcoustics (const juce::XmlElement& c, acoustics::Result& ac)
+    {
+        const auto* a = c.getChildByName ("Acoustics");
+        if (a == nullptr) return;
+        ac.valid = true;
+        ac.sti = a->hasAttribute ("sti") && a->getStringAttribute ("sti") != "nan" ? a->getDoubleAttribute ("sti") : NAN;
+        for (int b = 0; b < acoustics::kBands; ++b)
+        {
+            juce::StringArray v;
+            v.addTokens (a->getStringAttribute ("b" + juce::String (b)), " ", {});
+            auto at = [&v] (int i) { return i < v.size() && v[i] != "nan" ? v[i].getDoubleValue() : NAN; };
+            auto& o = ac.band[(size_t) b];
+            o.edt = at (0); o.t20 = at (1); o.t30 = at (2); o.c50 = at (3); o.c80 = at (4); o.d50 = at (5); o.mti = at (6); o.rangeDb = at (7); o.t15 = at (8);
+        }
+    }
 
     // Low-frequency peaks of the average (room modes): frequency, height above the local median, and how much the
     // level at that frequency differs between the positions (standard deviation, dB).
@@ -242,7 +320,8 @@ struct RoomTuning
     {
         auto* e = parent.createNewChildElement ("RoomTuning");
         e->setAttribute ("target", target);
-        e->setAttribute ("eqSpeaker", eqSpeaker);
+        e->setAttribute ("eqGroup", eqGroup);
+        e->setAttribute ("checkRound", checkRound);
         e->setAttribute ("maxBands", maxBands);
         e->setAttribute ("maxBoostDb", maxBoostDb);
         e->setAttribute ("maxCutDb", maxCutDb);
@@ -266,6 +345,14 @@ struct RoomTuning
             c->setAttribute ("gain", b.gainDb);
             c->setAttribute ("q", b.q);
         }
+        for (const auto& w : sweeps)
+        {
+            auto* c = e->createNewChildElement ("Sweep");
+            c->setAttribute ("position", w.position);
+            c->setAttribute ("micName", w.micName);
+            c->setAttribute ("time", w.time);
+            saveAcoustics (*c, w.ac);
+        }
         for (const auto& m : meas)
         {
             auto* c = e->createNewChildElement ("Measurement");
@@ -276,18 +363,7 @@ struct RoomTuning
             c->setAttribute ("time", m.time);
             c->setAttribute ("after", m.after);
             c->setAttribute ("include", m.include);
-            if (m.ac.valid)
-            {
-                auto* a = c->createNewChildElement ("Acoustics");
-                a->setAttribute ("sti", m.ac.sti);
-                for (int b = 0; b < acoustics::kBands; ++b)
-                {
-                    const auto& o = m.ac.band[(size_t) b];
-                    juce::StringArray v;
-                    for (double x : { o.edt, o.t20, o.t30, o.c50, o.c80, o.d50, o.mti, o.rangeDb, o.t15 }) v.add (std::isfinite (x) ? juce::String (x, 4) : juce::String ("nan"));
-                    a->setAttribute ("b" + juce::String (b), v.joinIntoString (" "));
-                }
-            }
+            if (m.ac.valid) saveAcoustics (*c, m.ac);
             juce::String text;
             for (size_t i = 0; i < m.tf.freq.size(); ++i)
             {
@@ -306,7 +382,8 @@ struct RoomTuning
         const auto* e = parent != nullptr ? parent->getChildByName ("RoomTuning") : nullptr;
         if (e == nullptr) return;
         target = juce::jlimit (0, targets::count() - 1, e->getIntAttribute ("target", 4));
-        eqSpeaker = e->getIntAttribute ("eqSpeaker");
+        eqGroup = e->getIntAttribute ("eqGroup", kWholeSystem);
+        checkRound = juce::jmax (0, e->getIntAttribute ("checkRound"));
         maxBands = juce::jlimit (1, 31, e->getIntAttribute ("maxBands", 8));
         maxBoostDb = juce::jlimit (0.0, 12.0, e->getDoubleAttribute ("maxBoostDb", 3.0));
         maxCutDb = juce::jlimit (1.0, 24.0, e->getDoubleAttribute ("maxCutDb", 12.0));
@@ -321,6 +398,15 @@ struct RoomTuning
             suggested.push_back ({ c->getDoubleAttribute ("freq"), c->getDoubleAttribute ("gain"), c->getDoubleAttribute ("q", 1.0) });
         for (const auto* c : e->getChildWithTagNameIterator ("BaseEq"))
             baseEq.push_back ({ c->getDoubleAttribute ("freq"), c->getDoubleAttribute ("gain"), c->getDoubleAttribute ("q", 1.0) });
+        for (const auto* c : e->getChildWithTagNameIterator ("Sweep"))
+        {
+            SweepMeasurement w;
+            w.position = c->getStringAttribute ("position");
+            w.micName = c->getStringAttribute ("micName");
+            w.time = c->getStringAttribute ("time");
+            loadAcoustics (*c, w.ac);
+            if (w.ac.valid) sweeps.push_back (std::move (w));
+        }
         for (const auto* c : e->getChildWithTagNameIterator ("Measurement"))
         {
             RoomMeasurement m;
@@ -331,19 +417,7 @@ struct RoomTuning
             m.time = c->getStringAttribute ("time");
             m.after = c->getBoolAttribute ("after");
             m.include = c->getBoolAttribute ("include", true);
-            if (const auto* a = c->getChildByName ("Acoustics"))
-            {
-                m.ac.valid = true;
-                m.ac.sti = a->hasAttribute ("sti") && a->getStringAttribute ("sti") != "nan" ? a->getDoubleAttribute ("sti") : NAN;
-                for (int b = 0; b < acoustics::kBands; ++b)
-                {
-                    juce::StringArray v;
-                    v.addTokens (a->getStringAttribute ("b" + juce::String (b)), " ", {});
-                    auto at = [&v] (int i) { return i < v.size() && v[i] != "nan" ? v[i].getDoubleValue() : NAN; };
-                    auto& o = m.ac.band[(size_t) b];
-                    o.edt = at (0); o.t20 = at (1); o.t30 = at (2); o.c50 = at (3); o.c80 = at (4); o.d50 = at (5); o.mti = at (6); o.rangeDb = at (7); o.t15 = at (8);
-                }
-            }
+            loadAcoustics (*c, m.ac);
             juce::StringArray lines;
             lines.addLines (c->getAllSubText());
             for (const auto& line : lines)
@@ -361,6 +435,7 @@ struct RoomTuning
             if (m.tf.extra.size() != m.tf.freq.size()) m.tf.extra.clear();
             meas.push_back (std::move (m));
         }
+        if (! e->hasAttribute ("checkRound") && count (true) > 0) checkRound = 1;   // venues from before checks were counted
     }
 };
 } // namespace la

@@ -327,7 +327,9 @@ public:
     void removeSelectedItem()
     {
         if (selType_ != Sel::Item || selIndex_ < 0 || selIndex_ >= (int) plan.items.size()) return;
-        plan.items.erase (plan.items.begin() + selIndex_);
+        if (plan.items[(size_t) selIndex_].kind == PlanItem::Marker)
+            proc.removePosition (plan.items[(size_t) selIndex_].text);   // a marker is a position: it goes everywhere (and its measurements)
+        else plan.items.erase (plan.items.begin() + selIndex_);
         plan.edited = true;
         select (Sel::None, -1);
         if (onChanged) onChanged();
@@ -501,7 +503,7 @@ private:
         const auto& mm = proc.monitorMic;
         const auto col = forExport ? juce::Colour (0xffc2410c) : juce::Colour (0xfff97316);
         const auto c = toPx (s.x, s.y);
-        const bool up = mm.aim == Cal90;
+        const bool up = mm.aim == Cal90 || mm.aim == Cal180;
         g.setColour (col.withAlpha (0.2f));
         g.fillEllipse (juce::Rectangle<float> (24.0f, 24.0f).withCentre (c));
         g.setColour (col);
@@ -840,13 +842,12 @@ public:
             changed();
         };
         addAndMakeVisible (positionBox);
-        aimBox.addItem (calAngleName (Cal0) + "  at the speaker", 1);
-        aimBox.addItem (calAngleName (Cal90) + "  pointing up", 2);
+        fillAimBox (aimBox);
         aimBox.setTooltip ("How this mic is aimed (the same setting as Aim on Mic setup)");
         aimBox.onChange = [this]
         {
-            if (canvas.selType() == PlanCanvas::Sel::Mic) { proc.setMicAim (canvas.selIndex(), aimBox.getSelectedItemIndex()); changed(); }
-            if (canvas.selType() == PlanCanvas::Sel::MonitorMic) { proc.monitorMic.aim = aimBox.getSelectedItemIndex() == 0 ? Cal0 : Cal90; proc.applyMonitorMic(); changed(); }
+            if (canvas.selType() == PlanCanvas::Sel::Mic) { proc.setMicAim (canvas.selIndex(), aimFromBox (aimBox)); changed(); }
+            if (canvas.selType() == PlanCanvas::Sel::MonitorMic) { proc.monitorMic.aim = aimFromBox (aimBox); proc.applyMonitorMic(); changed(); }
         };
         addAndMakeVisible (aimBox);
 
@@ -861,6 +862,7 @@ public:
     void refresh()
     {
         proc.plan.placeMissing (canvas.numSpeakers(), canvas.numMics());
+        proc.syncPositionsWithPlan();
         refreshSelection();
         canvas.repaint();
     }
@@ -958,6 +960,12 @@ private:
 
     void addItem (int kind, const juce::String& text)
     {
+        if (kind == PlanItem::Marker)
+        {
+            // a position: one marker each, and in the venue's positions list
+            if (! proc.positions.contains (text)) proc.positions.add (text);
+            if (const int k = proc.plan.markerOf (text); k >= 0) { canvas.select (PlanCanvas::Sel::Item, k); changed(); return; }
+        }
         PlanItem it;
         it.kind = kind;
         it.text = text;
@@ -973,7 +981,11 @@ private:
         if (i < 0 || i >= (int) proc.plan.items.size()) return;
         askName ("Rename", proc.plan.items[(size_t) i].text, [this, i] (const juce::String& t)
         {
-            if (i < (int) proc.plan.items.size()) { proc.plan.items[(size_t) i].text = t; changed(); }
+            if (i >= (int) proc.plan.items.size() || t.trim().isEmpty()) return;
+            auto& it = proc.plan.items[(size_t) i];
+            if (it.kind == PlanItem::Marker) proc.renamePosition (it.text, t);   // the position everywhere
+            else it.text = t;
+            changed();
         });
     }
 
@@ -997,7 +1009,7 @@ private:
         const bool area = item && proc.plan.items[(size_t) i].kind == PlanItem::Area;
         seatingBox.setVisible (area);
         if (area) seatingBox.setSelectedItemIndex (proc.plan.items[(size_t) i].seating, juce::dontSendNotification);
-        if (t == PlanCanvas::Sel::MonitorMic) aimBox.setSelectedItemIndex (proc.monitorMic.aim == Cal0 ? 0 : 1, juce::dontSendNotification);
+        if (t == PlanCanvas::Sel::MonitorMic) setAimBox (aimBox, proc.monitorMic.aim);
         positionBox.setVisible (t == PlanCanvas::Sel::Mic);
         if (t == PlanCanvas::Sel::Mic && ! positionBox.hasKeyboardFocus (true))
         {
@@ -1007,7 +1019,7 @@ private:
         }
         renameButton.setVisible (item);
         deleteButton.setVisible (item);
-        if (t == PlanCanvas::Sel::Mic) aimBox.setSelectedItemIndex (proc.ownAim (i), juce::dontSendNotification);
+        if (t == PlanCanvas::Sel::Mic) setAimBox (aimBox, proc.ownAim (i));
 
         if (t == PlanCanvas::Sel::Speaker && i < (int) proc.system.sources.size())
         {

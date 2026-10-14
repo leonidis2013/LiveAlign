@@ -39,6 +39,7 @@ public:
     la::ui::PlanPage& planPageForPreview() { return *planPage; }
     la::ui::RoomPage& roomPageForPreview() { return *roomPage; }
     la::ui::FeedbackPage& feedbackPageForPreview() { return *feedbackPage; }
+    la::ui::AcousticsPage& acousticsPageForPreview() { return *acousticsPage; }
     void exportReportTo (bool monitoring, const juce::File& f);   // without the file chooser (local screenshot tool)
     void updateStatuses();
 
@@ -100,6 +101,7 @@ private:
     std::unique_ptr<la::ui::GuidedOverlay> guidedOverlay;   // the guided measuring pop-up, while it is open
 public:
     void openGuided (la::ui::GuidedSource& source);
+    static std::vector<int> anglesFor (const juce::Array<juce::File>& files, int angle);
     la::ui::GuidedOverlay* guided() { return guidedOverlay.get(); }   // for the preview
 private:
     static constexpr int kMonitorMic = -2;   // the monitoring mic, for the calibration pop-ups
@@ -112,6 +114,10 @@ private:
     la::ui::DelayPanel delayPanel;
     la::ui::TracesPanel tracesPanel;
     la::ui::EventPanel eventPanel;
+    la::ui::FeedbackWatchPanel fbWatch;
+    la::fb::Detector liveFb { { 80.0, 12000.0, 15.0, 18, 3, 1.0 / 12.0 } };   // stricter than the feedback test: music has peaks too
+    juce::uint64 liveFbFrame = 0;
+    juce::uint32 lastTrackRequest = 0;
     juce::ComboBox micPicker;
 
     la::ui::GeneratorStrip generator;

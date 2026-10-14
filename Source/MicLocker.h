@@ -99,7 +99,7 @@ public:
             {
                 // format 1 had one file and kept its name on the mic
                 const auto nm = c->getStringAttribute ("name", e->getStringAttribute ("calName"));
-                const int a = c->hasAttribute ("angle") ? (c->getIntAttribute ("angle") == 90 ? Cal90 : Cal0) : MicCalSet::angleFromName (nm);
+                const int a = c->hasAttribute ("angle") ? calSlotFromDegrees (c->getIntAttribute ("angle")) : MicCalSet::angleFromName (nm);
                 m.cals.table[a] = MicCalSet::loadTable (*c);
                 m.cals.name[a] = nm;
             }
@@ -124,11 +124,11 @@ public:
             e->setAttribute ("splOffset", m.splOffset);
             e->setAttribute ("splDate", m.splDate);
             e->setAttribute ("savedOn", m.savedOn);
-            for (int a = 0; a < 2; ++a)
+            for (int a = 0; a < kCalSlots; ++a)
             {
                 if (! m.cals.has (a)) continue;
                 auto* c = e->createNewChildElement ("Calibration");
-                c->setAttribute ("angle", a == Cal90 ? 90 : 0);
+                c->setAttribute ("angle", calSlotDegrees (a));
                 c->setAttribute ("name", m.cals.name[a]);
                 MicCalSet::saveTable (*c, m.cals.table[a]);
             }

@@ -190,10 +190,23 @@ public:
         zeroButton.setTooltip ("Remove the delay compensation");
         zeroButton.onClick = [this] { settings.delayMs() = 0.0f; };
         addAndMakeVisible (zeroButton);
+        trackToggle.setButtonText ("Track");
+        trackToggle.setTooltip ("Keep finding the delay on the programme (the console's feed as the reference) every few seconds and follow it, "
+                                "so the transfer function stays lined up; shows how far it has drifted (temperature, a moved mic)");
+        trackToggle.onClick = [this] { history.clear(); repaint(); };
+        addAndMakeVisible (trackToggle);
     }
+
+    bool tracking() const { return trackToggle.getToggleState(); }
 
     void setReport (const DelayReport& r)
     {
+        const int m = settings.focusMic();
+        if (r.serial != report.serial && tracking() && m < r.micCount && r.valid[(size_t) m] && r.confidenceDb[(size_t) m] >= 10.0)
+        {
+            history.push_back ({ juce::Time::getCurrentTime(), r.ms[(size_t) m] });
+            if (history.size() > 720) history.erase (history.begin());   // an hour at one every 5 s
+        }
         if (r.serial != report.serial) waiting = false;
         report = r;
         repaint();
@@ -203,7 +216,12 @@ public:
     {
         auto r = getLocalBounds().reduced (12, 0);
         r.removeFromTop (30);
-        findButton.setBounds (r.removeFromTop (28));
+        {
+            auto row = r.removeFromTop (28);
+            trackToggle.setBounds (row.removeFromRight (92));
+            row.removeFromRight (6);
+            findButton.setBounds (row);
+        }
         r.removeFromTop (44);
         auto row = r.removeFromTop (24);
         const int w = (row.getWidth() - 4 * 4) / 5;
@@ -249,6 +267,14 @@ public:
             }
             if (report.micCount > 1) status << "   " << found << "/" << report.micCount << " mics";
         }
+        if (tracking() && ! history.empty())
+        {
+            const double first = history.front().second, last = history.back().second;
+            status = "Tracking " + juce::String (last, 2) + " ms, " + (last - first >= 0.0 ? "+" : "") + juce::String (last - first, 2) + " ms since "
+                     + history.front().first.formatted ("%H:%M");
+            col = std::abs (last - first) > 0.5 ? p.warn : p.good;
+        }
+        else if (tracking() && ! waiting) { status = "Tracking: waiting for a clear arrival in the programme..."; col = p.textDim; }
         g.setColour (col);
         g.setFont (font (11.5f));
         g.drawText (status, getLocalBounds().reduced (12, 6).removeFromBottom (18), juce::Justification::centredLeft);
@@ -258,6 +284,8 @@ private:
     Settings& settings;
     DelayReport report;
     bool waiting = false;
+    juce::ToggleButton trackToggle;
+    std::vector<std::pair<juce::Time, double>> history;
     juce::TextButton findButton { "Find delay" }, zeroButton { "Zero" };
     juce::TextButton nudge[4];
 };
@@ -523,4 +551,67 @@ private:
     juce::TextButton relevelButton { "Re-level" };
     int seenVersion = -1, hoverRow = -1, scroll = 0;
 };
+//==============================================================================
+// Feedback watch while monitoring: frequencies that start to ring in the programme (a narrow peak that stands well
+// above its neighbours and holds for more than a second), newest first, with the cut that would tame it. Marked on
+// the RTA and the waterfall too. Sustained notes can look like this, so it says "possible" and lets you judge.
+class FeedbackWatchPanel : public juce::Component
+{
+public:
+    struct Hit { double freq = 0.0, prominenceDb = 0.0, cutDb = 0.0; juce::String time; };
+    std::function<void()> onClear;
+
+    FeedbackWatchPanel()
+    {
+        watchToggle.setButtonText ("Watch");
+        watchToggle.setTooltip ("Watch the monitoring mic for frequencies starting to ring");
+        watchToggle.setToggleState (true, juce::dontSendNotification);
+        addAndMakeVisible (watchToggle);
+        clearButton.setTooltip ("Clear the list and the marks on the graphs");
+        clearButton.onClick = [this] { hits.clear(); if (onClear) onClear(); repaint(); };
+        addAndMakeVisible (clearButton);
+    }
+
+    bool watching() const { return watchToggle.getToggleState(); }
+    void add (const Hit& h) { hits.insert (hits.begin(), h); if (hits.size() > 12) hits.pop_back(); repaint(); }
+    const std::vector<Hit>& all() const { return hits; }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        drawPanel (g, getLocalBounds().toFloat(), "Feedback watch");
+        auto r = getLocalBounds().reduced (12, 0).withTrimmedTop (32);
+        if (hits.empty())
+        {
+            g.setColour (p.textFaint);
+            g.setFont (font (11.5f));
+            g.drawFittedText (watching() ? "Nothing ringing." : "Off.", r.removeFromTop (34), juce::Justification::topLeft, 2);
+            return;
+        }
+        g.setFont (monoFont (11.5f));
+        for (const auto& h : hits)
+        {
+            if (r.getHeight() < 16) break;
+            auto row = r.removeFromTop (17);
+            g.setColour (p.bad);
+            g.drawText (freqLabel (h.freq) + " Hz", row.removeFromLeft (76), juce::Justification::centredLeft);
+            g.setColour (p.textDim);
+            g.drawText (h.time + "  cut " + juce::String (juce::roundToInt (h.cutDb)) + " dB, Q 10", row, juce::Justification::centredLeft, true);
+        }
+    }
+
+    void resized() override
+    {
+        auto top = getLocalBounds().reduced (12, 0).removeFromTop (30).withTrimmedTop (4);
+        clearButton.setBounds (top.removeFromRight (56).withSizeKeepingCentre (56, 22));
+        top.removeFromRight (6);
+        watchToggle.setBounds (top.removeFromRight (96));
+    }
+
+private:
+    std::vector<Hit> hits;
+    juce::ToggleButton watchToggle;
+    juce::TextButton clearButton { "Clear" };
+};
+
 } // namespace la::ui

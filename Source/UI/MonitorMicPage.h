@@ -41,10 +41,9 @@ public:
         calButton.onClick = [this] { showCalMenu(); };
         calButton.setTooltip ("Load, clear or check the calibration files (0 and 90 degrees)");
         addAndMakeVisible (calButton);
-        aimBox.addItem (calAimText (Cal0), 1);
-        aimBox.addItem (calAimText (Cal90), 2);
+        fillAimBox (aimBox);
         aimBox.setTooltip ("How the mic is aimed: pointing up (90 degrees) is usual at FOH; it picks which calibration file is used");
-        aimBox.onChange = [this] { mic.aim = aimBox.getSelectedItemIndex() == 0 ? Cal0 : Cal90; mic.configured = true; proc.applyMonitorMic(); changed(); };
+        aimBox.onChange = [this] { mic.aim = aimFromBox (aimBox); mic.configured = true; proc.applyMonitorMic(); changed(); };
         addAndMakeVisible (aimBox);
 
         levelButton.onClick = [this] { if (onCalibrate) onCalibrate(); };
@@ -109,7 +108,7 @@ public:
         inputBox.clear (juce::dontSendNotification);
         for (int i = 0; i < juce::jmax (1, proc.numInputs()); ++i) inputBox.addItem ("Input " + juce::String (i + 1), i + 1);
         inputBox.setSelectedItemIndex (juce::jlimit (0, juce::jmax (0, proc.numInputs() - 1), mic.input), juce::dontSendNotification);
-        aimBox.setSelectedItemIndex (mic.aim == Cal0 ? 0 : 1, juce::dontSendNotification);
+        setAimBox (aimBox, mic.aim);
         calButton.setButtonText (mic.cal.any() ? mic.cal.label() : mic.noCalFile ? juce::String ("None (flat)") : juce::String ("Load cal file(s)..."));
         levelButton.setButtonText (mic.splCalibrated ? "Calibrated: re-check" : "Calibrate");
         targetBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, settings.targetCurve.load()), juce::dontSendNotification);

@@ -6,7 +6,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 # Apple universal binary (Apple silicon + Intel) by default; Windows builds are x64.
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
 
-project(LiveAlign VERSION 0.15.0 LANGUAGES C CXX)
+project(LiveAlign VERSION 0.16.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,7 @@ juce_add_plugin(LiveAlign
     PLUGIN_CODE LvAg
     FORMATS Standalone VST3
     PRODUCT_NAME "LiveAlign"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/LiveAlignIcon.png"
     VST3_CATEGORIES Fx Analyzer
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE

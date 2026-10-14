@@ -34,7 +34,7 @@ public:
         {
             // legend, right of the title
             struct Item { juce::String name; juce::Colour c; bool dashed; };
-            const Item items[] = { { "Before", p.text, false }, { "After", p.good, false }, { "Target", p.good.withAlpha (0.9f), true }, { "With suggested EQ", p.accent, true } };
+            const Item items[] = { { "As found", p.text, false }, { room.checkRound > 0 ? "Check " + juce::String (room.checkRound) : juce::String ("Check"), p.good, false }, { "Target", p.good.withAlpha (0.9f), true }, { "With suggested EQ", p.accent, true } };
             auto lr = juce::Rectangle<float> (r.getRight() - 12.0f, r.getY() + 8.0f, 0.0f, 18.0f);
             g.setFont (font (10.5f));
             for (int i = 3; i >= 0; --i)
@@ -152,10 +152,10 @@ public:
         };
         if (hasBefore && showBefore) curve (eq::smooth (grid, before, 1.0 / 12.0), p.text, 2.6f, false);
         if (hasAfter && showAfter) curve (eq::smooth (grid, after, 1.0 / 12.0), p.good, 2.6f, false);
-        // predicted: the before average with the suggested EQ
+        // predicted: the latest measurement (the check, once there is one) with the suggested EQ on top
         if (showPred && hasBefore && ! room.suggested.empty())
         {
-            auto pred = eq::smooth (grid, before, 1.0 / 12.0);
+            auto pred = eq::smooth (grid, room.checkRound > 0 && hasAfter ? after : before, 1.0 / 12.0);
             for (size_t i = 0; i < grid.size(); ++i) if (std::isfinite (pred[i])) pred[i] += eq::totalDb (room.suggested, grid[i]);
             curve (pred, p.accent, 2.0f, true);
         }
@@ -203,7 +203,7 @@ public:
         addPositionButton.setTooltip ("Add a listening position (a row, a seat, the balcony ...)");
         addAndMakeVisible (addPositionButton);
         clearButton.onClick = [this] { clearSelected(); };
-        clearButton.setTooltip ("Remove the measurements at the selected position");
+        clearButton.setTooltip ("Remove the selected position everywhere (Mics, the venue plan) with its measurements. Untick it instead to leave it out of this measuring.");
         addAndMakeVisible (clearButton);
         nextPosButton.onClick = [this] { planNextRound (true); };
         nextPosButton.setTooltip ("Put the mics at the next planned positions that have not been measured, and say where to move them");
@@ -215,7 +215,7 @@ public:
         addAndMakeVisible (outputBox);
         for (int i = 0; i < 2; ++i)
         {
-            phaseButtons[i].setButtonText (i == 0 ? "Before EQ" : "After EQ");
+            phaseButtons[i].setButtonText (i == 0 ? "As found" : "Check");
             phaseButtons[i].setRadioGroupId (8201);
             phaseButtons[i].setClickingTogglesState (true);
             phaseButtons[i].onClick = [this, i] { if (phaseButtons[i].getToggleState()) { measuringAfter = i == 1; repaint(); } };
@@ -235,8 +235,15 @@ public:
         for (const auto& t : targets::list()) targetBox.addItem (t.name, targetBox.getNumItems() + 1);
         targetBox.onChange = [this] { room.target = targetBox.getSelectedItemIndex(); room.suggested.clear(); changed(); };
         targetBox.setTooltip ("The tonal balance to tune toward");
-        speakerBox.onChange = [this] { room.eqSpeaker = speakerBox.getSelectedItemIndex(); room.suggested.clear(); changed(); };
-        speakerBox.setTooltip ("The speaker the EQ goes on. Speakers that share its settings (Main R) get it too.");
+        speakerBox.onChange = [this]
+        {
+            const int id = speakerBox.getSelectedId();
+            room.eqGroup = id == 1 ? RoomTuning::kWholeSystem : id == 2 ? RoomTuning::kMains : id - 3;
+            room.suggested.clear();
+            changed();
+        };
+        speakerBox.setTooltip ("Where the EQ goes: the whole system (every speaker), the mains, or one speaker. The room is "
+                               "measured as a whole; speakers set Same as another follow it.");
         static const int bandsOpts[] = { 3, 4, 5, 6, 8, 10, 12, 16, 31 };
         for (int b : bandsOpts) bandsBox.addItem (juce::String (b) + " bands", b);
         bandsBox.onChange = [this] { room.maxBands = juce::jmax (1, bandsBox.getSelectedId()); };
@@ -248,7 +255,8 @@ public:
         suggestButton.onClick = [this] { suggest(); };
         suggestButton.setTooltip ("Fits parametric EQ to bring the average toward the target, within the limits above");
         applyButton.onClick = [this] { applyEq(); };
-        applyButton.setTooltip ("Put these bands in the processor settings of the chosen speaker (and the speakers that share its settings)");
+        applyButton.setTooltip ("Once you have put these bands in your processor: LiveAlign notes them as the EQ in the processor (for the "
+                                "settings sheet and the report) and the next step is to measure again to check");
         for (auto* c : std::initializer_list<juce::Component*> { &targetBox, &speakerBox, &bandsBox, &boostBox, &suggestButton, &applyButton })
             addAndMakeVisible (*c);
 
@@ -283,6 +291,7 @@ public:
     // After a venue or session is opened, or mics, positions or speakers changed.
     void refresh()
     {
+        proc.syncPositionsWithPlan();
         // mic position pickers
         const int n = settings.micCount.load();
         if ((int) micBoxes.size() != n)
@@ -321,23 +330,26 @@ public:
 
         targetBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, room.target), juce::dontSendNotification);
         speakerBox.clear (juce::dontSendNotification);
+        speakerBox.addItem ("Whole system (every speaker)", 1);
+        bool anyMain = false;
+        for (int i = 0; i < (int) proc.system.sources.size(); ++i) anyMain = anyMain || proc.system.isMain (i);
+        if (anyMain) speakerBox.addItem ("Mains only", 2);
         for (int i = 0; i < (int) proc.system.sources.size(); ++i)
         {
             const auto& s = proc.system.sources[(size_t) i];
             if (proc.system.master (i) != i) continue;   // EQ goes on the speaker the others follow
-            speakerBox.addItem (s.name + (s.proc.eq.empty() ? juce::String() : "  (" + juce::String ((int) s.proc.eq.size()) + " bands now)"), i + 1);
+            speakerBox.addItem (s.name + " only", i + 3);
         }
-        if (speakerBox.getNumItems() > 0)
         {
-            room.eqSpeaker = juce::jlimit (0, (int) proc.system.sources.size() - 1, room.eqSpeaker);
-            if (speakerBox.indexOfItemId (room.eqSpeaker + 1) < 0) room.eqSpeaker = speakerBox.getItemId (0) - 1;
-            speakerBox.setSelectedId (room.eqSpeaker + 1, juce::dontSendNotification);
+            int id = room.eqGroup == RoomTuning::kWholeSystem ? 1 : room.eqGroup == RoomTuning::kMains ? 2 : room.eqGroup + 3;
+            if (speakerBox.indexOfItemId (id) < 0) { room.eqGroup = RoomTuning::kWholeSystem; id = 1; }
+            speakerBox.setSelectedId (id, juce::dontSendNotification);
         }
         bandsBox.setSelectedId (room.maxBands, juce::dontSendNotification);
         if (bandsBox.getSelectedId() == 0) bandsBox.setSelectedId (8, juce::dontSendNotification);
         boostBox.setSelectedId ((int) room.maxBoostDb + 1, juce::dontSendNotification);
         if (boostBox.getSelectedId() == 0) boostBox.setSelectedId (4, juce::dontSendNotification);
-        tunedButton.setButtonText (room.tuned ? "Room tuned " + room.tunedOn + "  (undo)" : juce::String ("Mark the room as tuned"));
+        tunedButton.setButtonText (room.tuned ? "Room tuned " + room.tunedOn + "  (undo)" : juce::String ("Mark the room as tuned (as left)"));
         nextPosButton.setVisible (true);
         guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
         nextPosButton.setButtonText (n == 1 ? "Next position" : "Next positions");
@@ -351,15 +363,17 @@ public:
     }
 
     // What to do next on this page (for the header).
+    // The Room EQ loop: measure as found, suggest EQ, enter it in your processor, measure a check at the same
+    // positions, refine until it is close enough, then mark the room as left (tuned).
     juce::String nextHint() const
     {
-        if (room.count (false) == 0) return "Place the mics and measure";
-        if (plannedLeft (false) > 0 && room.count (true) == 0) return "Measure the next positions";
-        if (room.suggested.empty() && ! eqApplied()) return "Suggest EQ";
-        if (! eqApplied()) return "Copy the EQ to the speaker settings";
-        if (room.count (true) == 0) return "Enter the EQ in the processor, then measure after";
-        if (! room.tuned) return "Mark the room as tuned";
-        return {};
+        if (room.count (false) == 0) return "Measure as found";
+        if (room.checkRound == 0 && plannedLeft (false) > 0) return "Measure the next positions";
+        if (! room.suggested.empty()) return "I've entered this EQ";
+        if (room.checkRound > 0 && plannedLeft (true) > 0) return "Measure check " + juce::String (room.checkRound);
+        if (room.tuned) return {};
+        if (room.checkRound == 0) return "Suggest EQ";
+        return closeEnough() ? juce::String ("Mark the room as tuned") : juce::String ("Refine the EQ");
     }
 
     // Does what nextHint() says, from the header button.
@@ -367,10 +381,20 @@ public:
     {
         if (phase != Phase::Idle) return;
         const auto h = nextHint();
-        if (h.startsWith ("Place") || h.startsWith ("Enter") || h.startsWith ("Measure the next")) { if (h.startsWith ("Enter")) setMeasuringAfter (true); requestMeasure(); }
-        else if (h.startsWith ("Suggest")) suggest();
-        else if (h.startsWith ("Copy")) applyEq();
+        if (h.startsWith ("Measure")) { setMeasuringAfter (room.checkRound > 0); requestMeasure(); }
+        else if (h.startsWith ("Suggest") || h.startsWith ("Refine")) suggest();
+        else if (h.startsWith ("I've")) applyEq();
         else if (h.startsWith ("Mark")) { room.tuned = true; room.tunedOn = LiveAlignProcessor::today(); refresh(); changed(); }
+    }
+
+    // The latest round within 1.5 dB RMS of the target: good enough to call it done.
+    bool closeEnough() const
+    {
+        if (room.count (room.checkRound > 0) == 0) return false;
+        double lo, hi, rms, mx;
+        eqRange (lo, hi);
+        room.deviation (room.average (room.checkRound > 0), lo, hi, rms, mx);
+        return std::isfinite (rms) && rms <= 1.5;
     }
 
     bool busy() const { return phase != Phase::Idle; }
@@ -384,7 +408,7 @@ public:
     }
 
     // ---- guided measuring ----
-    juce::String guidedTitle() const override { return juce::String ("Room EQ, ") + (measuringAfter ? "after EQ" : "before EQ"); }
+    juce::String guidedTitle() const override { return juce::String ("Room EQ, ") + (measuringAfter ? "check " + juce::String (juce::jmax (1, room.checkRound)) : juce::String ("as found")); }
 
     std::vector<GuideSpot> guidedSpots() override
     {
@@ -418,8 +442,9 @@ public:
                     if (proc.mics.position[(size_t) m] == pos) { sp.mic = m; sp.state = GuideSpot::Now; break; }
             }
             const int aim = sp.mic >= 0 ? proc.ownAim (sp.mic) : proc.positionAimOf (pos);
-            sp.up = aim != 0;
+            sp.up = aim == Cal90 || aim < 0;
             if (! sp.up) sp.aimAt = proc.plan.nearestSpeaker (sp.x, sp.y, nSpk, isTop);
+            if (aim > Cal90) sp.how = calAimText (aim) + " (" + calAngleName (aim) + " calibration)";
             out.push_back (sp);
         }
         // the mic symbols sit on their positions
@@ -484,7 +509,7 @@ public:
         drawPanel (g, posCard.toFloat(), "Listening positions");
         drawPanel (g, micCard.toFloat(), "Where the mics are now");
         drawStep (g, step1, 1, "Measure", room.count (false) > 0);
-        drawStep (g, step2, 2, "Target and EQ", eqApplied());
+        drawStep (g, step2, 2, "Target and EQ", room.checkRound > 0 && room.suggested.empty());
         drawStep (g, step3, 3, "Check", room.tuned);
 
         // positions list
@@ -517,15 +542,15 @@ public:
             }
             r.removeFromLeft (8);
             juce::String st;
-            if (room.hasAt (name, false)) st << "before";
-            if (room.hasAt (name, true)) st << (st.isEmpty() ? "" : " + ") << "after";
+            if (room.hasAt (name, false)) st << "as found";
+            if (room.hasAt (name, true)) st << (st.isEmpty() ? "" : " + ") << "check " << room.checkRound;
             g.setFont (font (10.5f, st.isNotEmpty()));
             g.setColour (st.isNotEmpty() ? p.good : p.textFaint);
             g.drawText (st.isNotEmpty() ? st.toUpperCase() : juce::String ("not measured"), r.removeFromRight (104), juce::Justification::centredRight, true);
             const int aim = proc.positionAimOf (name);
             int here = 0;
             for (int m = 0; m < settings.micCount.load(); ++m) here += proc.mics.position[(size_t) m] == name ? 1 : 0;
-            juce::String sub = aim < 0 ? juce::String() : aim == 1 ? "Mic up (" + calAngleName (aim) + ")" : "Mic at the speaker (" + calAngleName (aim) + ")";
+            juce::String sub = aim < 0 ? juce::String() : aim == Cal90 ? "Mic up (" + calAngleName (aim) + ")" : aim == Cal0 ? "Mic at the speaker (" + calAngleName (aim) + ")" : "Mic angled " + calAngleName (aim);
             if (here > 0) sub << (sub.isEmpty() ? "" : "  -  ") << (here == 1 ? "a mic is here" : juce::String (here) + " mics here");
             g.setColour (p.text);
             g.setFont (font (12.5f, true));
@@ -580,7 +605,8 @@ public:
         }
         if (phase != Phase::Idle) txt (measureInfo, phaseText(), p.accent, true);
         else txt (measureInfo, status.isNotEmpty() ? status
-                                                   : juce::String (room.count (false)) + " position(s) measured before EQ, " + juce::String (room.count (true)) + " after.",
+                                                   : juce::String (room.count (false)) + " position(s) measured as found"
+                                                         + (room.checkRound > 0 ? ", " + juce::String (room.count (true)) + " in check " + juce::String (room.checkRound) : juce::String()) + ".",
                   status.isNotEmpty() ? p.accent : p.textDim, status.isNotEmpty());
         if (phase != Phase::Idle)
         {
@@ -594,23 +620,50 @@ public:
         {
             double lo, hi;
             eqRange (lo, hi);
-            juce::String t = "Range " + freqLabel (lo) + " - " + freqLabel (hi) + " Hz (from the speaker's filters).";
+            juce::String t = "Range " + freqLabel (lo) + " - " + freqLabel (hi) + " Hz (from the speakers' filters).";
             txt (rangeInfo, t, p.textDim);
             auto r = bandsArea;
-            g.setFont (monoFont (11.5f));
-            if (room.suggested.empty())
+            auto bandLine = [&] (int n, const eq::Band& b, juce::Colour c)
+            {
+                g.setColour (c);
+                g.setFont (monoFont (11.5f));
+                g.drawText (juce::String (n).paddedLeft (' ', 2) + "   " + (freqLabel (b.freq) + " Hz").paddedRight (' ', 9) + "  "
+                                + signedText ((float) b.gainDb, 1).paddedLeft (' ', 5) + " dB   Q " + juce::String (b.q, 2),
+                            r.removeFromTop (16), juce::Justification::centredLeft);
+            };
+            auto heading = [&] (const juce::String& h)
+            {
+                g.setColour (p.textDim);
+                g.setFont (font (10.5f, true));
+                g.drawText (h.toUpperCase(), r.removeFromTop (18), juce::Justification::bottomLeft);
+            };
+            if (! room.suggested.empty())
+            {
+                heading (room.checkRound > 0 ? "Change to enter (refinement)" : "To enter in your processor");
+                for (size_t i = 0; i < room.suggested.size() && r.getHeight() >= 15; ++i)
+                    bandLine ((int) i + 1, room.suggested[i], room.suggested[i].gainDb < 0.0 ? p.text : p.warn);
+                r.removeFromTop (6);
+            }
+            if (! room.baseEq.empty() && r.getHeight() > 34)
+            {
+                heading ("In your processor now (" + room.eqGroupName (proc.system) + ")");
+                for (size_t i = 0; i < room.baseEq.size(); ++i)
+                {
+                    if (r.getHeight() < 30 && i + 1 < room.baseEq.size())
+                    {
+                        g.setColour (p.textFaint);
+                        g.setFont (font (11.0f));
+                        g.drawText ("... and " + juce::String ((int) (room.baseEq.size() - i)) + " more (all in the processor settings)", r.removeFromTop (16), juce::Justification::centredLeft);
+                        break;
+                    }
+                    bandLine ((int) i + 1, room.baseEq[i], p.textDim);
+                }
+            }
+            if (room.suggested.empty() && room.baseEq.empty())
             {
                 g.setColour (p.textFaint);
                 g.setFont (font (11.5f));
-                g.drawFittedText (room.count (false) == 0 ? "Measure first." : "Press Suggest EQ.", r, juce::Justification::topLeft, 2);
-            }
-            for (size_t i = 0; i < room.suggested.size() && r.getHeight() >= 15; ++i)
-            {
-                const auto& b = room.suggested[i];
-                g.setColour (b.gainDb < 0.0 ? p.text : p.warn);
-                g.drawText (juce::String ((int) i + 1).paddedLeft (' ', 2) + "   " + (freqLabel (b.freq) + " Hz").paddedRight (' ', 9) + "  "
-                                + signedText ((float) b.gainDb, 1).paddedLeft (' ', 5) + " dB   Q " + juce::String (b.q, 2),
-                            r.removeFromTop (16), juce::Justification::centredLeft);
+                g.drawFittedText (room.count (false) == 0 ? "Measure as found first." : "Press Suggest EQ.", r, juce::Justification::topLeft, 2);
             }
         }
 
@@ -621,16 +674,17 @@ public:
             if (room.count (false) > 0)
             {
                 room.deviation (room.average (false), lo, hi, rb, mb);
-                t << "Before: " << juce::String (rb, 1) << " dB RMS from the target (worst " << juce::String (mb, 1) << " dB).";
+                t << "As found: " << juce::String (rb, 1) << " dB RMS from the target (worst " << juce::String (mb, 1) << " dB).";
                 const double spread = room.levelSpread (false);
                 if (std::isfinite (spread) && room.count (false) > 1) t << "\nLevel across positions: " << juce::String (spread, 1) << " dB.";
             }
             if (room.count (true) > 0)
             {
                 room.deviation (room.average (true), lo, hi, ra, ma);
-                t << "\nAfter: " << juce::String (ra, 1) << " dB RMS (worst " << juce::String (ma, 1) << " dB).";
+                t << "\nCheck " << room.checkRound << ": " << juce::String (ra, 1) << " dB RMS (worst " << juce::String (ma, 1) << " dB)"
+                  << (ra <= 1.5 ? ": close enough, mark the room as tuned." : ": refine the EQ, or mark it as tuned if it sounds right.");
             }
-            if (t.isEmpty()) t = "Measure again with After EQ selected once the EQ is in the processor.";
+            if (t.isEmpty()) t = "Once the EQ is in your processor (I've entered this EQ), measure a check at the same positions.";
             txt (checkInfo, t, room.count (true) > 0 ? p.text : p.textDim);
         }
     }
@@ -808,63 +862,84 @@ private:
     void refreshMeasureButton()
     {
         const bool b = phase != Phase::Idle;
-        measureButton.setButtonText (b ? "Stop" : measuringAfter ? "Measure after EQ" : "Measure");
+        measureButton.setButtonText (b ? "Stop" : measuringAfter ? "Measure check " + juce::String (juce::jmax (1, room.checkRound)) : juce::String ("Measure as found"));
+        phaseButtons[1].setButtonText (room.checkRound > 0 ? "Check " + juce::String (room.checkRound) : juce::String ("Check"));
+        phaseButtons[1].setEnabled (room.checkRound > 0);
         measureButton.setColour (juce::TextButton::buttonColourId, b ? pal().bad : pal().accent);
         measureButton.setEnabled (proc.isStandalone() || proc.uiAsStandalone);
         applyButton.setEnabled (! room.suggested.empty());
+        suggestButton.setButtonText (room.checkRound > 0 && room.count (true) > 0 ? "Refine the EQ" : "Suggest EQ");
+        suggestButton.setEnabled (room.count (false) > 0 && phase == Phase::Idle);
         clearButton.setEnabled (selectedPos.isNotEmpty() && (room.hasAt (selectedPos, false) || room.hasAt (selectedPos, true)));
     }
 
     void eqRange (double& lo, double& hi) const { room.eqRange (proc.system, lo, hi); }
 
-    bool eqApplied() const
-    {
-        if (room.eqSpeaker < 0 || room.eqSpeaker >= (int) proc.system.sources.size()) return false;
-        if (room.suggested.empty()) return false;
-        const auto& eqNow = proc.system.sources[(size_t) room.eqSpeaker].proc.eq;
-        const auto want = room.combinedEq();
-        if (eqNow.size() != want.size()) return false;
-        for (size_t i = 0; i < eqNow.size(); ++i)
-            if (std::abs (eqNow[i].freq - want[i].freq) > 0.5 || std::abs (eqNow[i].gainDb - want[i].gainDb) > 0.05) return false;
-        return true;
-    }
-
     void suggest()
     {
-        if (room.count (false) == 0) { status = "Measure the positions first."; repaint(); return; }
+        const bool fromCheck = room.checkRound > 0 && room.count (true) > 0;
+        if (room.count (false) == 0) { status = "Measure the positions as found first."; repaint(); return; }
         eq::Options o;
         eqRange (o.fLo, o.fHi);
         o.maxBands = room.maxBands;
         o.maxBoostDb = room.maxBoostDb;
         o.maxCutDb = room.maxCutDb;
-        // EQ already on the speaker was in the measurement (kept in baseEq): fit what is left; applying adds to it
+        // room EQ is broad: gentle bands only (a narrow one chases a reflection at one seat), fitted to a 1/3 octave average
+        o.minQ = 0.7;
+        o.maxQ = 4.0;
+        o.maxBoostQ = 2.0;
+        o.narrowQ = 3.0;
+        o.smoothOct = 1.0 / 3.0;
+        // fit what is left: from the latest check (the EQ entered so far is already in that measurement)
         const auto f = RoomTuning::grid();
-        const auto r = eq::fit (f, room.average (false), room.targetCurve(), o);
+        const auto r = eq::fit (f, room.average (fromCheck), room.targetCurve(), o);
         room.suggested = r.bands;
         room.offsetDb = r.offsetDb;
         room.rmsBefore = r.rmsBefore;
         room.rmsAfter = r.rmsAfter;
-        status = room.suggested.empty() ? juce::String ("Already within 1 dB of the target: no EQ needed.")
-                                        : juce::String ((int) room.suggested.size()) + " bands: " + juce::String (r.rmsBefore, 1) + " dB RMS from the target before, "
-                                              + juce::String (r.rmsAfter, 1) + " dB predicted after.";
+        const int positions = room.count (fromCheck);
+        if (room.suggested.empty())
+            status = fromCheck ? juce::String ("Within 1 dB of the target: nothing to refine. Mark the room as tuned.")
+                               : juce::String ("Already within 1 dB of the target: no EQ needed.");
+        else
+        {
+            status = juce::String (fromCheck ? "Refinement: " : "") + juce::String ((int) room.suggested.size()) + (room.suggested.size() == 1 ? " band: " : " bands: ")
+                     + juce::String (r.rmsBefore, 1) + " dB RMS from the target now, " + juce::String (r.rmsAfter, 1) + " dB predicted. Enter "
+                     + (fromCheck ? "the changes" : "them") + " in your processor on " + room.eqGroupName (proc.system) + ", then press I've entered this EQ.";
+            if (positions == 1) status << " Only one position is measured: this EQ is provisional (it may be fixing that one seat); measure more positions.";
+        }
         changed();
     }
 
+    // The bands are in the processor now: note them (for the settings sheet and the report) on every speaker in the
+    // group, and measure a check at the same positions next.
     void applyEq()
     {
-        if (room.suggested.empty() || room.eqSpeaker < 0 || room.eqSpeaker >= (int) proc.system.sources.size()) return;
-        proc.system.sources[(size_t) room.eqSpeaker].proc.eq = room.combinedEq();
+        if (room.suggested.empty()) return;
+        const auto entered = eq::merge (room.baseEq, room.suggested, room.maxBands);
+        for (int i : room.eqMembers (proc.system)) proc.system.sources[(size_t) i].proc.eq = entered;
         proc.system.syncLinks();
-        status = "EQ copied to " + proc.system.sources[(size_t) room.eqSpeaker].name + "'s settings. Enter it in the processor, then measure After EQ.";
+        room.baseEq = entered;
+        room.suggested.clear();
+        // the previous check is replaced by the next one
+        room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [] (const RoomMeasurement& m) { return m.after; }), room.meas.end());
+        ++room.checkRound;
+        room.tuned = false;
+        status = "Noted as entered on " + room.eqGroupName (proc.system) + " (" + juce::String ((int) entered.size()) + " bands in all). Now measure check "
+                 + juce::String (room.checkRound) + " at the same positions.";
         setMeasuringAfter (true);
+        movePrompt.clear();
         refresh();
         changed();
     }
 
     void clearSelected()
     {
-        if (selectedPos.isEmpty()) return;
-        room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [this] (const RoomMeasurement& m) { return m.position == selectedPos; }), room.meas.end());
+        if (selectedPos.isEmpty()) { status = "Click a position in the list first."; repaint(); return; }
+        proc.removePosition (selectedPos);
+        selectedPos.clear();
+        graph.setSelectedPosition ({});
+        refresh();
         changed();
     }
 
@@ -886,7 +961,7 @@ private:
         if (todo.isEmpty())
         {
             movePrompt.clear();
-            if (fromButton) status = "Every planned position is measured" + juce::String (measuringAfter ? " after EQ." : ".");
+            if (fromButton) status = "Every planned position is measured" + juce::String (measuringAfter ? " in this check." : ".");
             resized();
             repaint();
             return;
@@ -1075,8 +1150,11 @@ private:
             if (! measuringAfter)
             {
                 room.suggested.clear();
-                if (room.count (false) == (int) done.size() && room.eqSpeaker >= 0 && room.eqSpeaker < (int) proc.system.sources.size())
-                    room.baseEq = proc.system.sources[(size_t) room.eqSpeaker].proc.eq;   // first "before" round: note the EQ in place
+                if (room.count (false) == (int) done.size() && room.checkRound == 0)
+                {
+                    const auto members = room.eqMembers (proc.system);
+                    room.baseEq = members.empty() ? std::vector<eq::Band>() : proc.system.sources[(size_t) members.front()].proc.eq;   // the EQ in place as found
+                }
             }
             planNextRound (false);
             if (movePrompt.isEmpty()) status << " Every planned position is measured.";
@@ -1091,10 +1169,10 @@ private:
     const Snapshot* snap = nullptr;
     RoomGraph graph;
 
-    juce::ToggleButton showPositions { "Positions" }, showBefore { "Before" }, showAfter { "After" }, showPredicted { "With suggested EQ" };
-    juce::TextButton addPositionButton { "+ Position" }, clearButton { "Clear position" }, nextPosButton { "Next position" };
+    juce::ToggleButton showPositions { "Positions" }, showBefore { "As found" }, showAfter { "Check" }, showPredicted { "With suggested EQ" };
+    juce::TextButton addPositionButton { "+ Position" }, clearButton { "Remove position" }, nextPosButton { "Next position" };
     juce::ComboBox outputBox, targetBox, speakerBox, bandsBox, boostBox;
-    juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "Copy to the speaker settings" };
+    juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "I've entered this EQ" };
     juce::TextButton tunedButton { "Mark the room as tuned" };
     juce::ToggleButton guidedToggle;
     std::vector<std::unique_ptr<juce::ComboBox>> micBoxes;

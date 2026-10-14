@@ -11,6 +11,7 @@
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "Settings.h"
+#include "MicCalibration.h"
 
 namespace la
 {
@@ -37,7 +38,7 @@ struct VenueMics
             c->setAttribute ("position", position[(size_t) m]);
             c->setAttribute ("noCalFile", noCalFile[(size_t) m]);
             c->setAttribute ("lockerId", lockerId[(size_t) m]);
-            c->setAttribute ("aim", aim[(size_t) m] == 0 ? 0 : 90);
+            c->setAttribute ("aim", calSlotDegrees (aim[(size_t) m]));
         }
     }
 
@@ -55,7 +56,7 @@ struct VenueMics
                 position[(size_t) m] = c->getStringAttribute ("position");
                 noCalFile[(size_t) m] = c->getBoolAttribute ("noCalFile");
                 lockerId[(size_t) m] = c->getStringAttribute ("lockerId");
-                aim[(size_t) m] = c->getIntAttribute ("aim", 90) == 0 ? 0 : 1;
+                aim[(size_t) m] = calSlotFromDegrees (c->getIntAttribute ("aim", 90));
             }
         }
     }

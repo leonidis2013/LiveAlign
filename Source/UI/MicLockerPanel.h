@@ -50,7 +50,7 @@ public:
         notesEditor.setMultiLine (true);
         notesEditor.setReturnKeyStartsNewLine (true);
 
-        for (int a = 0; a < 2; ++a)
+        for (int a = 0; a < kCalSlots; ++a)
         {
             loadButtons[a].setButtonText ("Load " + calAngleName (a) + " file...");
             loadButtons[a].onClick = [this, a] { if (auto* m = current(); m != nullptr && onLoadCal) onLoadCal (m->id, a); };
@@ -59,7 +59,7 @@ public:
             addAndMakeVisible (clearButtons[a]);
         }
         loadBothButton.onClick = [this] { if (auto* m = current(); m != nullptr && onLoadCal) onLoadCal (m->id, -1); };
-        loadBothButton.setTooltip ("Select the 0 and 90 degree files together; each goes to its angle by its name");
+        loadBothButton.setTooltip ("Select every angle's file together (0, 30, 90 degrees ...); each goes to its angle by its name");
         addAndMakeVisible (loadBothButton);
         clearSplButton.onClick = [this] { if (auto* m = current()) { m->hasSpl = false; m->splDate.clear(); saveAndRefresh(); } };
         clearSplButton.setTooltip ("Forget the sound level calibration (calibrate again on Mic setup)");
@@ -76,9 +76,9 @@ public:
         selected = juce::jlimit (-1, (int) proc.locker.mics.size() - 1, selected < 0 && ! proc.locker.mics.empty() ? 0 : selected);
         const auto* m = current();
         for (auto* c : std::initializer_list<juce::Component*> { &nameEditor, &modelEditor, &serialEditor, &notesEditor, &loadBothButton,
-                                                                 &loadButtons[0], &loadButtons[1], &clearButtons[0], &clearButtons[1],
                                                                  &clearSplButton, &removeButton })
             c->setVisible (m != nullptr);
+        for (int a = 0; a < kCalSlots; ++a) { loadButtons[a].setVisible (m != nullptr); clearButtons[a].setVisible (m != nullptr); }
         if (m != nullptr)
         {
             updating = true;
@@ -87,7 +87,7 @@ public:
             if (! serialEditor.hasKeyboardFocus (true)) serialEditor.setText (m->serial, juce::dontSendNotification);
             if (! notesEditor.hasKeyboardFocus (true)) notesEditor.setText (m->notes, juce::dontSendNotification);
             updating = false;
-            for (int a = 0; a < 2; ++a)
+            for (int a = 0; a < kCalSlots; ++a)
             {
                 clearButtons[a].setButtonText ("Clear");
                 clearButtons[a].setEnabled (m->cals.has (a));
@@ -129,7 +129,7 @@ public:
             g.setFont (font (11.0f));
             juce::String info;
             if (lk[(size_t) i].name.isNotEmpty() && lk[(size_t) i].modelSerial().isNotEmpty()) info << lk[(size_t) i].modelSerial() << "  -  ";
-            info << (lk[(size_t) i].cals.both() ? "0 + 90 deg files" : lk[(size_t) i].cals.any() ? "1 cal file" : "no cal file");
+            info << (lk[(size_t) i].cals.both() ? lk[(size_t) i].cals.label() : lk[(size_t) i].cals.any() ? "1 cal file" : "no cal file");
             info << "  -  " << (lk[(size_t) i].hasSpl ? "level calibrated" : "level not calibrated");
             const auto used = usedIn (lk[(size_t) i].id);
             if (used.isNotEmpty()) info << "  -  " << used;
@@ -148,7 +148,7 @@ public:
             g.drawText (l.second.toUpperCase(), l.first, juce::Justification::centredLeft, true);
         }
         g.setFont (font (12.0f));
-        for (int a = 0; a < 2; ++a)
+        for (int a = 0; a < kCalSlots; ++a)
         {
             g.setColour (m->cals.has (a) ? p.text : p.textFaint);
             g.drawText (m->cals.has (a) ? m->cals.name[a] : juce::String ("none"), calName[a], juce::Justification::centredLeft, true);
@@ -197,16 +197,16 @@ public:
             c.removeFromTop (4);
             loadBothButton.setBounds (c.removeFromTop (30).withWidth (260));
             c.removeFromTop (8);
-            for (int a = 0; a < 2; ++a)
+            for (int a : calSlotsInOrder())
             {
-                auto row = c.removeFromTop (30);
-                labels.push_back ({ row.removeFromLeft (110), calAngleName (a) + (a == 0 ? "  at speaker" : "  pointing up") });
+                auto row = c.removeFromTop (26);
+                labels.push_back ({ row.removeFromLeft (110), calAngleName (a) + (a == Cal0 ? "  at speaker" : a == Cal90 ? "  pointing up" : "") });
                 clearButtons[a].setBounds (row.removeFromRight (70));
                 row.removeFromRight (8);
                 loadButtons[a].setBounds (row.removeFromRight (140));
                 row.removeFromRight (12);
                 calName[a] = row;
-                c.removeFromTop (6);
+                c.removeFromTop (4);
             }
             c.removeFromTop (12);
             {
@@ -322,9 +322,9 @@ private:
     int selected = -1, hoverRow = -1;
     bool updating = false;
     juce::TextButton addButton { "+ Add mic" }, fromVenueButton { "Save a mic from this venue..." }, removeButton { "Remove from locker" };
-    juce::TextButton loadBothButton { "Load both files (0 and 90 degrees)..." }, loadButtons[2], clearButtons[2], clearSplButton { "Clear" };
+    juce::TextButton loadBothButton { "Load the files (any angles)..." }, loadButtons[kCalSlots], clearButtons[kCalSlots], clearSplButton { "Clear" };
     juce::TextEditor nameEditor, modelEditor, serialEditor, notesEditor;
-    juce::Rectangle<int> listCard, editCard, listArea, pathLine, calName[2], splLine, hintArea;
+    juce::Rectangle<int> listCard, editCard, listArea, pathLine, calName[kCalSlots], splLine, hintArea;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
 };
 } // namespace la::ui

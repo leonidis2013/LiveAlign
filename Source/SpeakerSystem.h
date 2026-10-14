@@ -299,6 +299,46 @@ struct SpeakerSystem
     // A sub above the crossover and a top below it.
     bool pairInverted() const { return xo::pairInverted (roles(), { xoHigh, xoLow }); }
 
+    // A crossover is between a top and a sub: without a sub there is nothing to cross over (left and right mains are
+    // two channels, not two bands).
+    bool isMain (int i) const { return i >= 0 && i < (int) sources.size() && sources[(size_t) i].role == (int) SpeakerRole::Main; }
+
+    bool hasSub() const
+    {
+        for (const auto& s : sources) if (s.role == (int) SpeakerRole::Sub) return true;
+        return false;
+    }
+    bool xoNeeded() const
+    {
+        bool sub = false, top = false;
+        for (const auto& s : sources) (s.role == (int) SpeakerRole::Sub ? sub : top) = true;
+        return sub && top;
+    }
+    // The pair is a top and a sub (the only kind whose sum means anything).
+    bool realPair() const
+    {
+        if (! pairValid()) return false;
+        const bool hs = sources[(size_t) xoHigh].role == (int) SpeakerRole::Sub, ls = sources[(size_t) xoLow].role == (int) SpeakerRole::Sub;
+        return hs != ls;
+    }
+    // Crossover filters left on speakers that are not a top / sub pair (from an earlier version, or a pair of mains).
+    juce::StringArray strayCrossoverFilters() const
+    {
+        juce::StringArray out;
+        if (realPair() && xoNeeded()) return out;
+        for (const auto& s : sources)
+            if (s.linkTo < 0 && ((s.proc.hp.active() && s.role != (int) SpeakerRole::Sub) || s.proc.lp.active()))
+                out.add (s.name);
+        return out;
+    }
+    void removeCrossoverFilters()
+    {
+        for (auto& s : sources) { s.proc.hp = {}; s.proc.lp = {}; }
+        if (pairValid()) { sources[(size_t) xoLow].proc.invert = false; sources[(size_t) xoLow].proc.gainDb = 0.0; }   // set by the crossover
+        lastResult = {};
+        syncLinks();
+    }
+
     void swapPair()
     {
         std::swap (xoHigh, xoLow);

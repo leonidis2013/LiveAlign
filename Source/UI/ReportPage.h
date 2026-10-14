@@ -140,6 +140,13 @@ private:
         UserPrefs::set (monitoring ? "monitorReportSkip" : "tuningReportSkip", skip.joinIntoString (","));
     }
 
+    // h:mm, e.g. 0:07 or 1:32
+    static juce::String hoursMinutes (double seconds)
+    {
+        const int m = juce::jmax (0, juce::roundToInt (seconds / 60.0));
+        return juce::String (m / 60) + ":" + juce::String (m % 60).paddedLeft ('0', 2);
+    }
+
     // Whether there is anything for a chapter yet, and a word about it.
     std::pair<bool, juce::String> statusOf (const juce::String& id) const
     {
@@ -164,7 +171,7 @@ private:
             return { n > 0, juce::String (n) + (n == 1 ? " trace" : " traces") };
         }
         if (id == "level") return { ! proc.splLog.empty(), proc.splLog.empty() ? juce::String ("Not logged yet")
-                                                                                : juce::String ((proc.splLog.end() - proc.splLog.start()) / 60.0, 0) + " min logged" };
+                                                                                : hoursMinutes (proc.splLog.end() - proc.splLog.start()) + " logged" };
         if (id == "setup") return { proc.monitorMic.cal.any() || proc.monitorMic.splCalibrated, proc.monitorMic.name };
         return { true, {} };
     }

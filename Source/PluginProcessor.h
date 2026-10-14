@@ -8,6 +8,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Settings.h"
 #include "Analyzer.h"
+#include "Recorder.h"
 #include "TraceStore.h"
 #include "Checklist.h"
 #include "SpeakerSystem.h"
@@ -129,12 +130,20 @@ public:
 
     // Interface and wiring as text, so a change since the last checks can be spotted.
     juce::String setupFingerprint() const;
+    // What differs from the setup this session's checks were done with, in words ("the interface: was X, now Y").
+    juce::StringArray setupChanges() const;
+    bool interfaceChanged() const;   // the device or sample rate, not just a mic's input
     static juce::String today() { return juce::Time::getCurrentTime().formatted ("%d %b %Y"); }
 
     juce::String venueName { "Untitled venue" }, venueNotes;
     juce::File projectFile;
     la::VenueMics mics;
     juce::StringArray positions;
+    // Positions are one list, kept the same everywhere: every position has its marker on the venue plan (placed for
+    // you when it has none) and every marker on the plan is a position. Rename and remove go through here.
+    void syncPositionsWithPlan();
+    void renamePosition (const juce::String& from, const juce::String& to);
+    void removePosition (const juce::String& name);
     la::SpeakerStatus speakers;
     la::SpeakerSystem system;
     la::VenuePlan plan;                 // sketch of the setup (venue)           // sources, responses and crossover (venue)
@@ -161,6 +170,7 @@ public:
 
     la::Settings settings;
     la::Analyzer analyzer { settings };
+    la::Recorder recorder;              // a plain recording of the mics and the reference (sweeps for room acoustics)
     la::TraceStore traces;              // the open session's traces
 
 private:

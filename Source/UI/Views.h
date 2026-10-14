@@ -31,6 +31,31 @@ inline void drawWaiting (juce::Graphics& g, juce::Rectangle<float> area, const j
 }
 
 //==============================================================================
+// Frequencies Monitoring's feedback watch has flagged as ringing (newest last), marked on the RTA and the waterfall.
+// Message thread only.
+inline std::vector<double>& feedbackMarks() { static std::vector<double> marks; return marks; }
+
+inline void drawFeedbackMarks (juce::Graphics& g, const FreqAxis& ax, juce::Rectangle<float> plot)
+{
+    const auto& marks = feedbackMarks();
+    if (marks.empty()) return;
+    const auto& p = pal();
+    g.setFont (font (10.5f, true));
+    for (double f : marks)
+    {
+        if (f < ax.fMin || f > ax.fMax) continue;
+        const float x = ax.x (f);
+        juce::Path line, dashed;
+        line.startNewSubPath (x, plot.getY() + 14.0f);
+        line.lineTo (x, plot.getBottom());
+        const float dashes[] = { 4.0f, 3.0f };
+        juce::PathStrokeType (1.4f).createDashedStroke (dashed, line, dashes, 2);
+        g.setColour (p.bad.withAlpha (0.85f));
+        g.fillPath (dashed);
+        g.drawText (freqLabel (f), juce::Rectangle<float> (x - 30.0f, plot.getY(), 60.0f, 13.0f), juce::Justification::centred);
+    }
+}
+
 class TransferView : public juce::Component
 {
 public:
@@ -341,6 +366,7 @@ public:
             const juce::String unit = spl ? " dB SPL" : " dBFS";
             drawReadout (g, plot, *hover, freqLabel (nominalFrequency (f[i])) + " Hz   " + juce::String (data->rtaMic[i], 1) + unit);
         }
+        drawFeedbackMarks (g, ax, plot);
     }
 
     void mouseMove (const juce::MouseEvent& e) override { hover = e.position; repaint(); }
@@ -609,6 +635,7 @@ public:
             drawReadout (g, plot, *hover, freqLabel (f[bi]) + " Hz   " + juce::String (age, 1) + " s ago   "
                                                + (level > -150.0f ? juce::String (level, 1) + (spl ? " dB" : " dBFS") : juce::String ("-")));
         }
+        drawFeedbackMarks (g, ax, plot);
     }
 
     void mouseMove (const juce::MouseEvent& e) override { hover = e.position; repaint(); }

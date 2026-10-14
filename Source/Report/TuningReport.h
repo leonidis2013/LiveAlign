@@ -20,7 +20,7 @@ inline const std::vector<TuningSection>& tuningSections()
         { "summary", "Summary: as found and as left", "What was done, and the processor settings before and after this session" },
         { "plan", "Venue plan", "Where the speakers and tuning mics were (a landscape page)" },
         { "speakers", "Speakers and processor settings", "The system, the crossover, EQ, time alignment and the predicted sum" },
-        { "room", "Room EQ", "The listening positions against the target, before and after EQ" },
+        { "room", "Room EQ", "The listening positions against the target, as found and as left" },
         { "feedback", "Feedback test", "The rings found and the cuts for them" },
         { "acoustics", "Room acoustics", "Reverberation, clarity, intelligibility, room modes, coverage and noise" },
         { "mics", "Measurement mics and checks", "Mics with serial numbers, calibration and this session's checks" },
@@ -96,7 +96,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             room.deviation (room.average (false), lo, hi, rb, mb);
             if (room.count (true) > 0) room.deviation (room.average (true), lo, hi, ra, ma);
             kv.push_back ({ "Room EQ", "As found " + juce::String (rb, 1) + " dB RMS from the target"
-                                           + (std::isfinite (ra) ? ", as left " + juce::String (ra, 1) + " dB" : juce::String (", not measured after EQ"))
+                                           + (std::isfinite (ra) ? ", as left " + juce::String (ra, 1) + " dB" : juce::String (", no check measured yet"))
                                            + " (" + juce::String (room.count (false)) + " positions)" });
         }
         if (! p.feedback.rings.empty())
@@ -126,7 +126,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                 L.table ({ 1.4f, 3.0f, 3.0f }, { "Speaker", "As found (" + p.asFound.takenOn + ")", "As left" }, rows, 8.0f);
             }
             if (room.count (false) > 0 && room.count (true) > 0)
-                L.para ("The room's response as found (before EQ) and as left (after EQ) is compared on the Room EQ pages.", 9.0f, dim);
+                L.para ("The room's response as found and as left (the latest check) is compared on the Room EQ pages.", 9.0f, dim);
         }
     }
 
@@ -278,7 +278,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             room.eqRange (sys, lo, hi);
             std::vector<std::pair<juce::String, juce::String>> rkv;
             rkv.push_back ({ "Target", targets::list()[(size_t) juce::jlimit (0, targets::count() - 1, room.target)].name });
-            rkv.push_back ({ "EQ on", room.eqSpeaker >= 0 && room.eqSpeaker < (int) sys.sources.size() ? sys.sources[(size_t) room.eqSpeaker].name : juce::String ("-") });
+            rkv.push_back ({ "EQ on", room.eqGroupName (sys) + (room.checkRound > 0 ? ", " + juce::String (room.checkRound) + (room.checkRound == 1 ? " check" : " checks") : juce::String()) });
             rkv.push_back ({ "EQ range", juce::String (juce::roundToInt (lo)) + " Hz - " + juce::String (juce::roundToInt (hi)) + " Hz" });
             auto dev = [&] (bool after)
             {
@@ -290,8 +290,8 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                 if (std::isfinite (spread) && room.count (after) > 1) t << "; level across positions " << juce::String (spread, 1) << " dB";
                 return t;
             };
-            if (room.count (false) > 0) rkv.push_back ({ "As found (before EQ)", dev (false) });
-            if (room.count (true) > 0) rkv.push_back ({ "As left (after EQ)", dev (true) });
+            if (room.count (false) > 0) rkv.push_back ({ "As found", dev (false) });
+            if (room.count (true) > 0) rkv.push_back ({ "As left (latest check)", dev (true) });
             rkv.push_back ({ "Status", room.tuned ? "Marked as tuned " + room.tunedOn : juce::String ("Not marked as tuned") });
             L.keyValues (rkv);
 
@@ -304,14 +304,14 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             L.need (330.0f);
             L.sub ("Average of the positions against the target");
             L.picture (img, 300.0f);
-            L.para ("Each position is levelled to its own 500 Hz - 4 kHz average, so the curves compare tonal balance. Dark: as found (before EQ); "
-                    "green: as left (after EQ); dashed green with a shaded band: the target, +/-3 dB; dashed teal: before EQ with the suggested EQ.", 8.0f, dim);
+            L.para ("Each position is levelled to its own 500 Hz - 4 kHz average, so the curves compare tonal balance. Dark: as found; "
+                    "green: as left (the latest check); dashed green with a shaded band: the target, +/-3 dB; dashed teal: with the suggested EQ.", 8.0f, dim);
 
             std::vector<juce::StringArray> rows;
             for (const auto& m : room.meas)
             {
                 const double l = m.levelDb();
-                rows.push_back ({ m.position, m.after ? "after EQ" : "before EQ", m.micName, m.calUsed, m.time,
+                rows.push_back ({ m.position, m.after ? "check " + juce::String (room.checkRound) : juce::String ("as found"), m.micName, m.calUsed, m.time,
                                   std::isfinite (l) ? juce::String (l, 1) + " dB" : juce::String ("-"), m.include ? "yes" : "no" });
             }
             L.sub ("Measurements at the listening positions");
@@ -394,7 +394,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             std::vector<juce::StringArray> prow;
             for (const auto& m : room.meas)
                 if (m.ac.valid)
-                    prow.push_back ({ m.position + (m.after ? " (after EQ)" : ""), n2 (m.ac.rtMid(), 2), n2 (m.ac.mid (&acoustics::Band::edt), 2),
+                    prow.push_back ({ m.position + (m.after ? juce::String (" (check)") : juce::String()), n2 (m.ac.rtMid(), 2), n2 (m.ac.mid (&acoustics::Band::edt), 2),
                                       n2 (m.ac.mid (&acoustics::Band::c50), 1), n2 (m.ac.mid (&acoustics::Band::c80), 1), n2 (m.ac.sti, 2) + " " + acoustics::stiRating (m.ac.sti) });
             L.sub ("Each position");
             L.table ({ 2.0f, 0.9f, 0.9f, 0.9f, 0.9f, 1.3f }, { "Position", "RT (s)", "EDT (s)", "C50", "C80", "STI" }, prow, 8.0f);

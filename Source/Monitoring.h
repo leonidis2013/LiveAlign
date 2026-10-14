@@ -32,18 +32,18 @@ struct MonitorMic
         e->setAttribute ("position", position);
         e->setAttribute ("lockerId", lockerId);
         e->setAttribute ("input", input);
-        e->setAttribute ("aim", aim == Cal0 ? 0 : 90);
+        e->setAttribute ("aim", calSlotDegrees (aim));
         e->setAttribute ("noCalFile", noCalFile);
         e->setAttribute ("splCalibrated", splCalibrated);
         e->setAttribute ("splOffset", splOffset);
         e->setAttribute ("splDate", splDate);
         e->setAttribute ("delayMs", delayMs);
         e->setAttribute ("configured", configured);
-        for (int a = 0; a < 2; ++a)
+        for (int a = 0; a < kCalSlots; ++a)
         {
             if (! cal.has (a)) continue;
             auto* c = e->createNewChildElement ("Calibration");
-            c->setAttribute ("angle", a == Cal90 ? 90 : 0);
+            c->setAttribute ("angle", calSlotDegrees (a));
             c->setAttribute ("name", cal.name[a]);
             MicCalSet::saveTable (*c, cal.table[a]);
         }
@@ -58,7 +58,7 @@ struct MonitorMic
         position = e->getStringAttribute ("position", "FOH");
         lockerId = e->getStringAttribute ("lockerId");
         input = juce::jlimit (0, 15, e->getIntAttribute ("input"));
-        aim = e->getIntAttribute ("aim", 90) == 0 ? Cal0 : Cal90;
+        aim = calSlotFromDegrees (e->getIntAttribute ("aim", 90));
         noCalFile = e->getBoolAttribute ("noCalFile");
         splCalibrated = e->getBoolAttribute ("splCalibrated");
         splOffset = juce::jlimit (0.0f, 200.0f, (float) e->getDoubleAttribute ("splOffset", 120.0));
@@ -69,7 +69,7 @@ struct MonitorMic
         {
             auto t = MicCalSet::loadTable (*c);
             if (t.freq.size() < 3) continue;
-            const int a = c->getIntAttribute ("angle") == 90 ? Cal90 : Cal0;
+            const int a = calSlotFromDegrees (c->getIntAttribute ("angle"));
             cal.table[a] = std::move (t);
             cal.name[a] = c->getStringAttribute ("name");
         }

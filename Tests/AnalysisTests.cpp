@@ -21,6 +21,7 @@
 #include "Analysis/RoomAcoustics.h"
 #include "Analysis/FeedbackDetector.h"
 #include "Analysis/Polarity.h"
+#include "Analysis/Deconvolve.h"
 #include "Analysis/EqFit.h"
 
 using namespace la;
@@ -770,6 +771,55 @@ static void testPolarity()
                  absolute (sub, 0.4, false, false).band.phaseDeg, absolute (sub, 0.4, false, false).band.spread);
 }
 
+// A sweep through a room with a known reverberation time: the impulse response from deconvolving the recording, and
+// the RT60 worked out from it.
+static void testSweepDeconvolution()
+{
+    const double fs = 48000.0;
+    const double rt = 1.8;                         // longer than the live analysis window
+    const int irLen = (int) (2.5 * fs);
+    std::vector<double> room ((size_t) irLen);
+    unsigned st = 3;
+    for (int i = 0; i < irLen; ++i)
+    {
+        st = st * 1664525u + 1013904223u;
+        const double r = ((double) (st >> 8) / (double) (1u << 24) - 0.5);
+        room[(size_t) i] = r * std::exp (-6.9078 * i / (rt * fs));   // -60 dB at rt
+    }
+    room[0] = 1.0;
+    // the reference: two repeats of a 4 s log sweep and 0.5 s of silence
+    const int sweepLen = (int) (4.0 * fs), period = sweepLen + (int) (0.5 * fs), n = 2 * period;
+    std::vector<float> x ((size_t) n, 0.0f), y ((size_t) n, 0.0f);
+    const double f0 = 20.0, f1 = 20000.0, k = std::log (f1 / f0);
+    for (int i = 0; i < n; ++i)
+    {
+        const int t = i % period;
+        if (t < sweepLen) x[(size_t) i] = (float) (0.5 * std::sin (2.0 * 3.14159265358979 * f0 * 4.0 / k * (std::exp ((double) t / fs / 4.0 * k) - 1.0)));
+    }
+    // the mic: the sweep through the room, 3 ms later, with a little noise
+    const int lag = (int) (0.003 * fs);
+    std::vector<double> yd ((size_t) n, 0.0);
+    {
+        int len = 1;
+        while (len < n + irLen) len <<= 1;
+        la::Fft fft (len);
+        std::vector<la::cplx> a ((size_t) len), b ((size_t) len);
+        for (int i = 0; i < n; ++i) a[(size_t) i] = x[(size_t) i];
+        for (int i = 0; i < irLen; ++i) b[(size_t) i] = room[(size_t) i];
+        fft.forward (a.data());
+        fft.forward (b.data());
+        for (int i = 0; i < len; ++i) a[(size_t) i] *= b[(size_t) i];
+        fft.inverse (a.data());
+        for (int i = 0; i + lag < n; ++i) yd[(size_t) (i + lag)] = a[(size_t) i].real();
+    }
+    for (int i = 0; i < n; ++i) { st = st * 1664525u + 1013904223u; y[(size_t) i] = (float) (yd[(size_t) i] + 1e-5 * ((double) (st >> 8) / (double) (1u << 24) - 0.5)); }
+    const auto ir = la::deconv::impulse (x.data(), y.data(), n, fs, 3.0);
+    check (ir.size() >= (size_t) (2.9 * fs), "Sweep: a 3 s impulse response", (double) ir.size() / fs, 3.0);
+    const auto r = la::acoustics::analyse (ir, fs);
+    near (r.rtMid(), rt, 0.15, "Sweep: RT60 of a 1.8 s room from the sweep");
+    std::printf ("  sweep: RT60 %.2f s (room %.2f s)\n", r.rtMid(), rt);
+}
+
 int main()
 {
     testTargets();
@@ -789,6 +839,7 @@ int main()
     testRoomAcoustics();
     testFeedbackDetector();
     testPolarity();
+    testSweepDeconvolution();
 
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

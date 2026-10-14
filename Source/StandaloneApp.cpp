@@ -45,20 +45,39 @@ public:
         auto* h = holder.get();
         h->getMuteInputValue().setValue (false);
 
-        la::StandaloneHooks::showAudioSettings() = [h] { h->showAudioSettingsDialog(); };
-        la::StandaloneHooks::deviceDescription() = [h]() -> juce::String
+        // LiveAlign's own audio settings: every input and output listed on its own (JUCE's standalone dialog groups
+        // them in stereo pairs, so a mic on input 2 alone could not be picked), and no MIDI or feedback options.
+        la::StandaloneHooks::showAudioSettings() = [h]
+        {
+            auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (h->deviceManager, 0, 64, 0, 64, false, false, false, false);
+            selector->setSize (520, 420);
+            juce::DialogWindow::LaunchOptions o;
+            o.content.setOwned (selector.release());
+            o.dialogTitle = "Audio interface";
+            o.dialogBackgroundColour = juce::Colour (0xff161d22);
+            o.escapeKeyTriggersCloseButton = true;
+            o.useNativeTitleBar = true;
+            o.resizable = true;
+            o.launchAsync();
+        };
+        // The input and the output device, which can be different (a USB interface in, the computer's speakers out).
+        auto devicesText = [h]() -> juce::String
+        {
+            const auto setup = h->deviceManager.getAudioDeviceSetup();
+            if (h->deviceManager.getCurrentAudioDevice() == nullptr) return {};
+            if (setup.inputDeviceName.isEmpty() || setup.inputDeviceName == setup.outputDeviceName)
+                return setup.outputDeviceName.isNotEmpty() ? setup.outputDeviceName : h->deviceManager.getCurrentAudioDevice()->getName();
+            return "in: " + setup.inputDeviceName + ", out: " + (setup.outputDeviceName.isNotEmpty() ? setup.outputDeviceName : juce::String ("none"));
+        };
+        la::StandaloneHooks::deviceDescription() = [h, devicesText]() -> juce::String
         {
             if (auto* dev = h->deviceManager.getCurrentAudioDevice())
-                return dev->getName() + "  " + juce::String (dev->getCurrentSampleRate() / 1000.0, 1) + " kHz  "
+                return devicesText() + "  " + juce::String (dev->getCurrentSampleRate() / 1000.0, 1) + " kHz  "
                        + juce::String (dev->getCurrentBufferSizeSamples()) + " samples";
             return "No audio device";
         };
 
-        la::StandaloneHooks::deviceName() = [h]() -> juce::String
-        {
-            if (auto* dev = h->deviceManager.getCurrentAudioDevice()) return dev->getName();
-            return {};
-        };
+        la::StandaloneHooks::deviceName() = [devicesText]() -> juce::String { return devicesText(); };
         la::StandaloneHooks::toggleFullScreen() = [this]
         {
             if (mainWindow == nullptr) return;

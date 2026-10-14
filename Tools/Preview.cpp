@@ -115,13 +115,13 @@ public:
             {
                 const float ref = (float) nd (rng);
                 // while a speaker is measured, only the speaker on the generator's output plays; "all outputs" plays them all
-                const int out = proc.settings.genOn.load() ? proc.settings.genOutput.load() : 0;
+                const int out = proc.settings.genOn.load() ? proc.settings.genOutput.load() : (consoleOut >= 0 ? consoleOut : 0);
                 if (out != lastOut) { std::printf ("  sim: output %d at tick %d\n", out, ticks); lastOut = out; }
                 double t = 0.0, sb = 0.0, fl = 0.0;
                 // outputs: 1 / 2 main left / right, 3 sub, 4 front fill
                 if (out == 0 || out == 1 || out == 2) { t = ref; for (auto& f : top) t = f (t); for (auto& f : system) t = f (t); }
                 if (out == 2 && simRightInverted) t = -t;   // Main R wired the wrong way round
-                if (out == 0 || out == 3) { sb = ref; for (auto& f : sub) sb = f (sb); sb *= 2.0 * subGain; }
+                if (out == 0 || out == 3) { sb = ref; for (auto& f : sub) sb = f (sb); for (auto& f : subSystem) sb = f (sb); sb *= 2.0 * subGain; }
                 if (out == 4) { fl = ref; for (auto& f : fillChain) fl = f (fl); fl *= 0.5; }
                 lineTop[wp % L] = (float) t;
                 lineSub[wp % L] = (float) sb;
@@ -377,16 +377,44 @@ public:
                     std::printf ("alignment 2: %s to %s need=%.3f\n", proc.system.sources[(size_t) a.align].name.toRawUTF8(), proc.system.sources[(size_t) a.ref].name.toRawUTF8(),
                                  a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs));
                     page.applyAlignmentNow();
+                    // the main / sub alignment again with "music from the console", one speaker at a time
+                    savedSub = proc.system.alignments[0].alignArrivalMs;
+                    page.setAlignmentSignal (2);
+                    consoleOut = proc.system.sources[(size_t) proc.system.alignments[0].ref].output;
+                    page.measureAlignmentOne (0, 0);
+                    next (50);
+                }
+                break;
+            case 50:
+            case 51:
+                if (stageTick + 5 < ticks && (! page.busy() || timeout))
+                {
+                    const auto& a = proc.system.alignments[0];
+                    if (stage == 50)
+                    {
+                        std::printf ("music: %s measured: %s\n", proc.system.sources[(size_t) a.ref].name.toRawUTF8(), page.statusText().toRawUTF8());
+                        consoleOut = proc.system.sources[(size_t) a.align].output;
+                        page.measureAlignmentOne (0, 1);
+                        next (51);
+                        break;
+                    }
+                    std::printf ("music alignment: phase=%d %.2f need=%.3f (status %s)\n", (int) a.phaseValid, a.phaseDelayMs,
+                                 a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs), page.statusText().toRawUTF8());
+                    consoleOut = -1;
+                    page.setAlignmentSignal (0);
                     proc.settings.theme = 1;
                     editor->showPage ((int) P::Response);
                     next (8);
                 }
                 break;
             case 8:
-                if (after (15)) { shot ("response-light"); proc.settings.theme = 0; editor->showPage ((int) P::Monitor); proc.settings.view = 3; }
-                if (after (50))
+                if (after (15)) { shot ("response-light"); proc.settings.theme = 0; editor->showPage ((int) P::Monitor); proc.settings.view = 3; ringHz = 3150.0; }
+                if (after (200))
                 {
+                    std::printf ("feedback watch: %d marked (%s Hz)\n", (int) la::ui::feedbackMarks().size(),
+                                 la::ui::feedbackMarks().empty() ? "-" : juce::String (la::ui::feedbackMarks().back(), 0).toRawUTF8());
                     shot ("monitor-waterfall");
+                    ringHz = 0.0;
                     proc.settings.view = 1;
                     editor->showPage ((int) P::Room);
                     rp.setMeasuringAfter (false);
@@ -436,7 +464,12 @@ public:
                     std::printf ("room suggest: %s\n", rp.statusText().toRawUTF8());
                     for (const auto& b : proc.room.suggested) std::printf ("  band %.0f Hz %.1f dB Q %.2f\n", b.freq, b.gainDb, b.q);
                     rp.applyNow();
-                    for (const auto& b : proc.system.sources[(size_t) proc.room.eqSpeaker].proc.eq) system.push_back (Biquad::make (fs, b.freq, b.q, b.gainDb, 1));
+                    // the EQ goes on the whole system: the top and the sub
+                    for (const auto& b : proc.system.sources[(size_t) proc.room.eqMembers (proc.system).front()].proc.eq)
+                    {
+                        system.push_back (Biquad::make (fs, b.freq, b.q, b.gainDb, 1));
+                        subSystem.push_back (Biquad::make (fs, b.freq, b.q, b.gainDb, 1));
+                    }
                     shot ("room-suggested");
                     rp.measure();
                     next (12);
@@ -450,6 +483,8 @@ public:
                     proc.room.deviation (proc.room.average (false), lo, hi, rb, mb);
                     proc.room.deviation (proc.room.average (true), lo, hi, ra, ma);
                     std::printf ("room after: count=%d rms before %.2f after %.2f\n", proc.room.count (true), rb, ra);
+                    rp.suggestNow();
+                    std::printf ("room refine: %s (%d bands entered, hint '%s')\n", rp.statusText().toRawUTF8(), (int) proc.room.baseEq.size(), rp.nextHint().toRawUTF8());
                     proc.room.tuned = true;
                     proc.room.tunedOn = LiveAlignProcessor::today();
                     rp.refresh();
@@ -470,6 +505,25 @@ public:
             case 14:
                 if (after (5)) { shot ("feedback"); editor->feedbackPageForPreview().stopListening(); proc.feedback.rings.front().applied = true; editor->showPage ((int) P::Acoustics); }
                 if (after (12))
+                {
+                    const auto a = proc.room.acousticsAverage();
+                    std::printf ("acoustics (Room EQ estimate): positions=%d RT %.2f s\n", proc.room.acousticsCount(), a.rtMid());
+                    editor->acousticsPageForPreview().doNext();   // measure with a sweep
+                    next (40);
+                }
+                break;
+            case 40:
+                if (after (60)) shot ("acoustics-sweeping");
+                if (stageTick + 20 < ticks && (! editor->acousticsPageForPreview().sweeping() || ticks - stageTick > 1500))
+                {
+                    for (const auto& w : proc.room.sweeps) std::printf ("sweep at %s (%s): RT %.2f s EDT %.2f T30 %.2f range %.0f dB STI %.2f\n", w.position.toRawUTF8(),
+                                                                          w.micName.toRawUTF8(), w.ac.rtMid(), w.ac.mid (&la::acoustics::Band::edt),
+                                                                          w.ac.mid (&la::acoustics::Band::t30), w.ac.mid (&la::acoustics::Band::rangeDb), w.ac.sti);
+                    next (41);
+                }
+                break;
+            case 41:
+                if (after (3))
                 {
                     const auto a = proc.room.acousticsAverage();
                     std::printf ("acoustics: positions=%d RT %.2f s EDT %.2f C80 %.1f C50 %.1f STI %.2f (%s) modes=%d\n", proc.room.acousticsCount(), a.rtMid(),
@@ -648,6 +702,17 @@ public:
         const auto overridden = proc.analyzer.getCalibrationName (0);
         proc.setAimOverride (-1);
         proc.setMicAim (0, 0);
+        {
+            juce::StringArray names { "7012345_90deg.txt", "SoundID Reference 38Y362 30deg.txt", "UMIK-1 7012345.txt", "ECM8000 90.txt", "mic_3012345.txt",
+                                      "M30 cal 45 deg.frd", "x_180deg.txt", "UMIK_60.txt" };
+            juce::String got;
+            for (const auto& n : names) got << la::calAngleName (la::MicCalSet::angleFromName (n)) << " ";
+            std::printf ("cal names -> angles: %s(want 90 30 0 90 0 45 180 60)\n", got.toRawUTF8());
+            la::MicCalSet set;
+            set.table[la::Cal0].freq = { 20, 1000, 20000 }; set.table[la::Cal30].freq = { 20, 1000, 20000 }; set.table[la::Cal90].freq = { 20, 1000, 20000 };
+            std::printf ("cal pick: aim 45 -> %s, aim 60 -> %s, aim 180 -> %s, label %s\n", la::calAngleName (set.pick (la::Cal45)).toRawUTF8(),
+                         la::calAngleName (set.pick (la::Cal60)).toRawUTF8(), la::calAngleName (set.pick (la::Cal180)).toRawUTF8(), set.label().toRawUTF8());
+        }
         std::printf ("cal angles: has0=%d has90=%d aimUp=%s override0=%s aim0=%s label=%s\n", (int) proc.calibrations (0).has (0),
                      (int) proc.calibrations (0).has (1), up.toRawUTF8(), overridden.toRawUTF8(), proc.analyzer.getCalibrationName (0).toRawUTF8(),
                      proc.calibrations (0).label().toRawUTF8());
@@ -751,6 +816,9 @@ public:
     }
     long simSubDelay = 0, simTopDelay = 0;
     bool simRightInverted = false;
+    int consoleOut = -1;
+    double savedSub = 0.0;   // "music from the console", routed to one output (-1: everything plays)
+    std::vector<Biquad> subSystem;   // the processor's EQ on the sub
     size_t wp = 0;
     int ticks = 0;
     double fs = 48000.0;
@@ -763,6 +831,14 @@ int laPreviewMain (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
     const juce::File out (argc > 1 ? argv[1] : "/tmp");
+    {
+        // the application icon (macOS and Windows): the tile with the usual margin around it
+        juce::Image icon (juce::Image::ARGB, 1024, 1024, true);
+        juce::Graphics ig (icon);
+        la::ui::drawLogo (ig, juce::Rectangle<float> (1024.0f, 1024.0f).reduced (100.0f), true);
+        juce::FileOutputStream os (out.getChildFile ("LiveAlignIcon.png"));
+        if (os.openedOk()) { os.setPosition (0); os.truncate(); juce::PNGImageFormat().writeImageToStream (icon, os); }
+    }
     auto proc = std::make_unique<LiveAlignProcessor>();
     juce::AudioProcessor::BusesLayout layout;
     layout.inputBuses.add (juce::AudioChannelSet::discreteChannels (16));

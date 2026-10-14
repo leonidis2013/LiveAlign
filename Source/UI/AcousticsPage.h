@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include <thread>
 // Tuning step 6: room acoustics, once the system is tuned. Worked out from the impulse responses the Room EQ
 // measurements capture at each position: reverberation time and early decay per octave, clarity for speech (C50) and
 // music (C80), a speech intelligibility estimate (STI) per position, the room modes (low-frequency peaks that move
@@ -12,6 +13,7 @@
 #include "NavRail.h"
 #include "RoomPage.h"
 #include "../PluginProcessor.h"
+#include "../Analysis/Deconvolve.h"
 
 namespace la::ui
 {
@@ -113,18 +115,26 @@ public:
             strokeTrace (g, path, c, w);
         };
         int k = 0;
-        for (const auto& m : room.meas)
-        {
-            if (! m.ac.valid || ! m.include) continue;
-            line (m.ac, positionColour (juce::jmax (0, proc.positions.indexOf (m.position))).withAlpha (0.45f), 1.2f, false);
-            ++k;
-        }
+        if (room.acousticsFromSweeps())
+            for (const auto& w : room.sweeps)
+            {
+                if (! w.ac.valid) continue;
+                line (w.ac, positionColour (juce::jmax (0, proc.positions.indexOf (w.position))).withAlpha (0.45f), 1.2f, false);
+                ++k;
+            }
+        else
+            for (const auto& m : room.meas)
+            {
+                if (! m.ac.valid || ! m.include) continue;
+                line (m.ac, positionColour (juce::jmax (0, proc.positions.indexOf (m.position))).withAlpha (0.45f), 1.2f, false);
+                ++k;
+            }
         if (k == 0)
         {
             g.setColour (p.textDim);
             g.setFont (font (13.0f));
-            g.drawFittedText ("No room measurements with impulse responses yet. Measure the listening positions on 4 Room EQ: "
-                              "each measurement there also captures what the room does.", plot.reduced (40.0f).toNearestInt(), juce::Justification::centred, 3);
+            g.drawFittedText ("Nothing measured yet. Press Measure with a sweep (the mics where they are attached on Mics), or measure the "
+                              "listening positions on 4 Room EQ for a quick estimate.", plot.reduced (40.0f).toNearestInt(), juce::Justification::centred, 3);
             return;
         }
         line (room.acousticsAverage(), p.text, 2.6f, true);
@@ -135,10 +145,12 @@ private:
     int metric = 0;
 };
 
-class AcousticsPage : public juce::Component
+class AcousticsPage : public juce::Component, private juce::Timer
 {
 public:
     std::function<void()> onChanged;
+
+    ~AcousticsPage() override { stopTimer(); proc.recorder.stop(); }
 
     explicit AcousticsPage (LiveAlignProcessor& p) : proc (p), chart (p)
     {
@@ -158,8 +170,49 @@ public:
         useBox.setTooltip ("What the room is mostly used for: sets the typical reverberation time and intelligibility to compare with");
         useBox.onChange = [this] { proc.room.use = useBox.getSelectedItemIndex(); if (onChanged) onChanged(); repaint(); chart.repaint(); };
         addAndMakeVisible (useBox);
+        sweepButton.setTooltip ("Plays a 4-second sweep (twice) through the whole system and records every mic at its position: a long "
+                                "impulse response for the reverberation time of any room, even a long one. Quiet room, please.");
+        sweepButton.onClick = [this] { if (phase == Phase::Idle) startSweep(); else stopSweep ("Stopped."); };
+        addAndMakeVisible (sweepButton);
         refresh();
     }
+
+    // ---- the sweep: play, record, work out each mic's impulse response ----
+    void startSweep()
+    {
+        auto& st = proc.settings;
+        if (st.refSource.load() == 0) { status = "Set a reference on Mics first (the generator copy works)."; repaint(); return; }
+        juce::StringArray where;
+        for (int m = 0; m < st.micCount.load(); ++m)
+            if (proc.mics.position[(size_t) m].isNotEmpty()) where.add (proc.mics.nameOf (m) + " at " + proc.mics.position[(size_t) m]);
+        if (where.isEmpty()) { status = "Attach the mics to positions on Mics first."; repaint(); return; }
+        saved = { st.genType.load(), st.genSweepSec.load(), st.genOutput.load(), st.genOn.load() };
+        st.genType = 3;            // log sweep
+        st.genSweepSec = kSweepSec;
+        st.genOutput = 0;          // the whole system
+        st.genOn = true;
+        st.running = true;
+        phase = Phase::Lead;
+        phaseStart = juce::Time::getMillisecondCounterHiRes();
+        status = "Sweeping: " + where.joinIntoString (", ") + ". Keep the room quiet.";
+        sweepButton.setButtonText ("Stop");
+        startTimerHz (15);
+        repaint();
+    }
+
+    void stopSweep (const juce::String& why)
+    {
+        proc.recorder.stop();
+        restoreGenerator();
+        phase = Phase::Idle;
+        stopTimer();
+        status = why;
+        sweepButton.setButtonText ("Measure with a sweep");
+        repaint();
+    }
+
+    bool sweeping() const { return phase != Phase::Idle; }
+
 
     void refresh()
     {
@@ -168,7 +221,8 @@ public:
         chart.repaint();
     }
 
-    juce::String nextHint() const { return proc.room.acousticsCount() == 0 ? juce::String ("Measure the positions on Room EQ") : juce::String(); }
+    juce::String nextHint() const { return ! proc.room.acousticsFromSweeps() ? juce::String ("Measure with a sweep") : juce::String(); }
+    void doNext() { if (phase == Phase::Idle && ! proc.room.acousticsFromSweeps()) startSweep(); }
 
     void paint (juce::Graphics& g) override
     {
@@ -201,6 +255,26 @@ public:
         }
 
         drawPanel (g, posCard.toFloat(), "Each position");
+        // the sweep: what it is doing, or where the numbers come from
+        {
+            auto sr = sweepInfo;
+            juce::String t = status;
+            if (t.isEmpty())
+                t = room.acousticsFromSweeps() ? "From " + juce::String ((int) room.sweeps.size()) + (room.sweeps.size() == 1 ? " sweep." : " sweeps.") + " Move the mics and sweep again for more positions."
+                                               : juce::String ("An estimate from the Room EQ measurements. A sweep measures it properly (any reverb time).");
+            g.setColour (phase != Phase::Idle ? p.accent : p.textDim);
+            g.setFont (font (11.5f, phase != Phase::Idle));
+            g.drawFittedText (t, sr.removeFromTop (34), juce::Justification::topLeft, 2);
+            if (phase != Phase::Idle)
+            {
+                const float f = phase == Phase::Working ? 1.0f : phase == Phase::Lead ? 0.0f : proc.recorder.progress();
+                auto bar = sr.removeFromTop (6).toFloat();
+                g.setColour (p.border);
+                g.fillRoundedRectangle (bar, 3.0f);
+                g.setColour (p.accent);
+                g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * f), 3.0f);
+            }
+        }
         drawPanel (g, modesCard.toFloat(), "Room modes");
         drawPanel (g, notesCard.toFloat(), "What it means");
 
@@ -215,15 +289,20 @@ public:
             g.setFont (font (10.5f, true));
             g.drawText (heads[0], header.removeFromLeft (nameW), juce::Justification::centredLeft);
             for (int c = 1; c < 5; ++c) g.drawText (heads[c], header.removeFromLeft (cw[c]), juce::Justification::centredLeft);
-            for (const auto& m : room.meas)
+            const bool fromSweeps = room.acousticsFromSweeps();
+            std::vector<std::pair<juce::String, const acoustics::Result*>> rowsToShow;
+            if (fromSweeps) for (const auto& w : room.sweeps) rowsToShow.push_back ({ w.position + "  (sweep)", &w.ac });
+            else for (const auto& m : room.meas) if (m.ac.valid) rowsToShow.push_back ({ m.position + (m.after ? " (check)" : ""), &m.ac });
+            for (const auto& rw : rowsToShow)
             {
-                if (! m.ac.valid || r.getHeight() < 22) continue;
+                struct { const acoustics::Result& ac; } m { *rw.second };
+                if (r.getHeight() < 22) break;
                 auto row = r.removeFromTop (22);
-                g.setColour (positionColour (juce::jmax (0, proc.positions.indexOf (m.position))));
+                g.setColour (positionColour (juce::jmax (0, proc.positions.indexOf (rw.first.upToFirstOccurrenceOf ("  (", false, false).upToFirstOccurrenceOf (" (", false, false)))));
                 g.fillEllipse (row.removeFromLeft (12).toFloat().withSizeKeepingCentre (7.0f, 7.0f));
                 g.setColour (p.text);
                 g.setFont (font (12.0f));
-                g.drawText (m.position + (m.after ? " (after EQ)" : ""), row.removeFromLeft (nameW - 12), juce::Justification::centredLeft, true);
+                g.drawText (rw.first, row.removeFromLeft (nameW - 12), juce::Justification::centredLeft, true);
                 g.setFont (monoFont (11.5f));
                 g.setColour (p.textDim);
                 g.drawText (num (m.ac.rtMid(), 2), row.removeFromLeft (cw[1]), juce::Justification::centredLeft);
@@ -311,6 +390,10 @@ public:
         for (auto& b : metricButtons) { b.setBounds (bar.removeFromLeft (bw).reduced (0, 2)); bar.removeFromLeft (4); }
         bar.removeFromLeft (12);
         useBox.setBounds (bar.removeFromRight (juce::jmin (330, bar.getWidth())).reduced (0, 2));
+        sweepButton.setBounds (right.removeFromTop (34));
+        right.removeFromTop (6);
+        sweepInfo = right.removeFromTop (44);
+        right.removeFromTop (6);
         posCard = right.removeFromTop (juce::jmax (150, right.getHeight() * 40 / 100));
         right.removeFromTop (10);
         modesCard = right.removeFromTop (150);
@@ -319,8 +402,96 @@ public:
     }
 
 private:
+    enum class Phase { Idle, Lead, Recording, Working };
+    static constexpr double kSweepSec = 4.0;
+    struct Saved { int type = 0; float sweepSec = 3.0f; int output = 0; bool on = false; } saved;
+
+    void restoreGenerator()
+    {
+        auto& st = proc.settings;
+        st.genOn = false;
+        st.genType = saved.type;
+        st.genSweepSec = saved.sweepSec;
+        st.genOutput = saved.output;
+    }
+
+    double rate() const { return proc.getSampleRate() > 1000.0 ? proc.getSampleRate() : 48000.0; }
+
+    void timerCallback() override
+    {
+        const double el = juce::Time::getMillisecondCounterHiRes() - phaseStart;
+        if (phase == Phase::Lead && el > 300.0)
+        {
+            // two sweeps and the silence after each: the second is clean of the start-up
+            const double period = kSweepSec + 0.5;
+            proc.recorder.start ((int) (2.0 * period * rate() + 0.3 * rate()), proc.settings.micCount.load());
+            phase = Phase::Recording;
+        }
+        else if (phase == Phase::Recording && proc.recorder.done())
+        {
+            restoreGenerator();
+            phase = Phase::Working;
+            status = "Working out each mic's impulse response...";
+            // the deconvolution is a few large FFTs: off the message thread
+            struct Job { std::vector<std::vector<float>> mics; std::vector<float> ref; double fs; int n; std::vector<juce::String> where, names; };
+            auto job = std::make_shared<Job>();
+            const auto& rec = proc.recorder;
+            job->fs = rate();
+            job->n = rec.length;
+            job->ref = rec.ref;
+            for (int m = 0; m < rec.numMics; ++m)
+                if (proc.mics.position[(size_t) m].isNotEmpty())
+                {
+                    job->mics.push_back (rec.mic[(size_t) m]);
+                    job->where.push_back (proc.mics.position[(size_t) m]);
+                    job->names.push_back (proc.mics.nameOf (m));
+                }
+            juce::Component::SafePointer<AcousticsPage> safe (this);
+            std::thread ([job, safe]
+            {
+                auto results = std::make_shared<std::vector<acoustics::Result>>();
+                for (const auto& x : job->mics)
+                    results->push_back (acoustics::analyse (deconv::impulse (job->ref.data(), x.data(), job->n, job->fs, 3.5), job->fs));
+                juce::MessageManager::callAsync ([safe, job, results] { if (safe != nullptr) safe->sweepDone (job->where, job->names, *results); });
+            }).detach();
+        }
+        else if (phase == Phase::Recording && el > (2.0 * (kSweepSec + 0.5) + 6.0) * 1000.0)
+        {
+            stopSweep ("The recording did not finish: check the audio device.");
+            return;
+        }
+        if (phase == Phase::Lead || phase == Phase::Recording) { if (! proc.settings.genOn.load()) { stopSweep ("Stopped: the generator was turned off."); return; } }
+        repaint (sweepInfo.expanded (2));
+    }
+
+    void sweepDone (const std::vector<juce::String>& where, const std::vector<juce::String>& names, const std::vector<acoustics::Result>& results)
+    {
+        stopTimer();
+        phase = Phase::Idle;
+        sweepButton.setButtonText ("Measure with a sweep");
+        juce::StringArray done, failed;
+        auto& sw = proc.room.sweeps;
+        for (size_t k = 0; k < results.size() && k < where.size(); ++k)
+        {
+            if (! results[k].valid || ! std::isfinite (results[k].rtMid())) { failed.add (where[k]); continue; }
+            sw.erase (std::remove_if (sw.begin(), sw.end(), [&] (const SweepMeasurement& w) { return w.position == where[k]; }), sw.end());
+            sw.push_back ({ where[k], names[k], juce::Time::getCurrentTime().formatted ("%H:%M"), results[k] });
+            done.add (where[k] + " " + juce::String (results[k].rtMid(), 2) + " s");
+        }
+        status = done.isEmpty() ? juce::String ("Nothing clear came back: raise the level or reduce the noise, and check the reference.")
+                                : "RT60 " + done.joinIntoString (", ") + "." + (failed.isEmpty() ? juce::String() : " Not clear at " + failed.joinIntoString (", ") + ".");
+        if (onChanged) onChanged();
+        repaint();
+        chart.repaint();
+    }
+
     LiveAlignProcessor& proc;
     AcousticsChart chart;
+    juce::TextButton sweepButton { "Measure with a sweep" };
+    Phase phase = Phase::Idle;
+    double phaseStart = 0.0;
+    juce::String status;
+    juce::Rectangle<int> sweepInfo;
     juce::TextButton metricButtons[4];
     juce::ComboBox useBox;
     std::array<juce::Rectangle<int>, 6> tiles;

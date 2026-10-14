@@ -35,7 +35,8 @@ public:
         if (grid.empty()) grid = xo::analysisGrid();
         curves.clear();
         sum.assign (grid.size(), cplx (0.0, 0.0));
-        int used = 0;
+        std::vector<cplx> pairSum (grid.size(), cplx (0.0, 0.0));
+        int used = 0, inPair = 0;
         for (int i = 0; i < (int) sys.sources.size(); ++i)
         {
             const auto& s = sys.sources[(size_t) i];
@@ -56,12 +57,18 @@ public:
                 sum[k] += r.h[k];
             }
             curves.push_back (std::move (c));
+            if (sys.realPair() && (i == sys.xoHigh || i == sys.xoLow || sys.master (i) == sys.xoHigh || sys.master (i) == sys.xoLow))
+            {
+                // the sum only means something for a top and its sub: left and right are separate channels
+                if (sys.master (i) == i || ! sys.sources[(size_t) sys.master (i)].show) { for (size_t k = 0; k < grid.size(); ++k) pairSum[k] += r.h[k]; ++inPair; }
+            }
             ++used;
         }
         sumDb.assign (grid.size(), NAN);
-        if (used > 1)
+        hasSum = inPair > 1;
+        if (hasSum)
             for (size_t k = 0; k < grid.size(); ++k)
-                if (std::abs (sum[k]) > 1e-5) sumDb[k] = (float) (20.0 * std::log10 (std::abs (sum[k])));
+                if (std::abs (pairSum[k]) > 1e-5) sumDb[k] = (float) (20.0 * std::log10 (std::abs (pairSum[k])));
 
         // level: the top of the loudest curve, rounded up to 6 dB
         float top = -200.0f;
@@ -163,7 +170,7 @@ public:
                                                [&] (size_t k) { return c.coh[k] >= minCoh; }),
                                  col, 1.8f);
             }
-            if (! sumDb.empty() && curves.size() > 1)
+            if (! sumDb.empty() && hasSum)
                 strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t k) { return yDb (sumDb[k]); }, [] (size_t) { return true; }),
                              p.text, 2.6f);
         }
@@ -188,7 +195,7 @@ public:
             g.setColour (p.textDim);
             g.drawText (name, k.withTrimmedLeft (4.0f), juce::Justification::centredLeft);
         };
-        if (curves.size() > 1) addKey ("Predicted sum", p.text);
+        if (hasSum) addKey ("Top + sub sum", p.text);
         for (auto it = curves.rbegin(); it != curves.rend(); ++it)
             addKey (sys.sources[(size_t) it->index].name, sourceColour (it->index));
 
@@ -220,6 +227,7 @@ private:
     std::vector<Curve> curves;
     std::vector<cplx> sum;
     std::vector<float> sumDb;
+    bool hasSum = false;
     float topDb = 6.0f;
     bool withProc = true;
     double xoFreq = 0.0;
@@ -561,6 +569,21 @@ public:
             addAndMakeVisible (b);
         }
         findButton.onClick = [this] { findBest(); };
+        for (auto* b : { &autoButton, &manualButton })
+        {
+            b->setRadioGroupId (8301);
+            b->setClickingTogglesState (true);
+            addChildComponent (*b);
+        }
+        autoButton.setConnectedEdges (juce::Button::ConnectedOnRight);
+        manualButton.setConnectedEdges (juce::Button::ConnectedOnLeft);
+        autoButton.onClick = [this] { if (autoButton.getToggleState() && xoManual) { xoManual = false; resized(); repaint(); } };
+        manualButton.onClick = [this] { if (manualButton.getToggleState() && ! xoManual) { xoManual = true; refreshManual(); resized(); repaint(); } };
+        autoButton.setTooltip ("Find the best crossover your processor can do");
+        manualButton.setTooltip ("Set the frequency, filter, delay, level and polarity yourself");
+        removeXoButton.setTooltip ("Clear the high-pass and low-pass filters (and the low speaker's level and polarity) set by an earlier crossover");
+        removeXoButton.onClick = [this] { sys.removeCrossoverFilters(); refreshManual(); graph.rebuild(); systemChanged (false); resized(); repaint(); };
+        addChildComponent (removeXoButton);
         findButton.setTooltip ("Tries every filter your processor offers, at every frequency in the range, with every delay and both polarities");
         addAndMakeVisible (findButton);
 
@@ -618,6 +641,19 @@ public:
         alRefBox.setTooltip ("The speaker it is lined up to (usually the main)");
         alAlignBox.onChange = [this] { if (auto* a = currentAlignment()) { a->align = alAlignBox.getSelectedItemIndex(); a->hasAlign = false; a->hasRef = false; systemChanged (false); } };
         alRefBox.onChange = [this] { if (auto* a = currentAlignment()) { a->ref = alRefBox.getSelectedItemIndex(); a->hasAlign = false; a->hasRef = false; systemChanged (false); } };
+        alSignalBox.addItemList ({ "Pink noise", "Sweep", "Music from the console" }, 1);
+        alSignal = juce::jlimit (0, 2, UserPrefs::get ("alignSignal", "0").getIntValue());
+        alSignalBox.setSelectedItemIndex (alSignal, juce::dontSendNotification);
+        alSignalBox.setTooltip ("What plays while each speaker is measured. Pink noise (the default) or a sweep from the generator; or music "
+                                "from the console when noise is not possible: route it to one speaker at a time on the console, with the "
+                                "console's feed on an input as the reference (Mics, Reference).");
+        alSignalBox.onChange = [this]
+        {
+            alSignal = alSignalBox.getSelectedItemIndex();
+            UserPrefs::set ("alignSignal", juce::String (alSignal));
+            repaint();
+        };
+        addChildComponent (alSignalBox);
         alSpotBox.setEditableText (true);
         alSpotBox.setTextWhenNothingSelected ("Where they meet");
         alSpotBox.setTooltip ("Where both speakers cover the seats: front rows for a front fill, under the balcony for a delay, "
@@ -779,7 +815,7 @@ public:
     }
     int getMode() const { return mode; }
     bool responsesDone() const { return allMeasured(); }
-    bool crossoverDone() const { return crossoverSet() && ! sys.pairInverted(); }
+    bool crossoverDone() const { return ! sys.xoNeeded() || (crossoverSet() && ! sys.pairInverted() && sys.realPair()); }
     bool alignmentRequired() const { return alignmentNeeded(); }
     bool alignmentsDone() const { return alignmentDone(); }
     juce::String stepSummaryText (int st) const { return stepSummary (st); }
@@ -787,6 +823,8 @@ public:
     // Same as the buttons (used by the local screenshot tool).
     void measure (int i) { select (i); startMeasure (i); }
     void checkPolarity (int i, int cab) { select (i); startPolarity (i, cab); }
+    void setAlignmentSignal (int sig) { alSignal = juce::jlimit (0, 2, sig); alSignalBox.setSelectedItemIndex (alSignal, juce::dontSendNotification); }
+    void measureAlignmentOne (int i, int which) { selectAlignment (i); startArrivalOne (i, which); }
 
     // Polarity checks still to do (speakers set "Same as" another, other cabinets), and the first speaker that looks inverted.
     int polarityChecksLeft() const
@@ -1102,7 +1140,17 @@ public:
             g.setFont (font (11.5f));
             juce::String t;
             juce::Colour c = p.textDim;
-            if (searching) { t = "Searching every filter, frequency, delay and polarity..."; c = p.accent; }
+            const auto stray = sys.strayCrossoverFilters();
+            if (! sys.xoNeeded())
+            {
+                t = sys.hasSub() ? juce::String ("Not needed: the system has only subs. A crossover goes between a top and a sub.")
+                                 : juce::String ("Not needed: there is no sub in the system. A crossover goes between a top and a sub; left and right "
+                                                 "mains are two channels, not two bands. Add a sub on the Speakers page if you have one.");
+                if (! stray.isEmpty()) t << "\n" << stray.joinIntoString (", ") << " still " << (stray.size() == 1 ? "has" : "have")
+                                         << " crossover filters from an earlier pair: remove them below.";
+                c = stray.isEmpty() ? p.textDim : p.warn;
+            }
+            else if (searching) { t = "Searching every filter, frequency, delay and polarity..."; c = p.accent; }
             else if (! sys.pairValid()) t = "Pick two different speakers.";
             else if (sys.pairInverted()) { t = "The pair is upside down: swap it, then find the crossover."; c = p.warn; }
             else if (! sys.sources[(size_t) sys.xoHigh].hasResponse() || ! sys.sources[(size_t) sys.xoLow].hasResponse())
@@ -1119,7 +1167,15 @@ public:
                 c = p.text;
             }
             else if (! sys.lastResult.note.empty()) { t = juce::String (sys.lastResult.note); c = p.warn; }
-            else t = "Pick the filters your processor offers, then find the best crossover, or set it by hand below.";
+            else t = xoManual ? juce::String ("Set the crossover by hand. Automatic finds the best one for you.")
+                              : juce::String ("Pick the filters your processor offers, then find the best crossover.");
+            if (xoManual && sys.lastResult.valid && sys.xoNeeded())
+            {
+                const auto& lo = sys.sources[(size_t) sys.xoLow].proc;
+                t = "By hand, starting from the automatic result. Low: " + juce::String (lo.delayMs, 2) + " ms, "
+                    + signedText ((float) lo.gainDb, 1) + " dB" + (lo.invert ? ", inverted." : ".");
+                c = p.text;
+            }
             g.setColour (c);
             g.drawFittedText (t, xoInfo, juce::Justification::topLeft, 3);
 
@@ -1265,71 +1321,97 @@ public:
         layoutAlignment (content);
         labelTo[2] = labelFrom[1] = (int) labels.size();
         {
+            // Crossover: the pair, then either the automatic search or the settings by hand. Without a sub there is
+            // nothing to cross over: only a note (and the button to remove filters left from an earlier pair).
             auto c = content;
-            auto pair = c.removeFromTop (28);
-            labels.push_back ({ pair.removeFromLeft (40), "High" });
-            const int boxW = (pair.getWidth() - 40 - 36) / 2;
-            highBox.setBounds (pair.removeFromLeft (boxW));
-            swapPairButton.setBounds (pair.removeFromLeft (40).reduced (5, 0));
-            labels.push_back ({ pair.removeFromLeft (36), "Low" });
-            lowBox.setBounds (pair);
-            c.removeFromTop (8);
-            invertedSwapButton.setVisible (sys.pairInverted());
-            if (invertedSwapButton.isVisible())
+            const bool needed = sys.xoNeeded();
+            liveLine = {};
+            if (! needed)
             {
-                auto w = c.removeFromTop (30);
-                invertedSwapButton.setBounds (w.removeFromRight (70).withSizeKeepingCentre (70, 26));
-                w.removeFromRight (8);
-                invertedArea = w;
+                xoInfo = c.removeFromTop (70);
+                c.removeFromTop (6);
+                removeXoButton.setBounds (c.removeFromTop (32));
+                invertedArea = {};
+            }
+            else
+            {
+                auto pair = c.removeFromTop (28);
+                labels.push_back ({ pair.removeFromLeft (40), "High" });
+                const int boxW = (pair.getWidth() - 40 - 36) / 2;
+                highBox.setBounds (pair.removeFromLeft (boxW));
+                swapPairButton.setBounds (pair.removeFromLeft (40).reduced (5, 0));
+                labels.push_back ({ pair.removeFromLeft (36), "Low" });
+                lowBox.setBounds (pair);
                 c.removeFromTop (8);
+                if (sys.pairInverted())
+                {
+                    auto w = c.removeFromTop (30);
+                    invertedSwapButton.setBounds (w.removeFromRight (70).withSizeKeepingCentre (70, 26));
+                    w.removeFromRight (8);
+                    invertedArea = w;
+                    c.removeFromTop (8);
+                }
+                else invertedArea = {};
+                {
+                    auto sw = c.removeFromTop (30);
+                    autoButton.setBounds (sw.removeFromLeft (sw.getWidth() / 2));
+                    manualButton.setBounds (sw);
+                }
+                c.removeFromTop (10);
+                if (! xoManual)
+                {
+                    auto rr = c.removeFromTop (28);
+                    labels.push_back ({ rr.removeFromLeft (52), "Range" });
+                    rangeBox.setBounds (rr);
+                    c.removeFromTop (10);
+                    labels.push_back ({ c.removeFromTop (16), "Filters your processor has" });
+                    c.removeFromTop (4);
+                    auto tr = c.removeFromTop (26);
+                    const int tyw = (tr.getWidth() - 12) / 3;
+                    for (auto& b : typeButtons) { b.setBounds (tr.removeFromLeft (tyw)); tr.removeFromLeft (6); }
+                    c.removeFromTop (6);
+                    auto sr = c.removeFromTop (26);
+                    labels.push_back ({ sr.removeFromLeft (58), "dB/oct" });
+                    const int sw = (sr.getWidth() - 5 * (kSlopeButtons - 1)) / kSlopeButtons;
+                    for (auto& b : slopeButtons) { b.setBounds (sr.removeFromLeft (sw)); sr.removeFromLeft (5); }
+                    c.removeFromTop (10);
+                    findButton.setBounds (c.removeFromTop (34));
+                    c.removeFromTop (8);
+                    xoInfo = c.removeFromTop (64);
+                    liveLine = c.removeFromTop (22);
+                }
+                else
+                {
+                    xoInfo = c.removeFromTop (40);
+                    c.removeFromTop (6);
+                    auto put = [&] (const juce::String& name, juce::Component& comp)
+                    {
+                        auto row = c.removeFromTop (26);
+                        labels.push_back ({ row.removeFromLeft (64), name });
+                        comp.setBounds (row);
+                        c.removeFromTop (6);
+                    };
+                    put ("Freq", freqSlider);
+                    {
+                        auto row = c.removeFromTop (26);
+                        labels.push_back ({ row.removeFromLeft (64), "Filter" });
+                        typeBox.setBounds (row.removeFromLeft (row.getWidth() * 60 / 100));
+                        row.removeFromLeft (6);
+                        slopeBox.setBounds (row);
+                        c.removeFromTop (6);
+                    }
+                    put ("Low dly", delaySlider);
+                    put ("Low gain", gainSlider);
+                    {
+                        auto row = c.removeFromTop (26);
+                        labels.push_back ({ row.removeFromLeft (64), "Polarity" });
+                        invertButton.setBounds (row.removeFromLeft (130));
+                        c.removeFromTop (6);
+                    }
+                    liveLine = c.removeFromTop (22);
+                }
+                if (! sys.strayCrossoverFilters().isEmpty()) { c.removeFromTop (6); removeXoButton.setBounds (c.removeFromTop (30)); }
             }
-            else invertedArea = {};
-            auto rr = c.removeFromTop (28);
-            labels.push_back ({ rr.removeFromLeft (52), "Range" });
-            rangeBox.setBounds (rr);
-            c.removeFromTop (10);
-            labels.push_back ({ c.removeFromTop (16), "Filters your processor has" });
-            c.removeFromTop (4);
-            auto tr = c.removeFromTop (26);
-            const int tyw = (tr.getWidth() - 12) / 3;
-            for (auto& b : typeButtons) { b.setBounds (tr.removeFromLeft (tyw)); tr.removeFromLeft (6); }
-            c.removeFromTop (6);
-            auto sr = c.removeFromTop (26);
-            labels.push_back ({ sr.removeFromLeft (58), "dB/oct" });
-            const int sw = (sr.getWidth() - 5 * (kSlopeButtons - 1)) / kSlopeButtons;
-            for (auto& b : slopeButtons) { b.setBounds (sr.removeFromLeft (sw)); sr.removeFromLeft (5); }
-            c.removeFromTop (10);
-            findButton.setBounds (c.removeFromTop (34));
-            c.removeFromTop (8);
-            xoInfo = c.removeFromTop (48);
-            c.removeFromTop (4);
-            labels.push_back ({ c.removeFromTop (16), "Adjust by hand" });
-            c.removeFromTop (6);
-            auto put = [&] (const juce::String& name, juce::Component& comp)
-            {
-                auto row = c.removeFromTop (26);
-                labels.push_back ({ row.removeFromLeft (64), name });
-                comp.setBounds (row);
-                c.removeFromTop (6);
-            };
-            put ("Freq", freqSlider);
-            {
-                auto row = c.removeFromTop (26);
-                labels.push_back ({ row.removeFromLeft (64), "Filter" });
-                typeBox.setBounds (row.removeFromLeft (row.getWidth() * 60 / 100));
-                row.removeFromLeft (6);
-                slopeBox.setBounds (row);
-                c.removeFromTop (6);
-            }
-            put ("Low dly", delaySlider);
-            put ("Low gain", gainSlider);
-            {
-                auto row = c.removeFromTop (26);
-                labels.push_back ({ row.removeFromLeft (64), "Polarity" });
-                invertButton.setBounds (row.removeFromLeft (130));
-                c.removeFromTop (6);
-            }
-            liveLine = c.removeFromTop (22);
             labelTo[1] = (int) labels.size();
         }
         setStepVisibility();
@@ -1607,6 +1689,13 @@ private:
     void findBest()
     {
         if (searching || ! sys.pairValid()) return;
+        if (! sys.realPair())
+        {
+            status = ! sys.xoNeeded() ? juce::String ("No crossover: there is no sub in the system.")
+                                      : juce::String ("A crossover goes between a top and a sub: pick one of each.");
+            repaint();
+            return;
+        }
         if (sys.pairInverted())
         {
             status = invertedText();
@@ -1673,9 +1762,26 @@ private:
         measureNear = true;
     }
 
+    // A speaker can only be measured on its own when nothing else plays from its output: "All outputs" plays every
+    // speaker, and two speakers on one output play together. Says what to change, or empty when it is fine.
+    juce::String outputProblem (int i) const
+    {
+        if (i < 0 || i >= (int) sys.sources.size() || sys.sources.size() < 2) return {};
+        const auto& s = sys.sources[(size_t) i];
+        if (s.output == 0)
+            return nameOf (i) + " plays from All outputs, so every speaker plays while it is measured. Pick the output that feeds "
+                   + nameOf (i) + " (Speakers page, Output), then measure.";
+        for (int k = 0; k < (int) sys.sources.size(); ++k)
+            if (k != i && sys.sources[(size_t) k].output == s.output)
+                return nameOf (i) + " and " + nameOf (k) + " are both on output " + juce::String (s.output)
+                       + ", so they play together. Give each its own output (Speakers page, Output), then measure.";
+        return {};
+    }
+
     void startMeasure (int i)
     {
         if (i < 0 || i >= (int) sys.sources.size()) return;
+        if (const auto why = outputProblem (i); why.isNotEmpty()) { status = why; repaint(); return; }
         polarityMode = false;
         peakKnown = false;
         if (settings.refSource.load() == 0)
@@ -1747,7 +1853,7 @@ private:
         {
             const double before = liveQuality;
             updateLiveQuality();
-            if (openStep == 0 && (liveQuality >= 0.0 || before >= 0.0)) repaint (stepCard[0]);
+            if (openStep == 0 && (liveQuality >= 0.0 || std::abs (before - liveQuality) > 1e-9)) repaint (stepCard[0]);
         }
         if (std::abs (settings.coherenceBlank.load() - shownMinCoh) > 0.001)   // changed in Settings
         {
@@ -1759,7 +1865,7 @@ private:
         const int mic = arrivalMode ? juce::jlimit (0, settings.micCount.load() - 1, sys.measureMic)
                                     : sys.micFor (measuring, settings.micCount.load());
 
-        if (! settings.genOn.load()) { cancelMeasure ("Stopped: the generator was turned off."); return; }
+        if (! settings.genOn.load() && ! musicNow()) { cancelMeasure ("Stopped: the generator was turned off."); return; }
 
         if (phase == Phase::Settling)
         {
@@ -1896,7 +2002,7 @@ private:
         }
         else if (phase == Phase::Averaging)
         {
-            const int want = juce::jmax (4, settings.averages.load());
+            const int want = juce::jmax (4, settings.averages.load()) * (musicNow() ? 3 : 1);   // music is uneven: average longer
             const int frames = snap != nullptr && mic < (int) snap->mics.size() ? snap->mics[(size_t) mic].tfFrames : 0;
             // audio was dropped (the computer could not keep up): the average is not continuous, start it again
             if (proc.analyzer.overflowCount() != overflowsSeen)
@@ -2129,15 +2235,20 @@ private:
         for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &placementBox, &measureButton, &guidedToggle, &polarityButton })
             c->setVisible (resp);
         relockButton.setVisible (resp && sys.placement == 1);
-        const bool xo = mode == 2;
-        for (auto* c : std::initializer_list<juce::Component*> { &highBox, &lowBox, &rangeBox, &findButton, &freqSlider, &typeBox, &slopeBox,
-                                                                 &delaySlider, &gainSlider, &invertButton, &swapPairButton })
+        const bool xo = mode == 2 && sys.xoNeeded();
+        for (auto* c : std::initializer_list<juce::Component*> { &highBox, &lowBox, &swapPairButton, &autoButton, &manualButton })
             c->setVisible (xo);
+        for (auto* c : std::initializer_list<juce::Component*> { &rangeBox, &findButton }) c->setVisible (xo && ! xoManual);
+        for (auto* c : std::initializer_list<juce::Component*> { &freqSlider, &typeBox, &slopeBox, &delaySlider, &gainSlider, &invertButton })
+            c->setVisible (xo && xoManual);
         invertedSwapButton.setVisible (xo && sys.pairInverted());
-        for (auto& b : typeButtons) b.setVisible (xo);
-        for (auto& b : slopeButtons) b.setVisible (xo);
+        for (auto& b : typeButtons) b.setVisible (xo && ! xoManual);
+        for (auto& b : slopeButtons) b.setVisible (xo && ! xoManual);
+        removeXoButton.setVisible (mode == 2 && ! sys.strayCrossoverFilters().isEmpty());
+        autoButton.setToggleState (! xoManual, juce::dontSendNotification);
+        manualButton.setToggleState (xoManual, juce::dontSendNotification);
         for (auto* c : std::initializer_list<juce::Component*> { &alList, &alAddButton, &alRemoveButton, &alAlignBox, &alRefBox, &alSpotBox,
-                                                                 &alExtraSlider, &alMeasureButton })
+                                                                 &alExtraSlider, &alMeasureButton, &alSignalBox })
             c->setVisible (mode == 3);
         alApplyButton.setVisible (false);
         alRedoButton.setVisible (mode == 3 && currentAlignment() != nullptr && (currentAlignment()->hasRef || currentAlignment()->hasAlign));
@@ -2291,7 +2402,8 @@ private:
             t << juce::roundToInt (liveQuality * 100.0) << "% of the range is reliable right now"
               << (liveQuality >= 0.8 ? ": good." : liveQuality >= 0.6 ? ": fair, raise the level if you can." : ": poor, raise the level or reduce the noise.");
         }
-        else t = "Play the generator through a speaker to check the signal at the mic.";
+        else if (liveQuality < -1.5) t = "Checking the signal... (once the speaker's timing is found)";
+        else t = "Measure a speaker (or play the generator through it) to check the signal at the mic.";
         q.removeFromTop (6.0f);
         g.setColour (liveQuality >= 0.0 ? c : p.textDim);
         g.setFont (font (11.5f, liveQuality >= 0.0));
@@ -2332,23 +2444,42 @@ private:
         }
     }
 
+    // How much of the speaker's own range is reliable at the mic right now. Only judged once the measurement has its
+    // timing and some averages (before that the mic and the reference are not lined up, and it would read poor), and
+    // only where the speaker actually plays (within 20 dB of its loudest), smoothed so it does not jump.
+    // -1: nothing playing; -2: playing, not ready to judge yet.
     void updateLiveQuality()
     {
-        liveQuality = -1.0;
         const int mic = phase != Phase::Idle && ! arrivalMode ? sys.micFor (measuring, settings.micCount.load())
                                                               : sys.micFor (selected, settings.micCount.load());
-        if (snap == nullptr || mic >= (int) snap->mics.size() || ! settings.genOn.load()) return;
+        if (snap == nullptr || mic >= (int) snap->mics.size() || ! settings.genOn.load()) { liveQuality = -1.0; return; }
         const auto& m = snap->mics[(size_t) mic];
-        if (m.tfFrames <= 0 || m.tfCoh.size() != snap->tfFreq.size()) return;
-        const float minCoh = juce::jmax (0.2f, settings.coherenceBlank.load());
-        int n = 0, good = 0;
-        for (size_t i = 0; i < snap->tfFreq.size(); ++i)
+        const bool ready = phase == Phase::Averaging && sawReset && m.tfFrames >= 4;
+        if (! ready || m.tfCoh.size() != snap->tfFreq.size() || m.tfMag.size() != snap->tfFreq.size()) { liveQuality = phase == Phase::Idle ? -1.0 : -2.0; return; }
+        // where the speaker plays: within 20 dB of its loudest (third-octave smoothed)
+        const size_t n = snap->tfFreq.size();
+        float peak = -300.0f;
+        std::vector<float> sm (n, -300.0f);
+        for (size_t i = 0; i < n; ++i)
         {
-            if (snap->tfFreq[i] < 40.0 || snap->tfFreq[i] > 16000.0 || ! std::isfinite (m.tfCoh[i])) continue;
-            ++n;
+            float sum = 0.0f;
+            int k = 0;
+            for (size_t j = i > 12 ? i - 12 : 0; j < std::min (n, i + 13); ++j)
+                if (std::isfinite (m.tfMag[j]) && snap->tfFreq[j] > snap->tfFreq[i] * 0.891 && snap->tfFreq[j] < snap->tfFreq[i] * 1.122) { sum += m.tfMag[j]; ++k; }
+            if (k > 0) sm[i] = sum / (float) k;
+            if (snap->tfFreq[i] >= 30.0 && snap->tfFreq[i] <= 16000.0) peak = std::max (peak, sm[i]);
+        }
+        const float minCoh = juce::jmax (0.2f, settings.coherenceBlank.load());
+        int used = 0, good = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (snap->tfFreq[i] < 30.0 || snap->tfFreq[i] > 16000.0 || ! std::isfinite (m.tfCoh[i]) || sm[i] < peak - 20.0f) continue;
+            ++used;
             good += m.tfCoh[i] >= minCoh ? 1 : 0;
         }
-        if (n > 0) liveQuality = (double) good / n;
+        if (used == 0) { liveQuality = -2.0; return; }
+        const double now = (double) good / used;
+        liveQuality = liveQuality >= 0.0 ? 0.75 * liveQuality + 0.25 * now : now;
     }
 
     void refreshReliability()
@@ -2525,6 +2656,7 @@ private:
         put ("To", alRefBox);
         put ("At", alSpotBox);
         put ("Extra", alExtraSlider);
+        put ("Signal", alSignalBox);
         c.removeFromTop (6);
         alSteps = c.removeFromTop (4 * 22);
         c.removeFromTop (8);
@@ -2541,8 +2673,11 @@ private:
         const auto& p = pal();
         g.setColour (p.textDim);
         g.setFont (font (11.5f));
-        g.drawFittedText ("Put " + proc.mics.nameOf (sys.measureMic) + " where both speakers cover the seats (centre line for left / right, "
-                          "FOH for the main and sub). Measure with the processor set as shown here: filters, delays and polarity in place.",
+        g.drawFittedText (alSignal == 2
+                              ? "Music from the console: send it to only the speaker each step names (mute the other on the console), "
+                                "with the console's feed on the reference input. Put " + proc.mics.nameOf (sys.measureMic) + " where both speakers cover the seats."
+                              : "Put " + proc.mics.nameOf (sys.measureMic) + " where both speakers cover the seats (centre line for left / right, "
+                                "FOH for the main and sub). Measure with the processor set as shown here: filters, delays and polarity in place.",
                           alHint, juce::Justification::topLeft, 3);
 
         const auto* a = currentAlignment();
@@ -2647,6 +2782,8 @@ private:
             repaint();
             return;
         }
+        for (const int who : { a->ref, a->align })
+            if (const auto why = outputProblem (who); why.isNotEmpty()) { status = why; repaint(); return; }
         a->hasRef = a->hasAlign = false;
         a->sumBandDb = -200.0f;
         a->phaseValid = false;
@@ -2669,8 +2806,7 @@ private:
         arrivalWhich = next.second;
         measuring = arrivalWhich == 0 ? a->ref : a->align;
         settings.genOutput = sys.sources[(size_t) measuring].output;
-        settings.genType = 0;
-        settings.genOn = true;
+        startSignal();
         settings.running = true;
         phase = Phase::Settling;
         phaseStart = juce::Time::getMillisecondCounterHiRes();
@@ -2778,14 +2914,14 @@ private:
         const auto* a = currentAlignment();
         switch (alignmentStage())
         {
-            case 0: return "Play " + nameOf (a->ref);
-            case 1: return "Play " + nameOf (a->align);
+            case 0: return alSignal == 2 ? "Measure " + nameOf (a->ref) + " (music on it only)" : "Play " + nameOf (a->ref);
+            case 1: return alSignal == 2 ? "Measure " + nameOf (a->align) + " (music on it only)" : "Play " + nameOf (a->align);
             case 2:
             {
                 const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
                 return need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + nameOf (a->ref) : "Apply " + juce::String (need, 2) + " ms to " + nameOf (a->align);
             }
-            case 3: return "Check: play both";
+            case 3: return alSignal == 2 ? juce::String ("Check: music on both") : juce::String ("Check: play both");
             case 4: return "Check again";
             default: return "Add an alignment";
         }
@@ -2813,6 +2949,29 @@ private:
         else if (a.ref == sys.xoLow && a.align == sys.xoHigh) a.xoOffsetMs = -sys.xoRelDelayMs;
     }
 
+    // ---- the signal for time alignment: pink noise, a sweep, or music from the console ----
+    bool musicNow() const { return arrivalMode && alSignal == 2; }
+
+    bool signalReady()
+    {
+        if (alSignal == 2 && settings.refSource.load() < 2)
+        {
+            status = "Music from the console needs the console's feed on an input as the reference: set it on Mics (Reference).";
+            repaint();
+            return false;
+        }
+        return true;
+    }
+
+    void startSignal()
+    {
+        settings.running = true;
+        if (alSignal == 2) { settings.genOn = false; return; }   // the console plays: the reference input hears it
+        settings.genType = alSignal == 1 ? 3 : 0;
+        if (alSignal == 1) settings.genSweepSec = 2.0f;
+        settings.genOn = true;
+    }
+
     void startArrivalOne (int index, int which)
     {
         auto* a = alignmentAt (index);
@@ -2823,6 +2982,9 @@ private:
             repaint();
             return;
         }
+        if (! signalReady()) return;
+        if (alSignal != 2)
+            if (const auto why = outputProblem (which == 0 ? a->ref : a->align); why.isNotEmpty()) { status = why; repaint(); return; }
         (which == 0 ? a->hasRef : a->hasAlign) = false;
         a->sumBandDb = -200.0f;
         a->phaseValid = false;
@@ -2841,6 +3003,7 @@ private:
     {
         auto* a = alignmentAt (index);
         if (a == nullptr || ! a->measured()) return;
+        if (! signalReady()) return;
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
         arrivalMode = true;
         checkMode = true;
@@ -2848,8 +3011,7 @@ private:
         measuring = a->ref;
         const int o1 = sys.sources[(size_t) a->ref].output, o2 = sys.sources[(size_t) a->align].output;
         settings.genOutput = o1 == o2 ? o1 : 0;   // both speakers: one shared output, or all of them
-        settings.genType = 0;
-        settings.genOn = true;
+        startSignal();
         settings.running = true;
         phase = Phase::Settling;
         phaseStart = juce::Time::getMillisecondCounterHiRes();
@@ -3033,12 +3195,16 @@ private:
     juce::ComboBox countBox, linkBox;
     juce::ComboBox roleBox, channelBox, outputBox, micBox, highBox, lowBox, rangeBox, typeBox, slopeBox;
     juce::ToggleButton guidedToggle;
+    juce::ComboBox alSignalBox;
+    int alSignal = 0;
     juce::TextButton polarityButton;
     juce::TextButton measureButton { "Measure" }, importButton { "Import response..." }, clearButton { "Clear" }, relockButton { "Re-time" };
     juce::Slider offsetSlider, freqSlider, delaySlider, gainSlider;
     juce::ToggleButton processedToggle { "With processing" };
     juce::TextButton typeButtons[3], slopeButtons[kSlopeButtons];
     juce::TextButton findButton { "Find best crossover" }, invertButton { "Low normal" };
+    juce::TextButton autoButton { "Automatic" }, manualButton { "By hand" }, removeXoButton { "Remove these crossover filters" };
+    bool xoManual = false;
     juce::TextButton swapPairButton, invertedSwapButton { "Swap" }, alRedoButton { "Start over" };
     juce::ComboBox placementBox;
     juce::Rectangle<int> guideArea, modeHint, alSteps;

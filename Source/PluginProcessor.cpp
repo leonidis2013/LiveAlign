@@ -1,3 +1,4 @@
+#include <algorithm>
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Jerod Ulicki
 
@@ -88,6 +89,7 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         else if (refSrc >= 2 && refSrc - 2 < numIn) ref = buffer.getReadPointer (refSrc - 2, start);
 
         analyzer.push (mic.data(), ref, genBuf.data(), n);
+        recorder.push (mic.data(), ref, n);
 
         for (int m = 0; m < count; ++m)
         {
@@ -136,7 +138,7 @@ juce::String LiveAlignProcessor::loadCalibrationFile (int mic, const juce::File&
     auto t = la::parseFreqTable (f.loadFileAsString().toStdString());
     if (t.freq.size() < 3) return "No calibration data found in " + f.getFileName();
     mic = juce::jlimit (0, la::kMaxMics - 1, mic);
-    const int a = angle < 0 ? la::MicCalSet::angleFromName (f.getFileName()) : (angle & 1);
+    const int a = angle < 0 ? la::MicCalSet::angleFromName (f.getFileName()) : juce::jlimit (0, la::kCalSlots - 1, angle);
     cals[(size_t) mic].table[a] = std::move (t);
     cals[(size_t) mic].name[a] = f.getFileName();
     mics.noCalFile[(size_t) mic] = false;
@@ -155,9 +157,14 @@ void LiveAlignProcessor::clearCalibration (int mic, int angle)
 void LiveAlignProcessor::swapCalibrationAngle (int mic)
 {
     mic = juce::jlimit (0, la::kMaxMics - 1, mic);
+    // two files the wrong way round: swap them (with more than two, set each file's angle instead)
     auto& c = cals[(size_t) mic];
-    std::swap (c.table[0], c.table[1]);
-    std::swap (c.name[0], c.name[1]);
+    int first = -1, second = -1;
+    for (int a = 0; a < la::kCalSlots; ++a) if (c.has (a)) { if (first < 0) first = a; else if (second < 0) second = a; }
+    if (first < 0) return;
+    if (second < 0) second = first == la::Cal0 ? la::Cal90 : la::Cal0;   // one file: it is really for the other usual angle
+    std::swap (c.table[first], c.table[second]);
+    std::swap (c.name[first], c.name[second]);
     applyCalibration (mic);
 }
 
@@ -186,15 +193,16 @@ int LiveAlignProcessor::positionAimOf (const juce::String& position) const
 void LiveAlignProcessor::setPositionAim (const juce::String& position, int aim)
 {
     if (position.isEmpty()) return;
-    positionAim[position] = aim == 0 ? 0 : 1;
+    aim = juce::jlimit (0, la::kCalSlots - 1, aim);
+    positionAim[position] = aim;
     for (int m = 0; m < la::kMaxMics; ++m)
-        if (mics.position[(size_t) m] == position) { mics.aim[(size_t) m] = aim == 0 ? 0 : 1; applyCalibration (m); }
+        if (mics.position[(size_t) m] == position) { mics.aim[(size_t) m] = aim; applyCalibration (m); }
 }
 
 void LiveAlignProcessor::setMicAim (int mic, int aim)
 {
     mic = juce::jlimit (0, la::kMaxMics - 1, mic);
-    mics.aim[(size_t) mic] = aim == 0 ? 0 : 1;
+    mics.aim[(size_t) mic] = juce::jlimit (0, la::kCalSlots - 1, aim);
     if (mics.position[(size_t) mic].isNotEmpty()) setPositionAim (mics.position[(size_t) mic], aim);
     applyCalibration (mic);
 }
@@ -289,6 +297,86 @@ juce::String LiveAlignProcessor::setupFingerprint() const
     s << "|" << juce::roundToInt (getSampleRate()) << "|ref" << settings.refSource.load();
     for (int m = 0; m < settings.micCount.load(); ++m) s << "|m" << settings.micInput[m].load();
     return s;
+}
+
+void LiveAlignProcessor::syncPositionsWithPlan()
+{
+    for (const auto& it : plan.items)
+        if (it.kind == la::PlanItem::Marker && it.text.isNotEmpty() && ! positions.contains (it.text)) positions.add (it.text);
+    for (const auto& p : positions) plan.ensureMarker (p);
+    // each tuning mic sits on its position's marker
+    for (int m = 0; m < juce::jmin (settings.micCount.load(), la::kMaxMics); ++m)
+    {
+        const int k = plan.markerOf (mics.position[(size_t) m]);
+        if (k < 0) continue;
+        plan.mics[(size_t) m].x = plan.items[(size_t) k].x;
+        plan.mics[(size_t) m].y = plan.items[(size_t) k].y;
+        plan.mics[(size_t) m].placed = true;
+    }
+}
+
+void LiveAlignProcessor::renamePosition (const juce::String& from, const juce::String& to)
+{
+    const auto t = to.trim();
+    if (from == t || t.isEmpty()) return;
+    const int i = positions.indexOf (from);
+    if (i >= 0) { if (positions.contains (t)) positions.remove (i); else positions.set (i, t); }
+    for (auto& p : mics.position) if (p == from) p = t;
+    if (auto it = positionAim.find (from); it != positionAim.end()) { const int a = it->second; positionAim.erase (it); positionAim[t] = a; }
+    for (auto& m : room.meas) if (m.position == from) m.position = t;
+    for (auto& w : room.sweeps) if (w.position == from) w.position = t;
+    if (room.skipped.contains (from)) { room.skipped.removeString (from); room.skipped.addIfNotAlreadyThere (t); }
+    if (monitorMic.position == from) monitorMic.position = t;
+    for (auto& a : system.alignments) if (a.spot == from) a.spot = t;
+    for (auto& it : plan.items) if (it.kind == la::PlanItem::Marker && it.text == from) it.text = t;
+}
+
+void LiveAlignProcessor::removePosition (const juce::String& name)
+{
+    positions.removeString (name);
+    for (auto& p : mics.position) if (p == name) p.clear();
+    positionAim.erase (name);
+    room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [&name] (const la::RoomMeasurement& m) { return m.position == name; }), room.meas.end());
+    room.skipped.removeString (name);
+    room.sweeps.erase (std::remove_if (room.sweeps.begin(), room.sweeps.end(), [&name] (const la::SweepMeasurement& w) { return w.position == name; }), room.sweeps.end());
+    plan.items.erase (std::remove_if (plan.items.begin(), plan.items.end(), [&name] (const la::PlanItem& it) { return it.kind == la::PlanItem::Marker && it.text == name; }),
+                      plan.items.end());
+}
+
+juce::StringArray LiveAlignProcessor::setupChanges() const
+{
+    juce::StringArray out;
+    if (checks.setup.isEmpty()) return out;
+    const auto now = setupFingerprint();
+    if (now == checks.setup) return out;
+    juce::StringArray a, b;
+    a.addTokens (checks.setup, "|", {});
+    b.addTokens (now, "|", {});
+    auto part = [] (const juce::StringArray& x, int i) { return i < x.size() ? x[i] : juce::String(); };
+    if (part (a, 0) != part (b, 0)) out.add ("the interface: was " + (part (a, 0).isNotEmpty() ? part (a, 0) : juce::String ("none")) + ", now "
+                                             + (part (b, 0).isNotEmpty() ? part (b, 0) : juce::String ("none")));
+    if (part (a, 1) != part (b, 1)) out.add ("the sample rate: was " + part (a, 1) + " Hz, now " + part (b, 1) + " Hz");
+    if (part (a, 2) != part (b, 2)) out.add ("the reference");
+    for (int k = 3; k < juce::jmax (a.size(), b.size()); ++k)
+        if (part (a, k) != part (b, k))
+        {
+            const int m = k - 3;
+            if (part (b, k).isEmpty()) out.add (mics.nameOf (m) + " was removed");
+            else if (part (a, k).isEmpty()) out.add (mics.nameOf (m) + " was added");
+            else out.add (mics.nameOf (m) + "'s input: was " + juce::String (part (a, k).substring (1).getIntValue() + 1) + ", now "
+                          + juce::String (part (b, k).substring (1).getIntValue() + 1));
+        }
+    if (out.isEmpty()) out.add ("the wiring");
+    return out;
+}
+
+bool LiveAlignProcessor::interfaceChanged() const
+{
+    if (checks.setup.isEmpty()) return false;
+    juce::StringArray a, b;
+    a.addTokens (checks.setup, "|", {});
+    b.addTokens (setupFingerprint(), "|", {});
+    return a[0] != b[0] || a[1] != b[1];
 }
 
 // ---------------------------------------------------------------------------- mic locker
@@ -394,13 +482,13 @@ bool LiveAlignProcessor::syncLocker()
 void LiveAlignProcessor::saveMicCalibrations (juce::XmlElement& parent) const
 {
     for (int m = 0; m < la::kMaxMics; ++m)
-        for (int a = 0; a < 2; ++a)
+        for (int a = 0; a < la::kCalSlots; ++a)
         {
             const auto& c = cals[(size_t) m];
             if (! c.has (a)) continue;
             auto* e = parent.createNewChildElement ("MicCalibration");
             e->setAttribute ("mic", m);
-            e->setAttribute ("angle", a == la::Cal90 ? 90 : 0);
+            e->setAttribute ("angle", la::calSlotDegrees (a));
             e->setAttribute ("name", c.name[a]);
             la::MicCalSet::saveTable (*e, c.table[a]);
         }
@@ -417,7 +505,7 @@ void LiveAlignProcessor::loadMicCalibrations (const juce::XmlElement& parent)
         if (t.freq.size() < 3) continue;
         const auto name = e->getStringAttribute ("name");
         // before 0.9 there was one file per mic: its name says which angle it is for
-        const int a = e->hasAttribute ("angle") ? (e->getIntAttribute ("angle") == 90 ? la::Cal90 : la::Cal0) : la::MicCalSet::angleFromName (name);
+        const int a = e->hasAttribute ("angle") ? la::calSlotFromDegrees (e->getIntAttribute ("angle")) : la::MicCalSet::angleFromName (name);
         cals[(size_t) m].table[a] = std::move (t);
         cals[(size_t) m].name[a] = name;
     }
@@ -501,7 +589,7 @@ juce::String LiveAlignProcessor::loadMonitorCalibration (const juce::File& f, in
     if (! f.existsAsFile()) return "File not found: " + f.getFullPathName();
     auto t = la::parseFreqTable (f.loadFileAsString().toStdString());
     if (t.freq.size() < 3) return "No calibration data found in " + f.getFileName();
-    const int a = angle < 0 ? la::MicCalSet::angleFromName (f.getFileName()) : (angle & 1);
+    const int a = angle < 0 ? la::MicCalSet::angleFromName (f.getFileName()) : juce::jlimit (0, la::kCalSlots - 1, angle);
     monitorMic.cal.table[a] = std::move (t);
     monitorMic.cal.name[a] = f.getFileName();
     monitorMic.noCalFile = false;
@@ -709,7 +797,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     {
         auto* e = pos->createNewChildElement ("Position");
         e->setAttribute ("name", p);
-        if (positionAimOf (p) >= 0) e->setAttribute ("aim", positionAimOf (p) == 0 ? 0 : 90);
+        if (positionAimOf (p) >= 0) e->setAttribute ("aim", la::calSlotDegrees (positionAimOf (p)));
     }
     speakers.save (*x);
     system.save (*x);
@@ -758,7 +846,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
         for (const auto* p : pos->getChildWithTagNameIterator ("Position"))
         {
             positions.add (p->getStringAttribute ("name"));
-            if (p->hasAttribute ("aim")) positionAim[p->getStringAttribute ("name")] = p->getIntAttribute ("aim") == 0 ? 0 : 1;
+            if (p->hasAttribute ("aim")) positionAim[p->getStringAttribute ("name")] = la::calSlotFromDegrees (p->getIntAttribute ("aim"));
         }
         for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     }

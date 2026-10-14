@@ -3,6 +3,7 @@
 
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "../MicCalibration.h"
 
 // The Live series colour system (LiveVoice, LiveMeter, BroadcastMaster): same surfaces, accents, light/dark pairing,
 // rounded cards with an accent bar beside the title, pill switches and slim sliders.
@@ -125,4 +126,13 @@ inline juce::String signedText (float v, int decimals = 1)
 {
     return (v >= 0.0f ? "+" : "") + juce::String (v, decimals);
 }
+// An aim picker: every calibration angle, in order (item id = slot + 1).
+inline void fillAimBox (juce::ComboBox& b)
+{
+    b.clear (juce::dontSendNotification);
+    for (int a : calSlotsInOrder()) b.addItem (calAngleName (a) + "  " + calAimText (a).upToFirstOccurrenceOf (" (", false, false), a + 1);
+}
+inline void setAimBox (juce::ComboBox& b, int aim) { b.setSelectedId (juce::jlimit (0, kCalSlots - 1, aim) + 1, juce::dontSendNotification); }
+inline int aimFromBox (const juce::ComboBox& b) { return juce::jmax (0, b.getSelectedId() - 1); }
+
 } // namespace la::ui

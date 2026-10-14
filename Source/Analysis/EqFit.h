@@ -42,6 +42,8 @@ struct Options
     int maxBands = 8;
     double maxCutDb = 12.0, maxBoostDb = 3.0;
     double minQ = 0.4, maxQ = 8.0;
+    double maxBoostQ = 8.0;              // boosts are kept wider (a narrow boost fills a dip a reflection made)
+    double smoothOct = 1.0 / 6.0;        // the measurement is smoothed this much before fitting
     double toleranceDb = 1.0;           // stop when everything left is within this
     double minBoostWidthOct = 0.33;     // narrower dips are not boosted
     double minGainDb = 1.0;             // smaller bands are not worth a filter
@@ -126,7 +128,7 @@ inline Fit fit (const std::vector<double>& f, const std::vector<double>& measure
     for (auto& v : raw) if (std::isfinite (v)) v -= r.offsetDb;
 
     // fit to the broad shape: 1/6 octave
-    auto resid = smooth (f, raw, 1.0 / 6.0);
+    auto resid = smooth (f, raw, o.smoothOct);
     detail::stats (f, resid, o, r.rmsBefore, r.maxBefore);
 
     std::vector<char> skip (f.size(), 0);   // regions where a band did not help
@@ -169,7 +171,9 @@ inline Fit fit (const std::vector<double>& f, const std::vector<double>& measure
         while (b + 1 < f.size() && std::isfinite (resid[b + 1]) && std::abs (resid[b + 1]) > std::abs (d) * 0.5 && resid[b + 1] * d > 0.0) ++b;
         const double bw = std::max (0.1, std::log2 (f[b] / f[a]));
         const double p2 = std::pow (2.0, bw);
-        Band band { f[(size_t) best], std::clamp (-d, -o.maxCutDb, o.maxBoostDb), std::clamp (std::sqrt (p2) / (p2 - 1.0), o.minQ, o.maxQ) };
+        auto qMax = [&o] (double gain) { return gain > 0.0 ? std::min (o.maxQ, o.maxBoostQ) : o.maxQ; };
+        Band band { f[(size_t) best], std::clamp (-d, -o.maxCutDb, o.maxBoostDb), 1.0 };
+        band.q = std::clamp (std::sqrt (p2) / (p2 - 1.0), o.minQ, qMax (band.gainDb));
 
         // refine frequency, Q and gain together
         double e = detail::error (f, resid, band, o);
@@ -182,8 +186,8 @@ inline Fit fit (const std::vector<double>& f, const std::vector<double>& measure
                 { band.freq, band.gainDb + 0.25, band.q }, { band.freq, band.gainDb - 0.25, band.q } };
             for (auto t : tries)
             {
-                t.q = std::clamp (t.q, o.minQ, o.maxQ);
                 t.gainDb = std::clamp (t.gainDb, -o.maxCutDb, o.maxBoostDb);
+                t.q = std::clamp (t.q, o.minQ, qMax (t.gainDb));
                 t.freq = std::clamp (t.freq, o.fLo, o.fHi);
                 const double et = detail::error (f, resid, t, o);
                 if (et < e - 1e-9) { e = et; band = t; improved = true; }
@@ -206,5 +210,32 @@ inline Fit fit (const std::vector<double>& f, const std::vector<double>& measure
     std::sort (r.bands.begin(), r.bands.end(), [] (const Band& x, const Band& y) { return x.freq < y.freq; });
     detail::stats (f, resid, o, r.rmsAfter, r.maxAfter);
     return r;
+}
+
+// A refinement on top of the EQ already entered: a new band close to an existing one (within a third of an octave,
+// similar width) changes that band instead of taking another; bands that cancel out are removed; past `maxBands`,
+// the smallest go.
+inline std::vector<Band> merge (std::vector<Band> entered, const std::vector<Band>& extra, int maxBands)
+{
+    for (const auto& b : extra)
+    {
+        int near = -1;
+        for (int k = 0; k < (int) entered.size(); ++k)
+        {
+            const auto& e = entered[(size_t) k];
+            if (std::abs (std::log2 (e.freq / b.freq)) <= 1.0 / 3.0 && std::max (e.q, b.q) / std::min (e.q, b.q) < 2.5) { near = k; break; }
+        }
+        if (near < 0) { entered.push_back (b); continue; }
+        auto& e = entered[(size_t) near];
+        const double we = std::abs (e.gainDb), wb = std::abs (b.gainDb);
+        e.freq = std::round (std::exp ((we * std::log (e.freq) + wb * std::log (b.freq)) / std::max (1e-9, we + wb)));
+        e.q = std::round ((e.q * we + b.q * wb) / std::max (1e-9, we + wb) * 100.0) / 100.0;
+        e.gainDb = std::round ((e.gainDb + b.gainDb) * 10.0) / 10.0;
+    }
+    entered.erase (std::remove_if (entered.begin(), entered.end(), [] (const Band& x) { return std::abs (x.gainDb) < 0.5; }), entered.end());
+    while ((int) entered.size() > std::max (0, maxBands))
+        entered.erase (std::min_element (entered.begin(), entered.end(), [] (const Band& x, const Band& y) { return std::abs (x.gainDb) < std::abs (y.gainDb); }));
+    std::sort (entered.begin(), entered.end(), [] (const Band& x, const Band& y) { return x.freq < y.freq; });
+    return entered;
 }
 } // namespace la::eq
