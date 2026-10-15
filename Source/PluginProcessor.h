@@ -18,6 +18,7 @@
 #include "RoomTuning.h"
 #include "Monitoring.h"
 #include "TuningExtras.h"
+#include "LevelBalance.h"
 #include "UpdateChecker.h"
 #include "Analysis/Generator.h"
 
@@ -66,15 +67,17 @@ public:
     juce::String loadCalibrationFile (int mic, const juce::File&, int angle = -1);   // returns an error message, or empty
     void clearCalibration (int mic, int angle = -1);                                  // -1: both
     const la::MicCalSet& calibrations (int mic) const { return cals[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)]; }
-    // The aim belongs to the measurement position: a mic moved to another position takes that position's aim (and so
-    // its 0 or 90 degree calibration file). A mic without a position keeps its own aim.
+    // The aim (and so the calibration file) is set by what is measured: close to a speaker the mic points at it
+    // (speakerAim, 0 degrees); in the room it points up (roomAim, 90 degrees when that file is loaded, else the nearest
+    // angle loaded). Each can be changed in the guided pop-up, to the angles the mic has files for.
     void setMicAim (int mic, int aim);          // 0 = at the speaker, 1 = pointing up
     void swapCalibrationAngle (int mic);        // a single file that was taken for the wrong angle
     void setMicPosition (int mic, const juce::String& position);
     int positionAimOf (const juce::String& position) const;   // -1 when not set
     void setPositionAim (const juce::String& position, int aim);
     std::map<juce::String, int> positionAim;  // venue: aim at each named position
-    // A page that needs a particular aim while it measures (Speakers: at the speaker). -1 = each mic's own aim.
+    int roomAim = la::Cal90, speakerAim = la::Cal0;   // venue
+    // A page that needs a particular aim while it measures (Speakers: at the speaker). -1 = the room aim.
     void setAimOverride (int aim);
     int aimOverride() const { return aimOverrideValue; }
     int effectiveAim (int mic) const;
@@ -151,6 +154,8 @@ public:
     la::RoomTuning room;                // the open session's room tuning
     la::FeedbackTest feedback;          // the open session's feedback test
     la::AsFound asFound;                // the open session's processor settings before anything was changed
+    la::LevelBalance level;             // the open session's level balance
+    la::Recheck recheck;                // the open session's quick re-check
     la::SplLog splLog;                  // the open session's sound level log (monitoring)
     la::MonitorMic monitorMic;          // the monitoring mic (venue)
 

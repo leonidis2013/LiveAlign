@@ -73,11 +73,14 @@ public:
             g.setColour (p.textDim);
             g.drawText (juce::String ((int) db), juce::Rectangle<float> (plot.getX() - 34.0f, yDb (db) - 7.0f, 30.0f, 14.0f), juce::Justification::centredRight);
         }
-        // EQ range shading
+        // EQ range: where the system plays; outside it is greyed out (no EQ there)
         if (eqHi > eqLo)
         {
             g.setColour (p.accent.withAlpha (0.05f));
             g.fillRect (juce::Rectangle<float>::leftTopRightBottom (ax.x (eqLo), plot.getY(), ax.x (eqHi), plot.getBottom()));
+            g.setColour (p.bg.withAlpha (0.55f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (plot.getX(), plot.getY(), ax.x (eqLo), plot.getBottom()));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (ax.x (eqHi), plot.getY(), plot.getRight(), plot.getBottom()));
         }
 
         juce::Graphics::ScopedSaveState save (g);
@@ -88,7 +91,7 @@ public:
         {
             g.setColour (p.textDim);
             g.setFont (font (13.5f));
-            g.drawFittedText ("No measurements yet. Put the mic(s) at the listening positions, say where each one is on the left, and press Measure.",
+            g.drawFittedText ("No measurements yet. Press Measure as found: the guided pop-up takes the mic to each listening point.",
                               plot.reduced (60.0f).toNearestInt(), juce::Justification::centred, 3);
             return;
         }
@@ -174,6 +177,7 @@ class RoomPage : public juce::Component, public GuidedSource, private juce::Time
 public:
     std::function<void()> onChanged;
     std::function<void (GuidedSource&)> onGuided;   // opens the guided pop-up
+    std::function<void()> onOpenPlan;                // the points are made on the venue plan
     std::function<void (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)>)> askText;
 
     explicit RoomPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), room (p.room), graph (p)
@@ -191,23 +195,10 @@ public:
         setupToggle (showAfter, true);
         setupToggle (showPredicted, true);
 
-        addPositionButton.onClick = [this]
-        {
-            if (askText) askText ("New position", "Row " + juce::String (proc.positions.size() + 1), [this] (const juce::String& t)
-            {
-                if (t.isNotEmpty() && ! proc.positions.contains (t)) proc.positions.add (t);
-                refresh();
-                changed();
-            });
-        };
-        addPositionButton.setTooltip ("Add a listening position (a row, a seat, the balcony ...)");
+        addPositionButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("Points on the plan  \xe2\x86\x92")));
+        addPositionButton.onClick = [this] { if (onOpenPlan) onOpenPlan(); };
+        addPositionButton.setTooltip ("The listening points are made, moved and renamed on the venue plan; tick the ones Room EQ measures here");
         addAndMakeVisible (addPositionButton);
-        clearButton.onClick = [this] { clearSelected(); };
-        clearButton.setTooltip ("Remove the selected position everywhere (Mics, the venue plan) with its measurements. Untick it instead to leave it out of this measuring.");
-        addAndMakeVisible (clearButton);
-        nextPosButton.onClick = [this] { planNextRound (true); };
-        nextPosButton.setTooltip ("Put the mics at the next planned positions that have not been measured, and say where to move them");
-        addAndMakeVisible (nextPosButton);
 
         // ---- 1 measure ----
         outputBox.setTooltip ("Where the pink noise plays from: all outputs (the whole system), or one output");
@@ -223,12 +214,7 @@ public:
         }
         phaseButtons[0].setToggleState (true, juce::dontSendNotification);
         measureButton.onClick = [this] { if (phase == Phase::Idle) requestMeasure(); else cancel ("Stopped."); };
-        guidedToggle.setButtonText ("Guided");
-        guidedToggle.setTooltip ("Step by step in a pop-up: the venue plan shows where each mic goes and how to aim it, then Measure and Next point");
-        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
-        guidedToggle.onClick = [this] { GuidedSource::setEnabled (guidedToggle.getToggleState()); };
-        addAndMakeVisible (guidedToggle);
-        measureButton.setTooltip ("Plays pink noise, finds each mic's arrival and averages the response at every mic, each at its position");
+        measureButton.setTooltip ("Measures every ticked listening point in the guided pop-up: pink noise from the whole system, the mic moved from point to point");
         addAndMakeVisible (measureButton);
 
         // ---- 2 target and EQ ----
@@ -292,35 +278,7 @@ public:
     void refresh()
     {
         proc.syncPositionsWithPlan();
-        // mic position pickers
-        const int n = settings.micCount.load();
-        if ((int) micBoxes.size() != n)
-        {
-            micBoxes.clear();
-            for (int m = 0; m < n; ++m)
-            {
-                auto b = std::make_unique<juce::ComboBox>();
-                b->setEditableText (true);
-                b->setTextWhenNothingSelected ("Where is it?");
-                b->onChange = [this, m]
-                {
-                    proc.setMicPosition (m, micBoxes[(size_t) m]->getText());
-                    refresh();
-                    changed();
-                };
-                b->setTooltip ("Where this mic is now. Its aim (and calibration file) follows the position.");
-                addAndMakeVisible (*b);
-                micBoxes.push_back (std::move (b));
-            }
-        }
-        for (int m = 0; m < n; ++m)
-        {
-            auto& b = *micBoxes[(size_t) m];
-            if (b.isPopupActive() || b.hasKeyboardFocus (true)) continue;
-            b.clear (juce::dontSendNotification);
-            for (int i = 0; i < proc.positions.size(); ++i) b.addItem (proc.positions[i], i + 1);
-            b.setText (proc.mics.position[(size_t) m], juce::dontSendNotification);
-        }
+        room.updateSystem (proc.system);
 
         const int outs = juce::jmax (1, proc.numOutputs());
         outputBox.clear (juce::dontSendNotification);
@@ -350,9 +308,6 @@ public:
         boostBox.setSelectedId ((int) room.maxBoostDb + 1, juce::dontSendNotification);
         if (boostBox.getSelectedId() == 0) boostBox.setSelectedId (4, juce::dontSendNotification);
         tunedButton.setButtonText (room.tuned ? "Room tuned " + room.tunedOn + "  (undo)" : juce::String ("Mark the room as tuned (as left)"));
-        nextPosButton.setVisible (true);
-        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
-        nextPosButton.setButtonText (n == 1 ? "Next position" : "Next positions");
 
         double lo, hi;
         eqRange (lo, hi);
@@ -403,7 +358,7 @@ public:
     void requestMeasure()
     {
         if (phase != Phase::Idle) return;
-        if (GuidedSource::enabled() && onGuided) onGuided (*this);
+        if (onGuided) onGuided (*this);
         else startMeasure();
     }
 
@@ -441,10 +396,10 @@ public:
                 for (int m = 0; m < n; ++m)
                     if (proc.mics.position[(size_t) m] == pos) { sp.mic = m; sp.state = GuideSpot::Now; break; }
             }
-            const int aim = sp.mic >= 0 ? proc.ownAim (sp.mic) : proc.positionAimOf (pos);
-            sp.up = aim == Cal90 || aim < 0;
+            const int aim = proc.roomAim;
+            sp.up = aim == Cal90;
             if (! sp.up) sp.aimAt = proc.plan.nearestSpeaker (sp.x, sp.y, nSpk, isTop);
-            if (aim > Cal90) sp.how = calAimText (aim) + " (" + calAngleName (aim) + " calibration)";
+            if (sp.mic >= 0) sp.how = "seated ear height, " + aimHowText (proc, sp.mic, RoomAim);
             out.push_back (sp);
         }
         // the mic symbols sit on their positions
@@ -456,14 +411,15 @@ public:
 
     juce::String guidedHowTo() const override
     {
-        if (proc.positions.isEmpty()) return "Add the listening positions first, with + Position on the Room EQ page.";
+        if (proc.positions.isEmpty()) return "Add the listening points on the venue plan first.";
         juce::StringArray idle;
         for (int m = 0; m < settings.micCount.load(); ++m)
         {
             const auto& pos = proc.mics.position[(size_t) m];
             if (pos.isEmpty() || room.skipped.contains (pos) || room.hasAt (pos, measuringAfter)) idle.add (proc.mics.nameOf (m));
         }
-        juce::String t = "Mics at seated ear height, about 4 ft (1.2 m). Pink noise plays from " + outputBox.getText().toLowerCase()
+        juce::String t = (playOutput == 0 ? juce::String ("First: unmute every speaker of the system. ") : juce::String())
+                         + "Mics at seated ear height, about 4 ft (1.2 m). Pink noise plays from " + outputBox.getText().toLowerCase()
                          + ". Drag the pulsing point if it is not where the mic really is.";
         if (! idle.isEmpty() && idle.size() < settings.micCount.load())
             t << " " << idle.joinIntoString (", ") << (idle.size() == 1 ? " sits this one out." : " sit this one out.");
@@ -497,6 +453,13 @@ public:
     }
 
     void guidedClosed() override { refresh(); }
+    int guidedAimKind() const override { return RoomAim; }
+    int guidedAimMic() const override
+    {
+        for (int m = 0; m < settings.micCount.load(); ++m)
+            if (proc.mics.position[(size_t) m].isNotEmpty() && ! room.hasAt (proc.mics.position[(size_t) m], measuringAfter)) return m;
+        return 0;
+    }
     void measure() { startMeasure(); }
     void suggestNow() { suggest(); }
     void applyNow() { applyEq(); }
@@ -506,8 +469,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
-        drawPanel (g, posCard.toFloat(), "Listening positions");
-        drawPanel (g, micCard.toFloat(), "Where the mics are now");
+        drawPanel (g, posCard.toFloat(), "Listening points");
         drawStep (g, step1, 1, "Measure", room.count (false) > 0);
         drawStep (g, step2, 2, "Target and EQ", room.checkRound > 0 && room.suggested.empty());
         drawStep (g, step3, 3, "Check", room.tuned);
@@ -547,10 +509,9 @@ public:
             g.setFont (font (10.5f, st.isNotEmpty()));
             g.setColour (st.isNotEmpty() ? p.good : p.textFaint);
             g.drawText (st.isNotEmpty() ? st.toUpperCase() : juce::String ("not measured"), r.removeFromRight (104), juce::Justification::centredRight, true);
-            const int aim = proc.positionAimOf (name);
             int here = 0;
             for (int m = 0; m < settings.micCount.load(); ++m) here += proc.mics.position[(size_t) m] == name ? 1 : 0;
-            juce::String sub = aim < 0 ? juce::String() : aim == Cal90 ? "Mic up (" + calAngleName (aim) + ")" : aim == Cal0 ? "Mic at the speaker (" + calAngleName (aim) + ")" : "Mic angled " + calAngleName (aim);
+            juce::String sub = room.skipped.contains (name) ? juce::String ("left out (tick to measure it)") : juce::String();
             if (here > 0) sub << (sub.isEmpty() ? "" : "  -  ") << (here == 1 ? "a mic is here" : juce::String (here) + " mics here");
             g.setColour (p.text);
             g.setFont (font (12.5f, true));
@@ -563,21 +524,11 @@ public:
             }
         }
 
-        // mics
-        for (int m = 0; m < (int) micBoxes.size(); ++m)
-        {
-            auto lab = micLabel (m);
-            g.setColour (micColour (m));
-            g.fillEllipse (lab.removeFromLeft (10).toFloat().withSizeKeepingCentre (8.0f, 8.0f));
-            g.setColour (p.text);
-            g.setFont (font (12.0f, true));
-            g.drawText (proc.mics.nameOf (m), lab.withTrimmedLeft (6), juce::Justification::centredLeft, true);
-        }
         g.setColour (p.textFaint);
         g.setFont (font (11.0f));
         g.drawFittedText (settings.micCount.load() == 1
-                              ? "One mic: measure, and LiveAlign says where to move it next. Untick a position to leave it out."
-                              : "The mics measure their positions at the same time; LiveAlign then says where to move them for the rest.",
+                              ? "One mic: the guided pop-up says where to move it next. Untick a point to leave it out."
+                              : "The mics measure their points at the same time; the pop-up then says where to move them for the rest.",
                           micHint, juce::Justification::topLeft, 3);
 
         // step texts
@@ -620,8 +571,18 @@ public:
         {
             double lo, hi;
             eqRange (lo, hi);
-            juce::String t = "Range " + freqLabel (lo) + " - " + freqLabel (hi) + " Hz (from the speakers' filters).";
-            txt (rangeInfo, t, p.textDim);
+            juce::String t = "Range " + freqLabel (lo) + " - " + freqLabel (hi) + " Hz ("
+                             + (room.sysMeasured ? "where the speakers play, from Speaker response" : room.sysHasShape ? "from the speakers' filters" : "default") + ").";
+            if (room.sysNote.isNotEmpty()) t << "\n" << room.sysNote;
+            {
+                juce::String why;
+                if (room.acousticsVerdict (why) >= 2) t << "\nRoom acoustics: " << why;
+            }
+            if (const int narrow = narrowBands(); narrow > 0)
+                t << "\n" << narrow << (narrow == 1 ? " band" : " bands") << " in the processor now " << (narrow == 1 ? "is" : "are")
+                  << " narrower than room EQ should be (Q above 4, or a boost above 2), from an earlier version: widen or remove "
+                  << (narrow == 1 ? "it" : "them") << " in the processor, then measure a check.";
+            txt (rangeInfo, t, room.sysNote.isNotEmpty() ? p.accent : p.textDim);
             auto r = bandsArea;
             auto bandLine = [&] (int n, const eq::Band& b, juce::Colour c)
             {
@@ -698,31 +659,15 @@ public:
         auto right = r.removeFromRight (350);
         r.removeFromRight (10);
 
-        // left: positions and mics
-        const int micH = 34 + (int) micBoxes.size() * 34 + 56 + (nextPosButton.isVisible() ? 36 : 0);
-        micCard = left.removeFromBottom (juce::jmin (left.getHeight() / 2, micH));
-        left.removeFromBottom (10);
+        // left: the listening points
         posCard = left;
         {
             auto c = posCard.reduced (12, 0).withTrimmedTop (36);
             auto b = c.removeFromBottom (44).withSizeKeepingCentre (c.getWidth(), 28);
-            addPositionButton.setBounds (b.removeFromLeft (130));
-            b.removeFromLeft (8);
-            clearButton.setBounds (b.removeFromLeft (110));
+            addPositionButton.setBounds (b.removeFromLeft (190));
+            micHint = c.removeFromBottom (44);
+            c.removeFromBottom (6);
             posList = c;
-        }
-        {
-            auto c = micCard.reduced (12, 0).withTrimmedTop (36);
-            micLabels.clear();
-            for (auto& b : micBoxes)
-            {
-                auto row = c.removeFromTop (28);
-                micLabels.push_back (row.removeFromLeft (100));
-                b->setBounds (row);
-                c.removeFromTop (6);
-            }
-            if (nextPosButton.isVisible()) { nextPosButton.setBounds (c.removeFromTop (28)); c.removeFromTop (8); }
-            micHint = c.removeFromTop (44);
         }
 
         // centre: graph and what it shows
@@ -751,12 +696,7 @@ public:
             c.removeFromTop (8);
             promptArea = movePrompt.isNotEmpty() ? c.removeFromTop (48) : juce::Rectangle<int>();
             if (movePrompt.isNotEmpty()) c.removeFromTop (6);
-            {
-                auto mrow = c.removeFromTop (32);
-                guidedToggle.setBounds (mrow.removeFromRight (92));
-                mrow.removeFromRight (6);
-                measureButton.setBounds (mrow);
-            }
+            measureButton.setBounds (c.removeFromTop (32));
             c.removeFromTop (6);
             measureInfo = c.removeFromTop (40);
         }
@@ -779,7 +719,11 @@ public:
                 boostBox.setBounds (row);
                 c.removeFromTop (6);
             }
-            rangeInfo = c.removeFromTop (18);
+            {
+                juce::String why;
+                const int lines = 1 + (room.sysNote.isNotEmpty() ? 1 : 0) + (room.acousticsVerdict (why) >= 2 ? 2 : 0) + (narrowBands() > 0 ? 2 : 0);
+                rangeInfo = c.removeFromTop (lines * 16 + 2);
+            }
             c.removeFromTop (4);
             suggestButton.setBounds (c.removeFromTop (30));
             c.removeFromTop (8);
@@ -844,7 +788,6 @@ private:
     }
 
     juce::Rectangle<int> posRow (int i) const { return { posList.getX(), posList.getY() + i * 42, posList.getWidth(), 38 }; }
-    juce::Rectangle<int> micLabel (int m) const { return m < (int) micLabels.size() ? micLabels[(size_t) m] : juce::Rectangle<int>(); }
 
     void changed()
     {
@@ -870,13 +813,22 @@ private:
         applyButton.setEnabled (! room.suggested.empty());
         suggestButton.setButtonText (room.checkRound > 0 && room.count (true) > 0 ? "Refine the EQ" : "Suggest EQ");
         suggestButton.setEnabled (room.count (false) > 0 && phase == Phase::Idle);
-        clearButton.setEnabled (selectedPos.isNotEmpty() && (room.hasAt (selectedPos, false) || room.hasAt (selectedPos, true)));
+
     }
 
     void eqRange (double& lo, double& hi) const { room.eqRange (proc.system, lo, hi); }
 
+    // Bands in the processor now that are narrower than room EQ allows (entered before the limits were set).
+    int narrowBands() const
+    {
+        int n = 0;
+        for (const auto& b : room.baseEq) n += (b.gainDb < 0.0 && b.q > 4.05) || (b.gainDb > 0.0 && b.q > 2.05) ? 1 : 0;
+        return n;
+    }
+
     void suggest()
     {
+        room.updateSystem (proc.system);
         const bool fromCheck = room.checkRound > 0 && room.count (true) > 0;
         if (room.count (false) == 0) { status = "Measure the positions as found first."; repaint(); return; }
         eq::Options o;
@@ -933,16 +885,6 @@ private:
         changed();
     }
 
-    void clearSelected()
-    {
-        if (selectedPos.isEmpty()) { status = "Click a position in the list first."; repaint(); return; }
-        proc.removePosition (selectedPos);
-        selectedPos.clear();
-        graph.setSelectedPosition ({});
-        refresh();
-        changed();
-    }
-
     int plannedLeft (bool after) const
     {
         int n = 0;
@@ -978,26 +920,6 @@ private:
         if (left > 0) movePrompt << " " << left << (left == 1 ? " more position after this." : " more positions after this.");
         refresh();
         changed();
-    }
-
-    // One mic: move it to the next position not measured yet (in this before / after round).
-    void moveToNextPosition (bool fromButton)
-    {
-        if (settings.micCount.load() != 1 || proc.positions.isEmpty()) return;
-        const int curIdx = proc.positions.indexOf (proc.mics.position[0]);
-        for (int k = 1; k <= proc.positions.size(); ++k)
-        {
-            const auto& cand = proc.positions[(curIdx + k + proc.positions.size()) % proc.positions.size()];
-            if (! room.hasAt (cand, measuringAfter))
-            {
-                proc.setMicPosition (0, cand);
-                if (fromButton) status = "Move " + proc.mics.nameOf (0) + " to " + cand + ", then measure.";
-                refresh();
-                changed();
-                return;
-            }
-        }
-        if (fromButton) { status = "Every position has been measured."; repaint(); }
     }
 
     // ---- measuring ----
@@ -1063,7 +985,7 @@ private:
 
     void timerCallback() override
     {
-        if (proc.numOutputs() + 1 != outputBox.getNumItems() || (int) micBoxes.size() != settings.micCount.load()) refresh();
+        if (proc.numOutputs() + 1 != outputBox.getNumItems()) refresh();
         if (phase == Phase::Idle) return;
         if (! settings.genOn.load()) { cancel ("Stopped: the generator was turned off."); return; }
         const double elapsed = juce::Time::getMillisecondCounterHiRes() - phaseStart;
@@ -1170,15 +1092,13 @@ private:
     RoomGraph graph;
 
     juce::ToggleButton showPositions { "Positions" }, showBefore { "As found" }, showAfter { "Check" }, showPredicted { "With suggested EQ" };
-    juce::TextButton addPositionButton { "+ Position" }, clearButton { "Remove position" }, nextPosButton { "Next position" };
+    juce::TextButton addPositionButton;
     juce::ComboBox outputBox, targetBox, speakerBox, bandsBox, boostBox;
     juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "I've entered this EQ" };
     juce::TextButton tunedButton { "Mark the room as tuned" };
-    juce::ToggleButton guidedToggle;
-    std::vector<std::unique_ptr<juce::ComboBox>> micBoxes;
-    std::vector<juce::Rectangle<int>> micLabels;
+
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> labels;
-    juce::Rectangle<int> posCard, micCard, posList, micHint, step1, step2, step3, measureInfo, rangeInfo, bandsArea, checkInfo;
+    juce::Rectangle<int> posCard, posList, micHint, step1, step2, step3, measureInfo, rangeInfo, bandsArea, checkInfo;
 
     juce::String selectedPos, status, movePrompt;
     juce::StringArray measuredAtStart;

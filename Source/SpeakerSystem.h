@@ -5,6 +5,8 @@
 // The speaker system of a venue: each source (a top, a sub, a fill ...), its response (measured with one mic, or
 // imported from a file), the processing LiveAlign suggests for it, and the crossover between two of them.
 // Saved in the venue file. Message thread only.
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "Analysis/Crossover.h"
@@ -40,6 +42,8 @@ struct PolarityCheck
     int against = -1;                  // the speaker it was compared with (-1: none)
     int relative = polarity::Unknown;  // Normal = same as `against`, Inverted = opposite
     juce::String when, mic;
+    double levelDb = NAN;              // the capture's level through its own range (cabinets on one output should match)
+    bool notClose = false;             // arrived much later than the other close-up captures: the mic was probably not close
 
     bool done() const { return verdict != polarity::Unknown; }
 };
@@ -97,8 +101,16 @@ struct SpeakerSource
     }
 
     xo::Processing proc;           // suggested settings for the speaker processor
+    double trimDb = 0.0;           // level trim from Level balance, on top of proc.gainDb (kept for a linked speaker too)
+    juce::String sheetEntered;     // the processor sheet line as it was when ticked "entered" (a change unticks it)
+
+    // As found: the first measurement of this speaker, with the processing it had then (for the before / after view).
+    FreqTable asFound;
+    xo::Processing asFoundProc;
+    juce::String asFoundWhen;
 
     bool hasResponse() const { return response.freq.size() > 2; }
+    double totalGainDb() const { return proc.gainDb + trimDb; }
 };
 
 // Time alignment of one speaker (`align`) to another (`ref`) at a listening spot where their coverage meets:
@@ -249,12 +261,119 @@ struct SpeakerSystem
         return l >= 0 && l < (int) sources.size() && l != i && sources[(size_t) l].linkTo < 0 ? l : i;
     }
 
-    // Measured itself, or follows a speaker that is (the other side of a stereo pair need not be measured).
+    // Measured itself (or imported). A speaker set "Same as" another is measured too: its settings follow the other,
+    // but its own capture checks its polarity, level and response against it. Only when the one it follows was
+    // imported (nothing to compare with) does it not need its own.
     bool covered (int i) const
     {
         if (i < 0 || i >= (int) sources.size()) return false;
-        return sources[(size_t) i].hasResponse() || sources[(size_t) master (i)].hasResponse();
+        if (sources[(size_t) i].hasResponse()) return true;
+        const int m = master (i);
+        return m != i && sources[(size_t) m].imported && sources[(size_t) m].hasResponse();
     }
+
+    juce::String nameOf (int i) const
+    {
+        if (i < 0 || i >= (int) sources.size()) return {};
+        const auto& n = sources[(size_t) i].name;
+        return n.isNotEmpty() ? n : "Speaker " + juce::String (i + 1);
+    }
+
+    // Who else plays when `targets` are measured: speakers on the same output, or every speaker when one plays from
+    // "All outputs" (or two targets on different outputs, which plays all of them). On most systems that is fine: the
+    // others are muted at the console or processor for the measurement. Linked speakers share settings, not a feed.
+    std::vector<int> alsoPlaying (const std::vector<int>& targets) const
+    {
+        std::vector<int> out;
+        if (sources.size() < 2 || targets.empty()) return out;
+        std::vector<int> outs;
+        for (int t : targets) if (t >= 0 && t < (int) sources.size()) outs.push_back (sources[(size_t) t].output);
+        bool all = false;
+        for (int o : outs) all = all || o == 0 || o != outs.front();
+        for (int k = 0; k < (int) sources.size(); ++k)
+        {
+            if (std::find (targets.begin(), targets.end(), k) != targets.end()) continue;
+            const int o = sources[(size_t) k].output;
+            if (all || o == 0 || std::find (outs.begin(), outs.end(), o) != outs.end()) out.push_back (k);
+        }
+        return out;
+    }
+
+    // "Mute Main R and Sub on the console or processor, so only Main L plays." Empty when nothing else plays.
+    juce::String muteText (const std::vector<int>& targets) const
+    {
+        const auto others = alsoPlaying (targets);
+        if (others.empty()) return {};
+        juce::StringArray o, t;
+        for (int k : others) o.add (nameOf (k));
+        for (int k : targets) t.add (nameOf (k));
+        auto join = [] (const juce::StringArray& a) { return a.size() <= 1 ? a.joinIntoString ("") : a.joinIntoString (", ", 0, a.size() - 1) + " and " + a[a.size() - 1]; };
+        return "Mute " + join (o) + " on the console or processor, so only " + join (t) + (t.size() == 1 ? " plays." : " play.");
+    }
+
+    // The range a speaker plays (with its processing): within 10 dB of its smoothed peak, from its close-up
+    // measurement; by its role when it has none (a sub 40 - 100 Hz, anything else 200 Hz - 5 kHz).
+    void playRange (int i, double& lo, double& hi) const
+    {
+        const bool sub = i >= 0 && i < (int) sources.size() && sources[(size_t) i].role == (int) SpeakerRole::Sub;
+        lo = sub ? 40.0 : 200.0;
+        hi = sub ? 100.0 : 5000.0;
+        const int m = i >= 0 && i < (int) sources.size() && sources[(size_t) i].hasResponse() ? i : master (i);
+        if (m < 0 || m >= (int) sources.size() || ! sources[(size_t) m].hasResponse()) return;
+        std::vector<double> g;
+        for (double f = 25.0; f <= 18000.0; f *= std::pow (2.0, 1.0 / 12.0)) g.push_back (f);
+        const auto& s = sources[(size_t) m];
+        std::vector<double> db (g.size(), -300.0);
+        for (size_t k = 0; k < g.size(); ++k)
+        {
+            if (g[k] < s.response.freq.front() || g[k] > s.response.freq.back()) continue;
+            double sum = 0.0;
+            int n = 0;
+            for (double x = g[k] / 1.122; x <= g[k] * 1.122; x *= 1.03) { sum += s.response.dbAt (x); ++n; }
+            db[k] = sum / juce::jmax (1, n) + 20.0 * std::log10 (std::abs (sources[(size_t) i].proc.at (g[k])) + 1e-12);
+        }
+        double peak = -300.0;
+        for (double v : db) peak = std::max (peak, v);
+        if (peak < -250.0) return;
+        double l = 0.0, h = 0.0;
+        for (size_t k = 0; k < g.size(); ++k) if (db[k] >= peak - 10.0) { if (l <= 0.0) l = g[k]; h = g[k]; }
+        if (l > 0.0 && h > l * 1.4) { lo = l; hi = h; }
+    }
+
+    // A close-up capture's level through the speaker's own range (dB, NaN when there is none): left and right of a
+    // pair, and the cabinets on one output, should match.
+    static double bandLevel (const FreqTable& t, double lo, double hi)
+    {
+        double sum = 0.0;
+        int n = 0;
+        for (size_t k = 0; k < t.freq.size(); ++k)
+            if (t.freq[k] >= lo && t.freq[k] <= hi && std::isfinite (t.db[k])) { sum += std::pow (10.0, t.db[k] / 10.0); ++n; }
+        return n > 0 ? 10.0 * std::log10 (sum / n) : NAN;
+    }
+
+    // Close-up captures arrive within a few ms of each other (same distance, same chain). One that arrives much
+    // later than the earliest of its kind (subs with subs, tops with tops) was probably not measured close up.
+    bool lateArrival (int i, double& lateByMs) const
+    {
+        lateByMs = 0.0;
+        if (i < 0 || i >= (int) sources.size()) return false;
+        const auto& s = sources[(size_t) i];
+        if (! s.hasArrival || ! s.nearField || s.imported) return false;
+        double first = 1e9;
+        int n = 0;
+        for (int k = 0; k < (int) sources.size(); ++k)
+        {
+            const auto& o = sources[(size_t) k];
+            // like with like: a sub's arrival comes later than a top's (its filters and its long impulse)
+            if (k == i || ! o.hasArrival || ! o.nearField || o.imported || (o.role == (int) SpeakerRole::Sub) != (s.role == (int) SpeakerRole::Sub)) continue;
+            first = std::min (first, o.arrivalMs);
+            ++n;
+        }
+        if (n == 0) return false;
+        lateByMs = s.arrivalMs - first;
+        return lateByMs > kLateMs;
+    }
+    static constexpr double kLateMs = 3.0;
 
     // Linked speakers take their master's filters, level and polarity, and its delay unless a time alignment set their own.
     void syncLinks()
@@ -458,9 +577,27 @@ struct SpeakerSystem
                 pe->setAttribute ("relative", pc.relative);
                 pe->setAttribute ("when", pc.when);
                 pe->setAttribute ("mic", pc.mic);
+                if (std::isfinite (pc.levelDb)) pe->setAttribute ("levelDb", pc.levelDb);
+                if (pc.notClose) pe->setAttribute ("notClose", true);
             }
             c->setAttribute ("arrivalMs", s.arrivalMs);
             c->setAttribute ("nearField", s.nearField);
+            if (s.trimDb != 0.0) c->setAttribute ("trimDb", s.trimDb);
+            if (s.sheetEntered.isNotEmpty()) c->setAttribute ("sheetEntered", s.sheetEntered);
+            if (s.asFound.freq.size() > 2)
+            {
+                auto* af = c->createNewChildElement ("AsFound");
+                af->setAttribute ("when", s.asFoundWhen);
+                saveFilter (*af, "hp", s.asFoundProc.hp);
+                saveFilter (*af, "lp", s.asFoundProc.lp);
+                af->setAttribute ("gainDb", s.asFoundProc.gainDb);
+                af->setAttribute ("delayMs", s.asFoundProc.delayMs);
+                af->setAttribute ("invert", s.asFoundProc.invert);
+                juce::String text;
+                for (size_t i = 0; i < s.asFound.freq.size(); ++i)
+                    text << juce::String (s.asFound.freq[i], 3) << ' ' << juce::String (s.asFound.db[i], 2) << '\n';
+                af->addTextElement (text);
+            }
             if (s.measureMic >= 0) c->setAttribute ("measureMic", s.measureMic);
             saveFilter (*c, "hp", s.proc.hp);
             saveFilter (*c, "lp", s.proc.lp);
@@ -529,6 +666,28 @@ struct SpeakerSystem
             s.hasArrival = c->getBoolAttribute ("hasArrival");
             s.arrivalMs = c->getDoubleAttribute ("arrivalMs");
             s.nearField = c->getBoolAttribute ("nearField");
+            s.trimDb = juce::jlimit (-24.0, 24.0, c->getDoubleAttribute ("trimDb"));
+            s.sheetEntered = c->getStringAttribute ("sheetEntered");
+            if (const auto* af = c->getChildByName ("AsFound"))
+            {
+                s.asFoundWhen = af->getStringAttribute ("when");
+                s.asFoundProc.hp = loadFilter (*af, "hp");
+                s.asFoundProc.lp = loadFilter (*af, "lp");
+                s.asFoundProc.gainDb = af->getDoubleAttribute ("gainDb");
+                s.asFoundProc.delayMs = af->getDoubleAttribute ("delayMs");
+                s.asFoundProc.invert = af->getBoolAttribute ("invert");
+                juce::StringArray lines;
+                lines.addLines (af->getAllSubText());
+                for (const auto& line : lines)
+                {
+                    juce::StringArray v;
+                    v.addTokens (line, " ", {});
+                    v.removeEmptyStrings();
+                    if (v.size() < 2) continue;
+                    s.asFound.freq.push_back (v[0].getDoubleValue());
+                    s.asFound.db.push_back (v[1].getDoubleValue());
+                }
+            }
             for (const auto* pe : c->getChildWithTagNameIterator ("Polarity"))
             {
                 const int k = pe->getIntAttribute ("cabinet", -1);
@@ -543,6 +702,8 @@ struct SpeakerSystem
                 pc.relative = juce::jlimit (0, 4, pe->getIntAttribute ("relative"));
                 pc.when = pe->getStringAttribute ("when");
                 pc.mic = pe->getStringAttribute ("mic");
+                pc.levelDb = pe->hasAttribute ("levelDb") ? pe->getDoubleAttribute ("levelDb") : NAN;
+                pc.notClose = pe->getBoolAttribute ("notClose");
             }
             s.measureMic = juce::jlimit (-1, kMaxMics - 1, c->getIntAttribute ("measureMic", -1));
             s.proc.hp = loadFilter (*c, "hp");

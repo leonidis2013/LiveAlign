@@ -21,13 +21,17 @@ public:
 
     explicit MonitorMicPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), mic (p.monitorMic)
     {
-        for (auto* e : { &nameEditor, &posEditor })
-        {
-            e->setFont (font (13.0f));
-            addAndMakeVisible (*e);
-        }
+        nameEditor.setFont (font (13.0f));
+        addAndMakeVisible (nameEditor);
         nameEditor.onTextChange = [this] { mic.name = nameEditor.getText().trim(); mic.configured = true; changed(); };
-        posEditor.onTextChange = [this] { mic.position = posEditor.getText().trim(); mic.configured = true; changed(); };
+        posBox.setTextWhenNothingSelected ("Pick a point");
+        posBox.setTooltip ("Where the monitor mic stands: a point on the venue plan (usually FOH). Points are made on the venue plan.");
+        posBox.onChange = [this]
+        {
+            const int id = posBox.getSelectedId();
+            if (id > 0 && id - 1 < proc.positions.size()) { mic.position = proc.positions[id - 1]; mic.configured = true; changed(); }
+        };
+        addAndMakeVisible (posBox);
 
         sourceBox.setTextWhenNothingSelected ("Pick a mic...");
         sourceBox.setTooltip ("A mic from your mic locker (its calibration comes with it), or one of the tuning mics");
@@ -42,7 +46,8 @@ public:
         calButton.setTooltip ("Load, clear or check the calibration files (0 and 90 degrees)");
         addAndMakeVisible (calButton);
         fillAimBox (aimBox);
-        aimBox.setTooltip ("How the mic is aimed: pointing up (90 degrees) is usual at FOH; it picks which calibration file is used");
+        aimBox.setTooltip ("How the mic is aimed: pointing up (90 degrees) is usual at FOH; it picks which calibration file is used. "
+                           "Only the angles this mic has a file for.");
         aimBox.onChange = [this] { mic.aim = aimFromBox (aimBox); mic.configured = true; proc.applyMonitorMic(); changed(); };
         addAndMakeVisible (aimBox);
 
@@ -94,7 +99,14 @@ public:
     {
         proc.syncMonitorFromSlot();
         if (! nameEditor.hasKeyboardFocus (true)) nameEditor.setText (mic.name, juce::dontSendNotification);
-        if (! posEditor.hasKeyboardFocus (true)) posEditor.setText (mic.position, juce::dontSendNotification);
+        if (! posBox.isPopupActive())
+        {
+            posBox.clear (juce::dontSendNotification);
+            for (int i = 0; i < proc.positions.size(); ++i) posBox.addItem (proc.positions[i], i + 1);
+            const int at = proc.positions.indexOf (mic.position);
+            if (at >= 0) posBox.setSelectedId (at + 1, juce::dontSendNotification);
+            else posBox.setText (mic.position, juce::dontSendNotification);
+        }
         sourceBox.clear (juce::dontSendNotification);
         int id = 1;
         sourceIds.clear();
@@ -108,7 +120,7 @@ public:
         inputBox.clear (juce::dontSendNotification);
         for (int i = 0; i < juce::jmax (1, proc.numInputs()); ++i) inputBox.addItem ("Input " + juce::String (i + 1), i + 1);
         inputBox.setSelectedItemIndex (juce::jlimit (0, juce::jmax (0, proc.numInputs() - 1), mic.input), juce::dontSendNotification);
-        setAimBox (aimBox, mic.aim);
+        fillAimBoxFor (aimBox, mic.cal, mic.aim);
         calButton.setButtonText (mic.cal.any() ? mic.cal.label() : mic.noCalFile ? juce::String ("None (flat)") : juce::String ("Load cal file(s)..."));
         levelButton.setButtonText (mic.splCalibrated ? "Calibrated: re-check" : "Calibrate");
         targetBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, settings.targetCurve.load()), juce::dontSendNotification);
@@ -235,7 +247,7 @@ public:
             };
             row ("Mic", sourceBox);
             row ("Name", nameEditor);
-            row ("Position", posEditor);
+            row ("Position", posBox);
             row ("Input", inputBox);
             row ("Calibration", calButton);
             row ("Aim", aimBox);
@@ -331,7 +343,8 @@ private:
     Settings& settings;
     MonitorMic& mic;
     const Snapshot* snap = nullptr;
-    juce::TextEditor nameEditor, posEditor;
+    juce::TextEditor nameEditor;
+    juce::ComboBox posBox;
     juce::ComboBox sourceBox, inputBox, aimBox, targetBox, limitBox, windowBox;
     juce::TextButton calButton, levelButton { "Calibrate" }, delayButton { "Find delay" }, sameAsRoomButton { "Same as Room EQ" },
         clearLogButton { "Clear the log" };

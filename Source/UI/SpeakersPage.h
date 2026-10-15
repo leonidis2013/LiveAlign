@@ -2,15 +2,17 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// Step 2: Speakers. Build the system (tops, subs, fills, delays), measure each source on its own with one mic
-// (or import its response), overlay them with the predicted sum, and work out the crossover for any processor:
-// frequency, filter type and slope, delay, polarity and level. Ends with a settings summary for the processor.
+// Speakers (setup) and the speaker tuning steps: Speaker response (each speaker close up, its polarity judged from
+// the same capture), Crossover, and Time alignment. The speakers are edited only on the Speakers page; the steps show
+// them read-only. Every measurement goes through the guided pop-up. The settings for the processor are on the
+// processor sheet page.
 #include <functional>
 #include <thread>
 #include "Graph.h"
 #include "NavRail.h"
 #include "GuidedMeasure.h"
 #include "../PluginProcessor.h"
+#include "../ProcessorSheet.h"
 
 namespace la::ui
 {
@@ -24,6 +26,7 @@ public:
     explicit SpeakerGraph (const SpeakerSystem& s) : sys (s) { setMouseCursor (juce::MouseCursor::CrosshairCursor); }
 
     void setWithProcessing (bool b) { withProc = b; rebuild(); }
+    void setShowAsFound (bool b) { showAsFound = b; rebuild(); }
     void setXoMarker (double f) { xoFreq = f; repaint(); }
     void setLegendRight (int px) { legendRight = (float) px; }
     // Faded where a measurement is below the minimum coherence; the selected speaker's coherence across the top.
@@ -64,6 +67,24 @@ public:
             }
             ++used;
         }
+        // as found: each speaker's first measurement with the processing it had then (dashed)
+        found.clear();
+        if (showAsFound)
+            for (int i = 0; i < (int) sys.sources.size(); ++i)
+            {
+                const auto& s = sys.sources[(size_t) i];
+                if (! s.show || s.asFound.freq.size() < 4) continue;
+                Curve c;
+                c.index = i;
+                c.db.assign (grid.size(), NAN);
+                for (size_t k = 0; k < grid.size(); ++k)
+                {
+                    if (grid[k] < s.asFound.freq.front() || grid[k] > s.asFound.freq.back()) continue;
+                    const double v = s.asFound.dbAt (grid[k]) + (withProc ? 20.0 * std::log10 (std::abs (s.asFoundProc.at (grid[k])) + 1e-12) : 0.0);
+                    if (std::isfinite (v) && v > -200.0) c.db[k] = (float) v;
+                }
+                found.push_back (std::move (c));
+            }
         sumDb.assign (grid.size(), NAN);
         hasSum = inPair > 1;
         if (hasSum)
@@ -170,6 +191,15 @@ public:
                                                [&] (size_t k) { return c.coh[k] >= minCoh; }),
                                  col, 1.8f);
             }
+            for (const auto& c : found)
+            {
+                juce::Path d;
+                const float dashes[] = { 5.0f, 4.0f };
+                juce::PathStrokeType (1.3f).createDashedStroke (d, tracePath (grid.size(), xAt, [&] (size_t k) { return yDb (c.db[k]); }, [] (size_t) { return true; }),
+                                                                dashes, 2);
+                g.setColour (sourceColour (c.index).withAlpha (0.75f));
+                g.fillPath (d);
+            }
             if (! sumDb.empty() && hasSum)
                 strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t k) { return yDb (sumDb[k]); }, [] (size_t) { return true; }),
                              p.text, 2.6f);
@@ -185,9 +215,11 @@ public:
         // legend
         auto legend = juce::Rectangle<float> (r.getRight() - legendRight, r.getY() + 8.0f, 0.0f, 18.0f);
         g.setFont (font (11.0f, true));
+        const float minX = r.getX() + 12.0f + (float) juce::GlyphArrangement::getStringWidthInt (font (13.0f, true), "Speaker responses") + 30.0f;
         auto addKey = [&] (const juce::String& name, juce::Colour c)
         {
             const float w = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), name) + 26.0f;
+            if (legend.getX() - w < minX) return;   // no room left beside the title
             legend.setX (legend.getX() - w);
             auto k = legend.withWidth (w);
             g.setColour (c);
@@ -196,6 +228,7 @@ public:
             g.drawText (name, k.withTrimmedLeft (4.0f), juce::Justification::centredLeft);
         };
         if (hasSum) addKey ("Top + sub sum", p.text);
+        if (! found.empty()) addKey ("As found (dashed)", p.textDim);
         for (auto it = curves.rbegin(); it != curves.rend(); ++it)
             addKey (sys.sources[(size_t) it->index].name, sourceColour (it->index));
 
@@ -224,7 +257,8 @@ private:
     struct Curve { int index; std::vector<float> db, ph, coh; };
     const SpeakerSystem& sys;
     std::vector<double> grid;
-    std::vector<Curve> curves;
+    std::vector<Curve> curves, found;
+    bool showAsFound = false;
     std::vector<cplx> sum;
     std::vector<float> sumDb;
     bool hasSum = false;
@@ -298,7 +332,7 @@ public:
             const int master = sys.master (i);
             juce::Colour sc = s.hasResponse() ? p.good : master != i && sys.covered (i) ? p.textDim : p.warn;
             juce::String st = s.hasResponse() ? (s.imported ? "IMPORTED" : "MEASURED")
-                            : master != i ? "AS " + sys.sources[(size_t) master].name.toUpperCase() : juce::String ("TO MEASURE");
+                            : master != i && sys.covered (i) ? "AS " + sys.sources[(size_t) master].name.toUpperCase() : juce::String ("TO MEASURE");
             if (s.hasResponse() && rv >= 0.0)
             {
                 st = juce::String (juce::roundToInt (rv * 100.0)) + "% RELIABLE";
@@ -431,6 +465,7 @@ public:
     std::function<void (int)> onImport;   // the editor owns the file chooser
     std::function<void (GuidedSource&)> onGuided;   // opens the guided pop-up
     std::function<void()> onChanged;
+    std::function<void()> onEditSpeakers, onOpenSheet;   // to the Speakers page, to the processor sheet
 
     explicit SpeakersPage (LiveAlignProcessor& p)
         : proc (p), settings (p.settings), sys (p.system), graph (p.system), list (p.system), alList (p.system)
@@ -479,14 +514,17 @@ public:
         polarityButton.setTooltip ("A quick measurement close to the speaker that only checks its polarity: for speakers set \"Same as\" "
                                    "another (Main R), and each cabinet when several share an output. Speakers measured on their own "
                                    "have theirs checked with the measurement.");
-        polarityButton.onClick = [this] { checkPolarityOfSelected(); };
-        addChildComponent (polarityButton);
-        guidedToggle.setButtonText ("Guided");
-        guidedToggle.setTooltip ("Step by step in a pop-up: the venue plan shows which speaker plays and where the mic goes, then Measure and Next point");
-        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
-        guidedToggle.onClick = [this] { GuidedSource::setEnabled (guidedToggle.getToggleState()); };
-        addChildComponent (guidedToggle);
-        measureButton.setTooltip ("Plays pink noise from this speaker's output, finds its arrival and averages its response at the measurement mic");
+        measureButton.setTooltip ("Measures each speaker close up, one after another, in the guided pop-up: its response, and its polarity from "
+                                  "the same capture. A speaker set \"Same as\" another is measured too, to check it against that one.");
+        editSpeakerButton.onClick = [this] { if (onEditSpeakers) onEditSpeakers(); };
+        editSpeakerButton.setTooltip ("Name, role, channel, output and cabinets are set on the Speakers page");
+        addChildComponent (editSpeakerButton);
+        sheetButton.onClick = [this] { if (onOpenSheet) onOpenSheet(); };
+        sheetButton.setTooltip ("Every setting to enter in your processor, output by output, ticked off as you enter them");
+        addAndMakeVisible (sheetButton);
+        asFoundToggle.onClick = [this] { graph.setShowAsFound (asFoundToggle.getToggleState()); };
+        asFoundToggle.setTooltip ("Show each speaker as it was first measured (dashed), with the settings it had then");
+        addChildComponent (asFoundToggle);
         importButton.onClick = [this] { if (onImport) onImport (selected); };
         importButton.setTooltip ("Use a manufacturer or measured response: FRD, CSV or TXT (frequency, dB, optional phase)");
         clearButton.onClick = [this] { if (auto* s = current()) { s->response = {}; s->imported = false; s->hasArrival = false; s->source.clear(); systemChanged (true); } };
@@ -513,15 +551,10 @@ public:
             else if (m != sys.measureMic) { sys.measureMic = m; sys.timingLocked = false; }
             systemChanged (false);
         };
-        placementBox.addItemList ({ "Close to each speaker (12 in / 30 cm)", "One spot for every speaker" }, 1);
-        placementBox.setTooltip ("Close up gives each speaker's own response without the room; the timing between them then "
-                                 "comes from Time alignment. One spot keeps the timing in the measurements but includes the room.");
-        placementBox.onChange = [this] { sys.placement = placementBox.getSelectedItemIndex(); systemChanged (false); };
-        addAndMakeVisible (placementBox);
         relockButton.setTooltip ("Find the timing again on the next measurement (after moving the mic). Measure every speaker again afterwards.");
         relockButton.onClick = [this] { sys.timingLocked = false; status = "Timing will be found again on the next measurement."; systemChanged (false); };
         addAndMakeVisible (micBox);
-        addAndMakeVisible (relockButton);
+        addChildComponent (relockButton);
 
         processedToggle.setToggleState (true, juce::dontSendNotification);
         processedToggle.onClick = [this] { graph.setWithProcessing (processedToggle.getToggleState()); };
@@ -677,6 +710,7 @@ public:
                                   "(precedence effect). 0 for left / right; often 5 to 10 ms for delay speakers.");
         alExtraSlider.onValueChange = [this] { if (auto* a = currentAlignment()) { a->precedenceMs = alExtraSlider.getValue(); refreshApply(); changedOutside(); alList.repaint(); } };
         alMeasureButton.onClick = [this] { if (phase == Phase::Idle) alignmentAction(); else cancelMeasure ("Stopped."); };
+        alGuide.page = this;
         alMeasureButton.setTooltip ("The next step of this alignment: play each speaker on its own, apply the delay, then check them together");
         alApplyButton.onClick = [this] { applyAlignment(); };
         alRedoButton.onClick = [this]
@@ -690,19 +724,6 @@ public:
                                                                  &alMeasureButton, &alRedoButton })
             addChildComponent (*c);
 
-        copyButton.onClick = [this] { juce::SystemClipboard::copyTextToClipboard (summaryText (false)); status = "Settings copied to the clipboard."; repaint(); };
-        copyButton.setTooltip ("Copy the settings as text, to paste in your notes or a show file");
-        doneButton.onClick = [this]
-        {
-            proc.speakers.configured = true;
-            proc.speakers.configuredOn = LiveAlignProcessor::today();
-            proc.speakers.changed = false;
-            status = "Speakers marked as set up. Enter these settings in your processor, then check the sum on Room tuning.";
-            changedOutside();
-        };
-        doneButton.setTooltip ("The settings are in your processor: this venue's speakers are set up until something changes");
-        addAndMakeVisible (copyButton);
-        addAndMakeVisible (doneButton);
 
         lookAndFeelChanged();
         refreshChoices();
@@ -732,8 +753,13 @@ public:
         measureButton.setButtonText (resp ? "Stop" : "Measure " + nameOf (selected));
         measureButton.setColour (juce::TextButton::buttonColourId, resp ? pal().bad : pal().accent);
         measureButton.setEnabled (! arr && (proc.isStandalone() || proc.uiAsStandalone));
-        polarityButton.setButtonText ("Check polarity of " + nameOf (selected));
-        polarityButton.setEnabled (! busyNow && (proc.isStandalone() || proc.uiAsStandalone));
+        if (! resp)
+        {
+            int left = 0;
+            for (const auto& t : guidedTasks()) left += ! taskDone (t) ? 1 : 0;
+            measureButton.setButtonText (left == 0 ? "Measure again: " + nameOf (selected) : left == (int) guidedTasks().size() ? juce::String ("Measure the speakers")
+                                                                                       : "Measure the rest (" + juce::String (left) + " left)");
+        }
         alMeasureButton.setButtonText (arr ? "Stop" : alignmentActionText());
         alMeasureButton.setColour (juce::TextButton::buttonColourId, arr ? pal().bad : pal().accent);
         alMeasureButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
@@ -743,6 +769,7 @@ public:
     // After a venue is opened, or mics or outputs changed.
     void refreshChoices()
     {
+        sys.placement = 0;   // speaker response is always close up (the room is Room EQ's and Room acoustics')
         selected = juce::jlimit (0, juce::jmax (0, (int) sys.sources.size() - 1), selected);
         list.setSelected (selected);
 
@@ -781,7 +808,6 @@ public:
         for (int i = 0; i < kSlopeButtons; ++i) slopeButtons[i].setToggleState (sys.caps.slopes[kSlopes[i] / 6 - 1], juce::dontSendNotification);
 
         minCohBox.setSelectedItemIndex (juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)), juce::dontSendNotification);
-        placementBox.setSelectedItemIndex (sys.placement, juce::dontSendNotification);
         refreshReliability();
         graph.setReliabilityView (selected, settings.coherenceBlank.load());
         refreshSelected();
@@ -798,7 +824,6 @@ public:
         if (! allMeasured()) return "Measure each speaker";
         if (sys.pairValid() && ! crossoverSet()) return "Find the crossover";
         if (alignmentNeeded() && ! alignmentDone()) return "Time-align the fills";
-        if (! proc.speakers.configured) return "Mark the speakers as set up";
         return {};
     }
     void chooseStep() { openStepAt (! allMeasured() ? 0 : ! crossoverSet() ? 1 : ! alignmentDone() ? 2 : openStep); }
@@ -862,38 +887,35 @@ public:
     void requestMeasure()
     {
         if (phase != Phase::Idle) return;
-        guidedToggle.setToggleState (GuidedSource::enabled(), juce::dontSendNotification);
-        if (GuidedSource::enabled() && onGuided)
-        {
-            const bool own = sys.master (selected) == selected && ! sys.sources[(size_t) selected].imported;
-            guidedNow = SpkTask { own, selected, 0 }.id();
-            onGuided (*this);
-        }
+        // the first one not measured yet; when every one is, the selected speaker again
+        bool allDone = true;
+        for (const auto& t : guidedTasks()) allDone = allDone && taskDone (t);
+        guidedNow = allDone && ! sys.sources[(size_t) selected].imported ? SpkTask { true, selected, 0 }.id() : -1;
+        if (onGuided) onGuided (*this);
         else startMeasure (selected);
     }
 
     // ---- guided measuring: one point per speaker that needs its own measurement ----
     juce::String guidedTitle() const override { return "Speaker response"; }
 
-    // The guided points: each speaker's response (the ones measured on their own), then a polarity check of every
-    // cabinet the responses do not cover (speakers set "Same as" another, and the other cabinets on one output).
+    // The guided points: every speaker close up (its response, and its polarity from the same capture; a speaker set
+    // "Same as" another is measured too, to check it against that one), then each further cabinet on one output.
     struct SpkTask { bool response = true; int spk = 0, cab = 0; int id() const { return (response ? 0 : 10000) + spk * 100 + cab; } };
 
     std::vector<SpkTask> guidedTasks() const
     {
         std::vector<SpkTask> out;
         const int n = juce::jmin ((int) sys.sources.size(), VenuePlan::kMaxSpeakers);
-        for (int i = 0; i < n; ++i) if (sys.master (i) == i && ! sys.sources[(size_t) i].imported) out.push_back ({ true, i, 0 });
+        for (int i = 0; i < n; ++i) if (! sys.sources[(size_t) i].imported) out.push_back ({ true, i, 0 });
         for (int i = 0; i < n; ++i)
-            for (int c = 0; c < sys.sources[(size_t) i].count; ++c)
-                if (sys.master (i) != i || c > 0) out.push_back ({ false, i, c });
+            for (int c = 1; c < sys.sources[(size_t) i].count; ++c) out.push_back ({ false, i, c });
         return out;
     }
 
     bool taskDone (const SpkTask& t) const
     {
         const auto& s = sys.sources[(size_t) t.spk];
-        if (t.response) return s.hasResponse();
+        if (t.response) return s.hasResponse() && ! s.imported;
         const auto* pc = s.polarityOf (t.cab);
         return pc != nullptr && pc->done();
     }
@@ -901,7 +923,7 @@ public:
     bool taskProblem (const SpkTask& t) const
     {
         const auto* pc = sys.sources[(size_t) t.spk].polarityOf (t.cab);
-        return pc != nullptr && (pc->verdict == polarity::Inverted || pc->verdict == polarity::Unsure);
+        return pc != nullptr && (pc->verdict == polarity::Inverted || pc->verdict == polarity::Unsure || pc->notClose);
     }
 
     // The task now: the one picked (Measure again, or the selected speaker), otherwise the first not done.
@@ -932,7 +954,7 @@ public:
             const auto& sym = proc.plan.speakers[(size_t) i];
             GuideSpot sp;
             sp.id = t.id();
-            sp.label = t.response ? nameOf (i) : cabinetName (i, t.cab) + " polarity";
+            sp.label = t.response ? nameOf (i) : cabinetName (i, t.cab);
             const float a = juce::degreesToRadians (sym.angle);
             const float side = 0.035f * (float) t.cab;   // the other cabinets beside the first
             sp.x = juce::jlimit (0.02f, 0.98f, sym.x + std::cos (a) * 0.06f - std::sin (a) * side);
@@ -945,17 +967,9 @@ public:
             {
                 sp.mic = sys.micFor (i, micCount);
                 sp.speaker = i;
-                if (t.response && sys.placement == 1)
-                {
-                    // one spot: the mic stays where it is for every speaker
-                    sp.x = proc.plan.mics[(size_t) sp.mic].x;
-                    sp.y = proc.plan.mics[(size_t) sp.mic].y;
-                    sp.how = "stays in the same place for every speaker, aimed at " + nameOf (i);
-                }
-                else if (! t.response && sys.sources[(size_t) i].role == (int) SpeakerRole::Sub && sys.sources[(size_t) i].count > 1)
-                    sp.how = "a few inches from this cabinet's cone, pointing at it (the others play too)";
-                else sp.how = t.response ? "about 12 in (30 cm) from the cone, on its axis, pointing at it"
-                                         : "about 12 in (30 cm) from the cone, pointing at it: a quick polarity check";
+                if (! t.response && sys.sources[(size_t) i].role == (int) SpeakerRole::Sub && sys.sources[(size_t) i].count > 1)
+                    sp.how = "a few inches from this cabinet's cone, " + aimHowText (proc, sp.mic, SpeakerAim) + " (the others play too)";
+                else sp.how = "12 in (30 cm) from the cone, on its axis, " + aimHowText (proc, sp.mic, SpeakerAim);
             }
             out.push_back (sp);
         }
@@ -971,10 +985,11 @@ public:
         const auto who = nameOf (t.spk);
         if (const auto m = muteText ({ t.spk }); m.isNotEmpty()) return "First: " + m;
         if (! t.response)
-            return "Only " + who + "'s output plays. Polarity is compared with " + (sys.master (t.spk) != t.spk ? nameOf (sys.master (t.spk)) : who + "'s first cabinet")
-                   + "; leave the processor's polarity for this output at normal.";
-        if (sys.placement == 1)
-            return "Only " + who + " plays. Bypass its crossover filters in the processor while it is measured. Keep the mic where it is.";
+            return "Only " + who + "'s output plays. Its level and polarity are compared with the first cabinet; leave the processor's polarity "
+                   "for this output at normal.";
+        if (sys.master (t.spk) != t.spk)
+            return "Only " + who + " plays. Its settings follow " + nameOf (sys.master (t.spk)) + "; this capture checks it against "
+                   + nameOf (sys.master (t.spk)) + " (polarity, level and response). Bypass its crossover filters while it is measured.";
         return "Only " + who + " plays. Bypass its crossover filters, and leave its polarity at normal, while it is measured. Midway between "
                "the woofer and the horn on a two-way cabinet.";
     }
@@ -1000,6 +1015,7 @@ public:
         const int k = guidedCurrentIndex();
         return k >= 0 && ! tasks[(size_t) k].response;
     }
+    int guidedAimKind() const override { return SpeakerAim; }
     void guidedSkip() override
     {
         const auto tasks = guidedTasks();
@@ -1047,6 +1063,116 @@ public:
     void applyAlignmentNow() { applyAlignment(); }
     void checkAlignment (int i) { selectAlignment (i); startCheck (i); }
     juce::String statusText() const { return status; }
+    juce::String sheetLine (int i) const { return sheet::signature (sys, i); }
+
+    // ---- Time alignment, guided: each speaker alone at the spot where they meet, then both together ----
+    struct AlignGuide : public GuidedSource
+    {
+        SpeakersPage* page = nullptr;
+        int stageNow() const
+        {
+            const auto* a = page->currentAlignment();
+            if (a == nullptr) return -1;
+            if (! a->hasRef) return 0;
+            if (! a->hasAlign) return 1;
+            return 2;
+        }
+        juce::String guidedTitle() const override
+        {
+            const auto* a = page->currentAlignment();
+            return a != nullptr ? "Time alignment: " + page->nameOf (a->align) + " to " + page->nameOf (a->ref) : juce::String ("Time alignment");
+        }
+        std::vector<GuideSpot> guidedSpots() override
+        {
+            std::vector<GuideSpot> out;
+            const auto* a = page->currentAlignment();
+            if (a == nullptr) return out;
+            auto& pr = page->proc;
+            const auto spot = a->spot.isNotEmpty() ? a->spot : juce::String ("FOH");
+            if (! pr.positions.contains (spot)) pr.positions.add (spot);
+            const int marker = pr.plan.ensureMarker (spot);
+            const int now = stageNow();
+            const juce::String labels[] = { page->nameOf (a->ref) + " alone", page->nameOf (a->align) + " alone", "Both together" };
+            for (int k = 0; k < 3; ++k)
+            {
+                GuideSpot sp;
+                sp.id = k;
+                sp.label = labels[k] + " at " + spot;
+                sp.marker = marker;
+                sp.x = pr.plan.items[(size_t) marker].x;
+                sp.y = pr.plan.items[(size_t) marker].y;
+                const bool done = k == 0 ? a->hasRef : k == 1 ? a->hasAlign : a->checked() && redoCheck < 0;
+                sp.state = k == now || (now == 2 && k == 2 && ! done) ? GuideSpot::Now : done ? GuideSpot::Done : GuideSpot::ToDo;
+                if (now == 2 && k == 2 && redoCheck >= 0) sp.state = GuideSpot::Now;
+                if (sp.state == GuideSpot::Now)
+                {
+                    sp.mic = juce::jlimit (0, juce::jmax (0, pr.tuningMicCount() - 1), page->sys.measureMic);
+                    sp.how = aimHowText (pr, sp.mic, RoomAim);
+                }
+                if (k == 2 && done)
+                {
+                    const double got = a->sumGainDb(), ideal = a->idealSumGainDb();
+                    sp.problem = got < ideal - 1.5;
+                }
+                out.push_back (sp);
+            }
+            return out;
+        }
+        juce::String guidedHowTo() const override
+        {
+            const auto* a = page->currentAlignment();
+            if (a == nullptr) return "Add an alignment first.";
+            const int st = stageNow();
+            if (page->alSignal == 2)
+                return st == 2 ? "First: route the music to both " + page->nameOf (a->ref) + " and " + page->nameOf (a->align) + " on the console."
+                               : "First: route the music only to " + page->nameOf (st == 0 ? a->ref : a->align) + " on the console.";
+            if (st == 2)
+            {
+                const double need = a->neededMs (page->sys.sources[(size_t) a->ref].proc.delayMs);
+                juce::String t = "First: enter " + juce::String (juce::jmax (0.0, std::abs (need)), 2) + " ms delay on "
+                                 + page->nameOf (need < -0.005 ? a->ref : a->align) + " in the processor";
+                if (const auto m = page->muteText ({ a->ref, a->align }); m.isNotEmpty()) t << ", and " << m.replace ("Mute", "mute");
+                else t << ", and unmute both.";
+                return t;
+            }
+            if (const auto m = page->muteText ({ st == 0 ? a->ref : a->align }); m.isNotEmpty()) return "First: " + m;
+            return "Only " + page->nameOf (st == 0 ? a->ref : a->align) + " plays. The mic stays at the same spot for both speakers.";
+        }
+        bool guidedStart() override
+        {
+            const int st = stageNow();
+            if (st < 0) return false;
+            page->mutesConfirmed = true;
+            if (st == 2)
+            {
+                if (! page->appliedNow (*page->currentAlignment())) page->applyAlignment();
+                page->startCheck (page->alSelected);
+            }
+            else page->startArrivalOne (page->alSelected, st);
+            page->mutesConfirmed = false;
+            redoCheck = -1;
+            return page->phase != Phase::Idle;
+        }
+        void guidedStop() override { page->cancelMeasure ("Stopped."); }
+        bool guidedBusy() const override { return page->phase != Phase::Idle; }
+        float guidedProgress() const override { return page->progress; }
+        juce::String guidedPhase() const override { return page->phaseText(); }
+        int guidedSerial() const override { return page->measureSerial; }
+        juce::String guidedStatus() const override { return page->status; }
+        void guidedRedo (const std::vector<GuideSpot>& was) override
+        {
+            auto* a = page->currentAlignment();
+            if (a == nullptr || was.empty()) return;
+            if (was.front().id == 0) a->hasRef = false;
+            else if (was.front().id == 1) a->hasAlign = false;
+            else redoCheck = 2;
+        }
+        void guidedClosed() override { page->resized(); page->repaint(); }
+        int guidedAimKind() const override { return RoomAim; }
+        int guidedMic() const override { return page->sys.measureMic; }
+        int redoCheck = -1;
+    };
+    AlignGuide alGuide;
 
     void paint (juce::Graphics& g) override
     {
@@ -1054,7 +1180,6 @@ public:
         drawPanel (g, systemCard.toFloat(), "Speakers");
         drawPanel (g, selCard.toFloat(), "Selected speaker", current() != nullptr ? sourceColour (selected) : juce::Colour());
         paintStepCards (g);
-        drawPanel (g, summaryCard.toFloat(), "Settings for your processor");
 
         auto label = [&] (juce::Rectangle<int> r, const juce::String& t)
         {
@@ -1071,17 +1196,40 @@ public:
             label (labels[(size_t) i].first, labels[(size_t) i].second);
         }
 
-        // selected speaker info
+        // the selected speaker, read-only on the tuning steps (it is edited on the Speakers page)
+        if (const auto* s = current(); s != nullptr && mode > 0)
+        {
+            auto r = selRead;
+            auto line = [&] (const juce::String& k, const juce::String& v)
+            {
+                auto row = r.removeFromTop (19);
+                g.setColour (p.textDim);
+                g.setFont (font (10.5f, true));
+                g.drawText (k.toUpperCase(), row.removeFromLeft (64), juce::Justification::centredLeft);
+                g.setColour (p.text);
+                g.setFont (font (12.0f));
+                g.drawText (v, row, juce::Justification::centredLeft, true);
+            };
+            line ("Name", nameOf (selected) + (s->model.isNotEmpty() ? "  (" + s->model + ")" : juce::String()));
+            line ("Role", speakerRoleNames()[s->role] + ", " + speakerChannelNames()[s->channel]);
+            line ("Output", (s->output == 0 ? juce::String ("All outputs") : "Output " + juce::String (s->output))
+                                + (s->count > 1 ? ",  " + juce::String (s->count) + " cabinets" : juce::String()));
+            line ("Settings", sys.master (selected) != selected ? "Same as " + nameOf (sys.master (selected)) : juce::String ("Its own"));
+        }
         if (const auto* s = current())
         {
             g.setColour (s->hasResponse() ? p.textDim : p.warn);
             g.setFont (font (11.5f));
             juce::String t;
             if (s->hasResponse()) t << (s->imported ? "Imported: " : "Measured: ") << s->source;
+            else if (sys.covered (selected))
+                t << "Follows " << nameOf (sys.master (selected)) << " (imported): nothing to compare it with.";
             else if (sys.master (selected) != selected)
-                t << "Follows " << nameOf (sys.master (selected)) << ": same settings, no measurement of its own needed.";
+                t << "Not measured yet: its settings follow " << nameOf (sys.master (selected)) << "; measure it to check it matches.";
             else t << "Not measured yet.";
             if (s->hasArrival) t << "\nArrives " << juce::String (s->arrivalMs, 2) << " ms after the reference";
+            double late = 0.0;
+            if (sys.lateArrival (selected, late)) t << " (" << juce::String (late, 1) << " ms after the earliest: was the mic close?)";
             g.drawFittedText (t, selInfo, juce::Justification::topLeft, 3);
             const auto pol = polarityLine (selected, true);
             if (pol.first.isNotEmpty())
@@ -1098,12 +1246,7 @@ public:
             paintGuide (g);
             juce::String t;
             juce::Colour c = p.textDim;
-            if (sys.placement == 1)
-            {
-                if (sys.timingLocked) t << "Timing locked at " << juce::String (sys.lockedDelayMs, 2) << " ms for " << proc.mics.nameOf (sys.measureMic) << ".";
-                else t << "Timing is found on the first measurement, then locked so every speaker keeps its true arrival.";
-            }
-            else t << "Each speaker is timed to its own arrival; line them up afterwards in Time alignment.";
+            t << "Each speaker is timed to its own arrival; its polarity is judged from the same capture.";
             const auto pol = polarityLine (selected, false);
             if (pol.first.isNotEmpty()) { t = pol.first; c = pol.second; }
             if (phase != Phase::Idle) { t = phaseText(); c = p.accent; }
@@ -1128,6 +1271,14 @@ public:
             g.setFont (font (11.5f));
             g.drawFittedText ("Build the system here: each speaker, its role, channel and output. Measure them on 1 Speaker response.",
                               modeHint, juce::Justification::topLeft, 3);
+        }
+        {
+            // the processor sheet, in a line
+            int entered = 0, total = 0;
+            for (int i = 0; i < (int) sys.sources.size(); ++i) { ++total; entered += sys.sources[(size_t) i].sheetEntered == sheetLine (i) ? 1 : 0; }
+            g.setColour (entered == total ? p.good : p.textDim);
+            g.setFont (font (11.5f, entered == total));
+            g.drawText (juce::String (entered) + " of " + juce::String (total) + " entered", sheetInfo, juce::Justification::centredRight, true);
         }
 
         // crossover result
@@ -1196,25 +1347,11 @@ public:
             }
         }
 
-        // processor settings summary
-        {
-            auto r = summaryArea;
-            g.setFont (monoFont (11.5f));
-            juce::StringArray lines;
-            lines.addLines (summaryText (true));
-            for (const auto& l : lines)
-            {
-                if (r.getHeight() < 15) break;
-                const bool head = l.startsWith ("#");
-                g.setColour (head ? p.textDim : p.text);
-                g.drawText (head ? l.substring (1) : l, r.removeFromTop (17), juce::Justification::centredLeft, true);
-            }
-        }
         if (status.isNotEmpty())
         {
             g.setColour (p.accent);
             g.setFont (font (11.5f, true));
-            g.drawText (status, statusLine, juce::Justification::centredLeft, true);
+            g.drawFittedText (status, statusLine, juce::Justification::centredLeft, 2);
         }
     }
 
@@ -1246,6 +1383,10 @@ public:
         selCard = left;
         {
             auto c = selCard.reduced (12, 0).withTrimmedTop (36);
+            const bool edit = mode == 0;   // the speakers are edited on the Speakers page only
+            for (auto* comp : std::initializer_list<juce::Component*> { &nameEditor, &modelEditor, &roleBox, &channelBox, &outputBox, &countBox, &linkBox })
+                comp->setVisible (edit);
+            editSpeakerButton.setVisible (! edit);
             auto field = [&] (const juce::String& name, juce::Component& comp, int h = 28)
             {
                 auto row = c.removeFromTop (h);
@@ -1253,12 +1394,14 @@ public:
                 comp.setBounds (row);
                 c.removeFromTop (8);
             };
-            field ("Name", nameEditor, 26);
-            field ("Model", modelEditor, 26);
-            field ("Role", roleBox, 26);
-            field ("Channel", channelBox, 26);
-            field ("Output", outputBox, 26);
+            selRead = {};
+            if (edit)
             {
+                field ("Name", nameEditor, 26);
+                field ("Model", modelEditor, 26);
+                field ("Role", roleBox, 26);
+                field ("Channel", channelBox, 26);
+                field ("Output", outputBox, 26);
                 auto row = c.removeFromTop (26);
                 labels.push_back ({ row.removeFromLeft (64), "Count" });
                 countBox.setBounds (row.removeFromLeft (row.getWidth() * 45 / 100));
@@ -1266,14 +1409,27 @@ public:
                 linkBox.setBounds (row);
                 c.removeFromTop (8);
             }
-            c.removeFromTop (4);
-            auto row = c.removeFromTop (28);
-            importButton.setBounds (row.removeFromLeft (row.getWidth() * 62 / 100));
-            row.removeFromLeft (8);
-            clearButton.setBounds (row);
-            c.removeFromTop (10);
+            else
+            {
+                selRead = c.removeFromTop (4 * 19);
+                c.removeFromTop (6);
+                editSpeakerButton.setBounds (c.removeFromTop (26).withWidth (200));
+                c.removeFromTop (8);
+            }
+            const bool resp = mode <= 1;
+            importButton.setVisible (resp);
+            clearButton.setVisible (resp);
+            if (resp)
+            {
+                c.removeFromTop (4);
+                auto row = c.removeFromTop (28);
+                importButton.setBounds (row.removeFromLeft (row.getWidth() * 62 / 100));
+                row.removeFromLeft (8);
+                clearButton.setBounds (row);
+                c.removeFromTop (10);
+            }
             const auto* s = current();
-            offsetSlider.setVisible (s != nullptr && s->imported);
+            offsetSlider.setVisible (resp && s != nullptr && s->imported);
             if (offsetSlider.isVisible()) field ("Arrival", offsetSlider);
             selInfo = c.removeFromTop (54);
             modeHint = mode == 0 ? c.removeFromTop (48) : juce::Rectangle<int>();
@@ -1291,23 +1447,11 @@ public:
             auto c = content;
             auto row = c.removeFromTop (28);
             labels.push_back ({ row.removeFromLeft (44), "Mic" });
-            if (sys.placement == 1) { relockButton.setBounds (row.removeFromRight (82)); row.removeFromRight (8); }
             micBox.setBounds (row);
-            c.removeFromTop (8);
-            auto pr = c.removeFromTop (28);
-            labels.push_back ({ pr.removeFromLeft (44), "Where" });
-            placementBox.setBounds (pr);
             c.removeFromTop (10);
             guideArea = c.removeFromTop (118);
             c.removeFromTop (8);
-            {
-                auto mrow = c.removeFromTop (36);
-                guidedToggle.setBounds (mrow.removeFromRight (92));
-                mrow.removeFromRight (6);
-                measureButton.setBounds (mrow);
-            }
-            c.removeFromTop (6);
-            polarityButton.setBounds (c.removeFromTop (28));
+            measureButton.setBounds (c.removeFromTop (36));
             c.removeFromTop (8);
             measureInfo = c.removeFromTop (40);
             c.removeFromTop (8);
@@ -1420,23 +1564,21 @@ public:
         }
         setStepVisibility();
 
-        // ---- middle: graph and the settings summary ----
-        const int lines = (int) sys.sources.size() + 1 + arrivalLines();
-        summaryCard = r.removeFromBottom (juce::jlimit (150, r.getHeight() / 3 + 20, 34 + lines * 17 + 12 + 44));
-        r.removeFromBottom (10);
+        // ---- middle: the graph, and a line with the status and the processor sheet ----
+        {
+            auto foot = r.removeFromBottom (32);
+            r.removeFromBottom (8);
+            sheetButton.setBounds (foot.removeFromRight (170).withSizeKeepingCentre (170, 30));
+            foot.removeFromRight (10);
+            sheetInfo = foot.removeFromRight (130);
+            foot.removeFromRight (10);
+            asFoundToggle.setVisible (mode == 1);
+            if (mode == 1) { asFoundToggle.setBounds (foot.removeFromLeft (110).withSizeKeepingCentre (110, 26)); foot.removeFromLeft (8); }
+            statusLine = foot;
+        }
         graph.setBounds (r);
         processedToggle.setBounds (juce::Rectangle<int> (r.getRight() - 12 - 150, r.getY() + 5, 150, 24));
         graph.setLegendRight (162);
-        {
-            auto c = summaryCard.reduced (14, 0).withTrimmedTop (34);
-            auto buttons = c.removeFromBottom (44).withSizeKeepingCentre (c.getWidth(), 30);
-            doneButton.setBounds (buttons.removeFromRight (190));
-            buttons.removeFromRight (8);
-            copyButton.setBounds (buttons.removeFromRight (130));
-            buttons.removeFromRight (12);
-            statusLine = buttons;
-            summaryArea = c;
-        }
     }
 
 private:
@@ -1559,6 +1701,7 @@ private:
             system.sources.erase (system.sources.begin() + i);
             system.sourceRemoved (i);
             safe->proc.plan.speakerRemoved (i);
+            safe->proc.level.speakerRemoved (i);
             safe->selected = juce::jmax (0, i - 1);
             safe->systemChanged (true);
         });
@@ -1841,7 +1984,7 @@ private:
         measuring = i;
         measureNear = sys.placement == 0;
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
-        proc.setAimOverride (Cal0);   // the mic is pointed at the speaker: use its 0 degree file
+        proc.setAimOverride (proc.speakerAim);   // the mic is pointed at the speaker: its 0 degree file (or the angle picked)
         settings.genOutput = sys.sources[(size_t) i].output;
         settings.genType = 0;   // pink noise
         settings.genOn = true;
@@ -1995,6 +2138,7 @@ private:
                 const bool valid = mic < rep.micCount && rep.valid[(size_t) mic];
                 peakKnown = valid && rep.confidenceDb[(size_t) mic] >= 12.0;
                 peakInverted = valid && rep.inverted[(size_t) mic];
+                capArrivalMs = valid ? rep.ms[(size_t) mic] : -1.0;
                 if (polarityMode) { /* a polarity check does not change the speaker's timing */ }
                 else if (valid) { s.hasArrival = true; s.arrivalMs = rep.ms[(size_t) mic]; }
                 else s.hasArrival = false;
@@ -2090,6 +2234,14 @@ private:
         if (t.freq.size() < 16) { cancelMeasure ("Not enough of the response was clear enough to keep. Raise the level or reduce the noise."); return; }
         if (polarityMode) { finishPolarity (mic, t); return; }
         auto& s = sys.sources[(size_t) measuring];
+        if (s.asFound.freq.size() < 4 || s.imported)
+        {
+            // as found: the first time this speaker is measured (its processing then), for the before / after view
+            s.asFound = {};
+            for (size_t k = 0; k < t.freq.size(); k += 2) { s.asFound.freq.push_back (t.freq[k]); s.asFound.db.push_back (t.db[k]); }
+            s.asFoundProc = s.proc;
+            s.asFoundWhen = LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
+        }
         s.response = std::move (t);
         s.imported = false;
         s.nearField = measureNear;
@@ -2122,6 +2274,7 @@ private:
         }
         if (allMeasured()) status = "Every speaker is measured. Next: Crossover.";
         status << " " << polaritySentence (idxOf (s), 0);
+        if (const auto m = matchText (idxOf (s)); m.isNotEmpty()) status << " " << m;
     }
 
     // The button: the next cabinet of the selected speaker not checked yet (or the first again). A speaker measured on
@@ -2155,14 +2308,22 @@ private:
         const int v = s.polaritySummary(), n = s.polarityChecked();
         if (n == 0)
         {
-            if (sys.master (i) != i || s.count > 1)
-                return { shortForm ? juce::String ("Polarity: not checked") : "Polarity not checked yet: press Check polarity of " + nameOf (i) + ".", p.textDim };
+            if (! s.imported && (sys.master (i) != i || s.count > 1))
+                return { shortForm ? juce::String ("Polarity: not checked") : "Polarity not checked yet: measure " + nameOf (i) + ".", p.textDim };
             return {};
         }
         if (s.count == 1)
         {
-            if (shortForm) return { juce::String ("Polarity: ") + polarity::verdictName (v == polarity::Unknown ? s.polarityOf (0)->verdict : v),
-                                    v == polarity::Normal ? p.good : v == polarity::Inverted ? p.bad : p.warn };
+            if (shortForm)
+            {
+                const auto* pc0 = s.polarityOf (0);
+                const int vv = v == polarity::Unknown ? pc0->verdict : v;
+                juce::String t = juce::String ("Polarity: ") + polarity::verdictName (vv);
+                if (pc0->against >= 0 && pc0->against != i && pc0->relative == polarity::Normal) t << " (matches " << nameOf (pc0->against) << ")";
+                if (pc0->against >= 0 && pc0->against != i && pc0->relative == polarity::Inverted) t << " (OPPOSITE to " << nameOf (pc0->against) << ")";
+                if (pc0->notClose) t = "Polarity: check (mic not close?)";
+                return { t, vv == polarity::Normal ? p.good : vv == polarity::Inverted ? p.bad : p.warn };
+            }
             return { polaritySentence (i, 0), v == polarity::Normal ? p.good : v == polarity::Inverted ? p.bad : p.warn };
         }
         juce::StringArray parts;
@@ -2177,25 +2338,20 @@ private:
 
     int idxOf (const SpeakerSource& s) const { return (int) (&s - sys.sources.data()); }
 
-    // Works out a cabinet's polarity from a measurement `t` timed to its own arrival (or, from one spot, to the
-    // locked timing) and the impulse sign from the timing search; compares it with the speaker it should match.
+    // Works out a cabinet's polarity from a close-up capture `t` timed to its own arrival, and the impulse sign from
+    // the timing search. A speaker set "Same as" another (and each further cabinet on one output) is compared with that
+    // one: the firmest test, and given as how the two relate ("matches Main L", "OPPOSITE to Main L"). On its own,
+    // "inverted" needs the phase and the impulse to agree; one sign alone is "check". A capture that arrived much later
+    // than the other close-up ones was probably not taken close up: its own reading is not trusted.
     void notePolarity (int i, int cab, int mic, const FreqTable& measured)
     {
         if (i < 0 || i >= (int) sys.sources.size()) return;
         auto& s = sys.sources[(size_t) i];
         auto* pc = s.polarityOf (cab);
         if (pc == nullptr) return;
-        FreqTable t = measured;
-        double maxTau = 1.0;
-        if (! measureNear && s.hasArrival)
-        {
-            // from one spot: take out the time between the locked timing and this speaker's own arrival
-            const double d = s.arrivalMs - sys.lockedDelayMs;
-            for (size_t k = 0; k < t.freq.size(); ++k) t.phase[k] = std::remainder (t.phase[k] + 360.0 * t.freq[k] * d * 0.001, 360.0);
-            maxTau = 2.0;
-        }
+        const FreqTable& t = measured;
         const double minCoh = juce::jmax (0.2f, settings.coherenceBlank.load());
-        const auto own = polarity::absolute (t, minCoh, peakKnown, peakInverted, maxTau);
+        const auto own = polarity::absolute (t, minCoh, peakKnown, peakInverted, 1.0);
         *pc = {};
         pc->own = own.verdict;
         pc->verdict = own.verdict;
@@ -2203,28 +2359,79 @@ private:
         pc->peakInverted = peakInverted;
         pc->when = LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
         pc->mic = proc.mics.nameOf (mic);
+        {
+            double lo, hi;
+            sys.playRange (i, lo, hi);
+            pc->levelDb = SpeakerSystem::bandLevel (t, lo, hi);
+        }
+        // much later than the other close-up captures: probably not close
+        if (capArrivalMs > 0.0)
+        {
+            double first = 1e9;
+            for (int k = 0; k < (int) sys.sources.size(); ++k)
+            {
+                const auto& o = sys.sources[(size_t) k];
+                if (o.imported || ! o.nearField || ! o.hasArrival || (k == i && cab == 0)) continue;
+                if ((o.role == (int) SpeakerRole::Sub) != (s.role == (int) SpeakerRole::Sub)) continue;   // subs arrive later than tops
+                first = std::min (first, o.arrivalMs);
+            }
+            if (first < 1e8 && capArrivalMs > first + SpeakerSystem::kLateMs)
+            {
+                pc->notClose = true;
+                if (pc->verdict == polarity::Inverted || pc->verdict == polarity::Normal) pc->verdict = polarity::Unsure;
+            }
+        }
         // against the speaker it should match: its "Same as" speaker, or its own first cabinet
         const int m = sys.master (i);
         const int refIdx = m != i ? m : (cab > 0 ? i : -1);
-        if (refIdx >= 0)
+        if (refIdx < 0) return;
+        const auto& ref = sys.sources[(size_t) refIdx];
+        if (! ref.hasResponse() || ref.imported) return;
+        const auto rel = polarity::relative (t, ref.response, minCoh);
+        pc->against = refIdx;
+        pc->relative = rel.verdict;
+        const auto* refPc = ref.polarityOf (0);
+        const int refV = refPc != nullptr ? refPc->verdict : polarity::Unknown;
+        if (rel.verdict == polarity::Normal)
+            pc->verdict = refV == polarity::Inverted ? polarity::Inverted : refV == polarity::Unsure ? polarity::Unsure : polarity::Normal;
+        else if (rel.verdict == polarity::Inverted)
+            pc->verdict = refV == polarity::Inverted ? polarity::Normal : polarity::Inverted;   // opposite to one that is itself inverted
+    }
+
+    // "Main R against Main L: level +0.3 dB, response within 1.1 dB": a speaker set "Same as" another, from the
+    // close-up captures (same model, same distance).
+    juce::String matchText (int i) const
+    {
+        if (i < 0 || i >= (int) sys.sources.size()) return {};
+        const int m = sys.master (i);
+        if (m == i) return {};
+        const auto& a = sys.sources[(size_t) i];
+        const auto& b = sys.sources[(size_t) m];
+        if (! a.hasResponse() || ! b.hasResponse() || a.imported || b.imported) return {};
+        double lo, hi;
+        sys.playRange (m, lo, hi);
+        const double la = SpeakerSystem::bandLevel (a.response, lo, hi), lb = SpeakerSystem::bandLevel (b.response, lo, hi);
+        if (! std::isfinite (la) || ! std::isfinite (lb)) return {};
+        const double d = la - lb;
+        // shape: the RMS difference through the range, 1/3 octave, with the level taken out
+        double sum = 0.0;
+        int n = 0;
+        for (double f = lo; f <= hi; f *= 1.26)
         {
-            const auto& ref = sys.sources[(size_t) refIdx];
-            const auto* refPc = ref.polarityOf (0);
-            if (ref.hasResponse() && ! ref.imported && ref.nearField)
-            {
-                const auto rel = polarity::relative (t, ref.response, minCoh);
-                pc->against = refIdx;
-                pc->relative = rel.verdict;
-                const int refV = refPc != nullptr ? refPc->verdict : polarity::Unknown;
-                if ((rel.verdict == polarity::Normal || rel.verdict == polarity::Inverted)
-                    && (refV == polarity::Normal || refV == polarity::Inverted))
-                {
-                    const int implied = rel.verdict == polarity::Normal ? refV : (refV == polarity::Normal ? polarity::Inverted : polarity::Normal);
-                    // the comparison with a matching speaker is the firmer test; a clear disagreement with its own reading is "check"
-                    pc->verdict = (own.verdict == polarity::Normal || own.verdict == polarity::Inverted) && own.verdict != implied ? polarity::Unsure : implied;
-                }
-            }
+            double sa = 0.0, sb = 0.0;
+            int k = 0;
+            for (double x = f / 1.12; x <= f * 1.12; x *= 1.02) { sa += a.response.dbAt (x); sb += b.response.dbAt (x); ++k; }
+            if (k == 0) continue;
+            const double v = (sa - sb) / k - d;
+            if (! std::isfinite (v)) continue;
+            sum += v * v;
+            ++n;
         }
+        const double shape = n > 0 ? std::sqrt (sum / n) : NAN;
+        juce::String t = nameOf (i) + " against " + nameOf (m) + ": level " + (d >= 0.0 ? "+" : "") + juce::String (d, 1) + " dB";
+        if (std::isfinite (shape)) t << ", response within " << juce::String (shape, 1) << " dB";
+        t << (std::abs (d) > 1.0 ? " (more than 1 dB apart: check its amp channel and gain)" : "") << ".";
+        return t;
     }
 
     juce::String cabinetName (int i, int cab) const
@@ -2239,15 +2446,29 @@ private:
         if (i < 0 || i >= (int) sys.sources.size()) return {};
         const auto* pc = sys.sources[(size_t) i].polarityOf (cab);
         if (pc == nullptr || ! pc->done()) return {};
-        juce::String rel;
-        if (pc->against >= 0 && pc->against < (int) sys.sources.size() && pc->against != i
-            && (pc->relative == polarity::Normal || pc->relative == polarity::Inverted))
-            rel = pc->relative == polarity::Normal ? " (matches " + nameOf (pc->against) + ")" : " (opposite to " + nameOf (pc->against) + ")";
+        const bool against = pc->against >= 0 && pc->against < (int) sys.sources.size()
+                             && (pc->relative == polarity::Normal || pc->relative == polarity::Inverted);
+        const auto other = against ? (pc->against == i ? juce::String ("cabinet 1") : nameOf (pc->against)) : juce::String();
+        const auto who = cabinetName (i, cab);
+        if (pc->notClose)
+            return who + ": arrived much later than the other close-up captures, so the mic was probably not close. Measure it again 12 in from the cone to check its polarity.";
+        if (against && pc->relative == polarity::Inverted)
+            return who + " is OPPOSITE to " + other + ": one of the two is wired the other way round"
+                   + (pc->verdict == polarity::Normal ? juce::String (" (") + other + " looks inverted)." : juce::String (". Check its wiring and the processor's polarity for this output."));
+        if (against && pc->relative == polarity::Normal)
+        {
+            if (pc->verdict == polarity::Inverted) return who + " matches " + other + ", and both look inverted: check the wiring of both.";
+            if (pc->verdict == polarity::Unsure) return who + " matches " + other + " (whose own polarity is not clear).";
+            return who + " matches " + other + ": polarity normal.";
+        }
         switch (pc->verdict)
         {
-            case polarity::Normal: return "Polarity: normal" + rel + ".";
-            case polarity::Inverted: return "Polarity looks INVERTED" + rel + ": check the wiring and that the processor's polarity for this output is normal.";
-            case polarity::Unsure: return "Polarity: not clear" + rel + ". Measure again closer to the cone, or check with a polarity tester.";
+            case polarity::Normal: return "Polarity: normal.";
+            case polarity::Inverted: return "Polarity looks INVERTED (the phase and the impulse agree): check the wiring and that the processor's polarity for this output is normal.";
+            case polarity::Unsure:
+                return pc->own == polarity::Unsure && std::abs (pc->phaseDeg) > 120.0
+                           ? "Polarity: check. The phase alone points to inverted, which a close-up capture of one box cannot confirm; compare it with a matching speaker, or use a polarity tester."
+                           : "Polarity: not clear. Measure again closer to the cone, or check with a polarity tester.";
             default: return {};
         }
     }
@@ -2279,9 +2500,9 @@ private:
     void setStepVisibility()
     {
         const bool resp = mode == 1;
-        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &placementBox, &measureButton, &guidedToggle, &polarityButton })
+        for (auto* c : std::initializer_list<juce::Component*> { &micBox, &minCohBox, &measureButton })
             c->setVisible (resp);
-        relockButton.setVisible (resp && sys.placement == 1);
+        relockButton.setVisible (false);
         const bool xo = mode == 2 && sys.xoNeeded();
         for (auto* c : std::initializer_list<juce::Component*> { &highBox, &lowBox, &swapPairButton, &autoButton, &manualButton })
             c->setVisible (xo);
@@ -2450,7 +2671,16 @@ private:
               << (liveQuality >= 0.8 ? ": good." : liveQuality >= 0.6 ? ": fair, raise the level if you can." : ": poor, raise the level or reduce the noise.");
         }
         else if (liveQuality < -1.5) t = "Checking the signal... (once the speaker's timing is found)";
-        else t = "Measure a speaker (or play the generator through it) to check the signal at the mic.";
+        else if (const double rel = selected < (int) reliability.size() ? reliability[(size_t) selected] : -1.0; rel >= 0.0)
+        {
+            // nothing playing: the last capture of the selected speaker
+            c = rel >= 0.8 ? p.good : rel >= 0.6 ? p.warn : p.bad;
+            g.setColour (c.withAlpha (0.6f));
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * (float) juce::jlimit (0.0, 1.0, rel)), 4.0f);
+            t << nameOf (selected) << ", last capture: " << juce::roundToInt (rel * 100.0) << "% of its range reliable"
+              << (rel >= 0.8 ? "." : rel >= 0.6 ? ": fair." : ": poor, measure it again louder.");
+        }
+        else t = "Shown while a speaker is measured, and for the last capture of the selected speaker.";
         q.removeFromTop (6.0f);
         g.setColour (liveQuality >= 0.0 ? c : p.textDim);
         g.setFont (font (11.5f, liveQuality >= 0.0));
@@ -2474,13 +2704,32 @@ private:
             const double rel = i < (int) reliability.size() ? reliability[(size_t) i] : -1.0;
             juce::String v;
             juce::Colour vc = p.textDim;
-            if (! sys.sources[(size_t) i].hasResponse() && sys.master (i) != i) { v = "as " + nameOf (sys.master (i)); vc = p.textDim; }
+            if (! sys.sources[(size_t) i].hasResponse() && sys.covered (i)) { v = "as " + nameOf (sys.master (i)); vc = p.textDim; }
             else if (! sys.sources[(size_t) i].hasResponse()) { v = "not measured"; vc = p.warn; }
             else if (rel < 0.0) v = "imported (no coherence)";
             else { v = juce::String (juce::roundToInt (rel * 100.0)) + "%"; vc = rel >= 0.8 ? p.good : rel >= 0.6 ? p.warn : p.bad; }
             g.setColour (vc);
             g.setFont (font (12.0f, true));
             g.drawText (v, line, juce::Justification::centredRight, true);
+        }
+        // speakers that should match ("Same as"): level and response from the close-up captures
+        {
+            juce::StringArray matches;
+            for (int i = 0; i < (int) sys.sources.size(); ++i) if (const auto m = matchText (i); m.isNotEmpty()) matches.add (m);
+            if (! matches.isEmpty() && r.getHeight() >= 40)
+            {
+                r.removeFromTop (6);
+                g.setColour (p.textDim);
+                g.setFont (font (11.0f, true));
+                g.drawText ("MATCHING SPEAKERS", r.removeFromTop (16), juce::Justification::centredLeft);
+                g.setFont (font (11.5f));
+                for (const auto& m : matches)
+                {
+                    if (r.getHeight() < 30) break;
+                    g.setColour (m.contains ("more than 1 dB") ? p.warn : p.text);
+                    g.drawFittedText (m, r.removeFromTop (32), juce::Justification::topLeft, 2);
+                }
+            }
         }
         if (r.getHeight() >= 30)
         {
@@ -2937,6 +3186,7 @@ private:
             }
         }
         arrivalAlignment = -1;
+        ++measureSerial;
         refreshMeasureButton();
         systemChanged (false);
     }
@@ -2965,8 +3215,8 @@ private:
         const auto* a = currentAlignment();
         switch (alignmentStage())
         {
-            case 0: return alSignal == 2 ? "Measure " + nameOf (a->ref) + " (music on it only)" : "Play " + nameOf (a->ref);
-            case 1: return alSignal == 2 ? "Measure " + nameOf (a->align) + " (music on it only)" : "Play " + nameOf (a->align);
+            case 0: return "Measure " + nameOf (a->ref) + " and " + nameOf (a->align);
+            case 1: return "Measure " + nameOf (a->align);
             case 2:
             {
                 const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
@@ -2980,15 +3230,14 @@ private:
 
     void alignmentAction()
     {
-        switch (alignmentStage())
-        {
-            case 0: startArrivalOne (alSelected, 0); break;
-            case 1: startArrivalOne (alSelected, 1); break;
-            case 2: applyAlignment(); break;
-            case 3:
-            case 4: startCheck (alSelected); break;
-            default: addAlignment(); break;
-        }
+        const int st = alignmentStage();
+        if (st < 0) { addAlignment(); return; }
+        if (st == 2) { applyAlignment(); return; }
+        if (! signalReady()) return;
+        if (st == 4) alGuide.redoCheck = 2;
+        if (onGuided) onGuided (alGuide);
+        else if (st <= 1) startArrivalOne (alSelected, st);
+        else startCheck (alSelected);
     }
 
     // The crossover's own offset, when this is the crossover pair measured close up.
@@ -3096,6 +3345,7 @@ private:
                                         : "They do not add up fully: check the delay and polarity in the processor.";
         }
         arrivalAlignment = -1;
+        ++measureSerial;
         refreshMeasureButton();
         systemChanged (false);
     }
@@ -3124,7 +3374,7 @@ private:
         g.setColour (p.panelRaised);
         g.fillRoundedRectangle (r.toFloat(), 6.0f);
         auto pic = r.removeFromLeft (112).reduced (10, 12).toFloat();
-        const bool near = sys.placement == 0;
+        const bool near = true;
         // speaker
         auto box = pic.removeFromLeft (34.0f).withSizeKeepingCentre (30.0f, 60.0f);
         g.setColour (current() != nullptr ? sourceColour (selected) : p.textDim);
@@ -3151,13 +3401,11 @@ private:
         const int guideMic = sys.micFor (selected, settings.micCount.load());
         const auto micName = proc.mics.nameOf (guideMic), who = nameOf (selected);
         juce::String t;
-        if (near)
-            t << "Place " << micName << " 12 in (30 cm) from the centre of " << who << "'s woofer cone, pointed at it, "
-              << "level with the cone. Then press Measure " << who << ".";
-        else
-            t << "Place " << micName << " where every speaker covers the seats (usually FOH), pointed at the speakers, and leave it "
-              << "there for all of them. Then press Measure " << who << ".";
-        if (proc.calibrations (guideMic).both()) t << " Its " << calAngleName (Cal0) << " calibration is used.";
+        juce::ignoreUnused (near);
+        t << "Place " << micName << " 12 in (30 cm) from the centre of " << who << "'s woofer cone, pointed at it, "
+          << "level with the cone. Measure goes through every speaker in turn.";
+        if (proc.calibrations (guideMic).any()) t << " " << aimHowText (proc, guideMic, GuidedSource::SpeakerAim).substring (0, 1).toUpperCase()
+                                                    << aimHowText (proc, guideMic, GuidedSource::SpeakerAim).substring (1) << ".";
         if (const auto m = muteText ({ selected }); m.isNotEmpty()) t << " " << m;
         g.setColour (p.text);
         g.setFont (font (12.0f));
@@ -3274,7 +3522,9 @@ private:
     bool measureNear = false, checkMode = false;
     double nearDelayMs = 0.0;
     juce::Rectangle<int> invertedArea;
-    juce::TextButton copyButton { "Copy settings" }, doneButton { "Mark speakers set up" };
+    juce::TextButton editSpeakerButton { "Edit on the Speakers page" }, sheetButton { juce::String (juce::CharPointer_UTF8 ("Processor sheet  \xe2\x86\x92")) };
+    juce::ToggleButton asFoundToggle { "As found" };
+    juce::Rectangle<int> selRead, sheetInfo;
     juce::ComboBox minCohBox;
     AlignmentList alList;
     juce::TextButton alAddButton { "Add alignment" }, alRemoveButton { "Remove" }, alMeasureButton { "Measure both" }, alApplyButton { "Apply delay" };
@@ -3298,6 +3548,7 @@ private:
 
     int selected = 0, nOuts = -1, measuring = -1, measureSerial = 0, guidedNow = -1, polarityCab = 0;
     bool polarityMode = false, peakKnown = false, peakInverted = false;
+    double capArrivalMs = -1.0;   // the arrival of the capture now (close up)
     Phase phase = Phase::Idle;
     double phaseStart = 0.0;
     float progress = 0.0f;

@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// Home: the venue, its sessions, and where each step stands, laid out the same way as the navigation pane
-// (Setup, Tuning in order, Monitoring, Reports).
+// Home: the venue, its sessions, and a dashboard of where each step stands, laid out the same way as the navigation
+// pane (Setup, Tuning in order, Monitoring, Reports): the next thing to do, what needs attention, and the quick
+// re-check of a system already tuned.
 #include <array>
 #include <functional>
 #include "NavRail.h"
@@ -25,6 +26,7 @@ public:
     std::function<void()> onNewVenueFromThis;
     std::function<void()> onNewVenue, onOpenVenue, onSave, onSaveAs, onNewSession, onChanged, onReport;
     std::function<void (int)> onGoTo, onRenameSession, onDeleteSession;
+    std::function<void()> onRecheck;
 
     explicit HomePage (LiveAlignProcessor& p) : proc (p)
     {
@@ -72,6 +74,12 @@ public:
         };
         speakerChangedButton.setTooltip ("Mark the speaker system as changed (moved, replaced or re-cabled) so it is checked again");
         addAndMakeVisible (speakerChangedButton);
+        goButton.onClick = [this] { if (nextPage >= 0 && onGoTo) onGoTo (nextPage); };
+        addChildComponent (goButton);
+        recheckButton.onClick = [this] { if (onRecheck) onRecheck(); };
+        recheckButton.setTooltip ("For a system already tuned: one guided pass that measures each speaker close up, then each one and the whole "
+                                  "system at FOH, and flags only what has drifted (polarity, level, delay, EQ)");
+        addAndMakeVisible (recheckButton);
 
         refresh();
         startTimerHz (4);
@@ -87,6 +95,18 @@ public:
         if (! diff) return;
         steps = s;
         changedSetup = setupChanged;
+        repaint();
+    }
+
+    // The step to do next, and what to do there (from the editor), for the banner.
+    void setNext (int page, const juce::String& what)
+    {
+        if (page == nextPage && what == nextWhat) return;
+        nextPage = page;
+        nextWhat = what;
+        goButton.setVisible (page >= 0);
+        goButton.setButtonText (page >= 0 ? juce::String ("Go to ") + pageName (page) : juce::String());
+        resized();
         repaint();
     }
 
@@ -106,25 +126,32 @@ public:
         drawPanel (g, venueCard.toFloat(), "Venue");
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
         drawPanel (g, stepsCard.toFloat(), "Where this venue stands");
+        // the next thing to do, and what needs attention
         {
-            // what the outlines mean
-            auto key = stepsCard.toFloat().reduced (14.0f, 0.0f).withTrimmedTop (9.0f).withHeight (16.0f);
-            g.setFont (font (11.0f));
-            struct K { juce::Colour c; const char* t; };
-            const K keys[] = { { p.good, "done" }, { p.warn, "still to do" }, { p.warn.brighter (0.2f), "! needs attention" } };
-            for (int i = 2; i >= 0; --i)
+            auto b = nextBanner;
+            g.setColour (p.accent.withAlpha (0.14f));
+            g.fillRoundedRectangle (b.toFloat(), 7.0f);
+            g.setColour (p.accent);
+            g.fillRoundedRectangle (b.toFloat().removeFromLeft (4.0f), 2.0f);
+            b = b.reduced (14, 6).withTrimmedRight (goButton.isVisible() ? goButton.getWidth() + 10 : 0);
+            g.setColour (p.accent);
+            g.setFont (font (10.5f, true));
+            g.drawText (nextPage >= 0 ? "NEXT" : "ALL DONE", b.removeFromTop (14), juce::Justification::centredLeft);
+            g.setColour (p.text);
+            g.setFont (font (13.5f, true));
+            g.drawText (nextPage >= 0 ? juce::String (pageName (nextPage)) + ": " + nextWhat : juce::String ("The tuning is done. The reports and the processor sheet are ready."),
+                        b, juce::Justification::centredLeft, true);
+            juce::StringArray att;
+            for (int i = 0; i < kNumPages; ++i) if (steps[(size_t) i].status == StepStatus::Attention) att.add (juce::String (pageName (i)) + ": " + steps[(size_t) i].shortText);
             {
-                const float w = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), keys[i].t) + 30.0f;
-                auto cell = key.removeFromRight (w);
-                g.setColour (keys[i].c.withAlpha (i == 2 ? 1.0f : 0.8f));
-                const auto sw = cell.removeFromLeft (20.0f).withSizeKeepingCentre (14.0f, 10.0f);
-                if (i == 2) g.fillEllipse (sw.withSizeKeepingCentre (10.0f, 10.0f));
-                else g.drawRoundedRectangle (sw, 3.0f, 1.6f);
-                g.setColour (p.textDim);
-                g.drawText (keys[i].t, cell, juce::Justification::centredLeft);
+                int issues = 0;
+                for (const auto& l : proc.recheck.lines) issues += l.level > 0 ? 1 : 0;
+                if (issues > 0) att.add ("Quick re-check: " + juce::String (issues) + (issues == 1 ? " thing has" : " things have") + " changed (below)");
             }
+            g.setColour (att.isEmpty() ? p.textFaint : p.warn);
+            g.setFont (font (11.5f, ! att.isEmpty()));
+            g.drawText (att.isEmpty() ? juce::String ("Nothing needs attention.") : "Needs attention: " + att.joinIntoString ("   "), attentionLine, juce::Justification::centredLeft, true);
         }
-
         // venue file line
         g.setColour (p.textFaint);
         g.setFont (font (11.0f));
@@ -182,10 +209,11 @@ public:
             const bool over = i == hoverStep;
             g.setColour (over ? p.panelRaised.brighter (p.dark ? 0.05f : 0.0f) : p.panelRaised);
             g.fillRoundedRectangle (r.toFloat(), 7.0f);
-            const bool required = (i == (int) Page::Mics || i == (int) Page::Response || i == (int) Page::Crossover || i == (int) Page::Room)
+            const bool required = (i == (int) Page::Mics || i == (int) Page::Response || i == (int) Page::Crossover || i == (int) Page::Level || i == (int) Page::Room)
                                   && (st.status == StepStatus::NotStarted || st.status == StepStatus::InProgress);
             juce::Colour edge = over ? p.accent.withAlpha (0.7f) : p.border;
             float width = over ? 1.4f : 1.0f;
+            if (i == nextPage) { edge = p.accent; width = 1.8f; }
             if (st.status == StepStatus::Attention) { edge = p.warn.withAlpha (0.95f); width = 1.6f; }
             else if (required) { edge = p.warn.withAlpha (over ? 0.85f : 0.55f); width = 1.3f; }
             else if (st.status == StepStatus::Ready && ! over) { edge = p.good.withAlpha (0.5f); width = 1.2f; }
@@ -257,12 +285,21 @@ public:
         s.removeFromBottom (8);
         listArea = s;
 
-        // steps card: two columns, the tuning steps on the right
+        // steps card: the next step and what needs attention, then two columns, the tuning steps on the right
         auto st = stepsCard.reduced (16).withTrimmedTop (30);
+        {
+            auto head = stepsCard.reduced (16, 0).withTrimmedTop (6).withHeight (26);
+            recheckButton.setBounds (head.removeFromRight (190).withSizeKeepingCentre (190, 26).translated (0, 2));
+        }
+        nextBanner = st.removeFromTop (52);
+        if (goButton.isVisible()) goButton.setBounds (nextBanner.reduced (10, 0).removeFromRight (190).withSizeKeepingCentre (190, 30));
+        st.removeFromTop (4);
+        attentionLine = st.removeFromTop (20);
+        st.removeFromTop (4);
         changeLine = st.removeFromBottom (22);
         rows.clear();
         headings.clear();
-        const int rowH = 50, gap = 6, headH = 24;
+        const int rowH = 46, gap = 5, headH = 22;
         auto colA = st.removeFromLeft ((st.getWidth() - 12) / 2);
         st.removeFromLeft (12);
         auto colB = st;
@@ -277,7 +314,7 @@ public:
             return col;
         };
         auto restA = column (colA, { -1, (int) Page::Mics, (int) Page::Speakers, (int) Page::Plan, -3, (int) Page::MonitorMic, (int) Page::Monitor });
-        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Crossover, (int) Page::Align, (int) Page::Room, (int) Page::Feedback, (int) Page::Acoustics });
+        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Crossover, (int) Page::Level, (int) Page::Align, (int) Page::Acoustics, (int) Page::Room, (int) Page::Feedback });
         auto bottom = colA.getBottom() > colB.getBottom() ? restA : restB;
         juce::ignoreUnused (bottom);
         // reports along the bottom of both columns
@@ -285,7 +322,10 @@ public:
                                                                  changeLine.getY());
         headings.push_back ({ -4, reports.removeFromTop (headH) });
         auto rr = reports.removeFromTop (rowH);
-        rows.push_back ({ (int) Page::TuningReport, rr.removeFromLeft ((rr.getWidth() - 12) / 2) });
+        const int third = (rr.getWidth() - 24) / 3;
+        rows.push_back ({ (int) Page::Sheet, rr.removeFromLeft (third) });
+        rr.removeFromLeft (12);
+        rows.push_back ({ (int) Page::TuningReport, rr.removeFromLeft (third) });
         rr.removeFromLeft (12);
         rows.push_back ({ (int) Page::MonitorReport, rr });
         reports.removeFromTop (gap + 6);
@@ -333,6 +373,36 @@ private:
         const auto& p = pal();
         auto r = summaryArea;
         if (r.getHeight() < 60) return;
+        // the quick re-check, when one was run this session
+        if (proc.recheck.when.isNotEmpty())
+        {
+            const int w = proc.recheck.worst();
+            g.setColour (w == 0 ? p.good : w == 1 ? p.warn : p.bad);
+            g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 7.0f, 3.0f, 12.0f, 1.5f);
+            g.setColour (p.text);
+            g.setFont (font (13.0f, true));
+            g.drawText ("Quick re-check " + proc.recheck.when + (w == 0 ? ":  nothing has drifted" : w == 1 ? ":  a few things to look at" : ":  something has changed"),
+                        r.removeFromTop (26).withTrimmedLeft (10), juce::Justification::centredLeft, true);
+            // what drifted first, then how many are as tuned
+            int fine = 0;
+            for (int pass = 2; pass >= 1; --pass)
+                for (const auto& l : proc.recheck.lines)
+                {
+                    if (l.level != pass || r.getHeight() < 70) continue;
+                    g.setColour (l.level == 1 ? p.warn : p.bad);
+                    g.setFont (font (11.5f, true));
+                    g.drawText (l.text, r.removeFromTop (18).withTrimmedLeft (10), juce::Justification::centredLeft, true);
+                }
+            for (const auto& l : proc.recheck.lines) fine += l.level == 0 ? 1 : 0;
+            if (fine > 0 && r.getHeight() >= 60)
+            {
+                g.setColour (p.textDim);
+                g.setFont (font (11.5f));
+                g.drawText (juce::String (fine) + (fine == 1 ? " point is" : " points are") + " as tuned.", r.removeFromTop (18).withTrimmedLeft (10),
+                            juce::Justification::centredLeft, true);
+            }
+            r.removeFromTop (10);
+        }
         g.setColour (p.accent);
         g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 7.0f, 3.0f, 12.0f, 1.5f);
         g.setColour (p.text);
@@ -448,7 +518,10 @@ private:
     juce::TextEditor nameEditor, notesEditor;
     juce::TextButton newVenueButton { "New venue..." }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
         newSessionButton { "New session" }, openSessionButton { "Open" }, compareButton { "Compare" }, renameButton { "Rename" },
-        deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" };
+        deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" }, goButton, recheckButton { "Quick re-check..." };
+    juce::Rectangle<int> nextBanner, attentionLine;
+    int nextPage = -1;
+    juce::String nextWhat;
     juce::Rectangle<int> summaryArea;
     juce::Rectangle<int> venueCard, sessionsCard, stepsCard, venueFileLine, sessionsHint, listArea, changeLine;
     std::vector<std::pair<int, juce::Rectangle<int>>> rows, headings;   // (page or heading, bounds)

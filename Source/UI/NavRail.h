@@ -13,27 +13,28 @@ namespace la::ui
 enum class Page
 {
     Home = 0,
-    Mics, Speakers, Plan,                                       // setup
-    Response, Crossover, Align, Room, Feedback, Acoustics,      // tuning, in order
-    MonitorMic, Monitor,                                        // monitoring
-    TuningReport, MonitorReport,                                // reports
+    Mics, Speakers, Plan,                                                    // setup
+    Response, Crossover, Level, Align, Acoustics, Room, Feedback,            // tuning, in order
+    MonitorMic, Monitor,                                                     // monitoring
+    Sheet, TuningReport, MonitorReport,                                      // reports
     Locker
 };
-constexpr int kNumPages = 15;
+constexpr int kNumPages = 17;
 // The navigation pane, top to bottom. Negative entries are section headings. The mic locker is opened from its
-// own button at the bottom.
-constexpr int kNavOrder[] = { 0, -1, 1, 2, 3, -2, 4, 5, 6, 7, 8, 9, -3, 10, 11, -4, 12, 13 };
+// own button at the bottom. The pane is the one way between the steps: each shows its state, and the next step to do
+// is marked.
+constexpr int kNavOrder[] = { 0, -1, 1, 2, 3, -2, 4, 5, 6, 7, 8, 9, 10, -3, 11, 12, -4, 13, 14, 15 };
 inline const char* navHeading (int h) { static const char* n[] = { "SETUP", "TUNING", "MONITORING", "REPORTS" }; return n[juce::jlimit (0, 3, -h - 1)]; }
-inline bool isTuningStep (int page) { return page >= (int) Page::Response && page <= (int) Page::Acoustics; }
+inline bool isTuningStep (int page) { return page >= (int) Page::Response && page <= (int) Page::Feedback; }
 inline int tuningStepNumber (int page) { return page - (int) Page::Response + 1; }
 
 enum class StepStatus { Ready, InProgress, Attention, NotStarted, Later, None };
 
 inline const char* pageName (int i)
 {
-    static const char* names[] = { "Home", "Mics", "Speakers", "Venue plan", "Speaker response", "Crossover", "Time alignment", "Room EQ",
-                                   "Feedback test", "Room acoustics", "Monitor mic", "Live monitoring", "Tuning report", "Monitoring report",
-                                   "Mic locker" };
+    static const char* names[] = { "Home", "Mics", "Speakers", "Venue plan", "Speaker response", "Crossover", "Level balance", "Time alignment",
+                                   "Room acoustics", "Room EQ", "Feedback test", "Monitor mic", "Live monitoring", "Processor sheet",
+                                   "Tuning report", "Monitoring report", "Mic locker" };
     return names[juce::jlimit (0, kNumPages - 1, i)];
 }
 
@@ -102,6 +103,20 @@ inline juce::Path pageIcon (int page)
             p.startNewSubPath (11.0f, 20.5f); p.lineTo (11.0f, 13.0f);
             p.startNewSubPath (14.5f, 20.5f); p.lineTo (14.5f, 16.0f);
             p.startNewSubPath (18.0f, 20.5f); p.lineTo (18.0f, 18.0f);
+            break;
+        case Page::Level:   // three level bars, the middle one trimmed
+            p.startNewSubPath (5.0f, 20.5f); p.lineTo (5.0f, 8.0f);
+            p.startNewSubPath (12.0f, 20.5f); p.lineTo (12.0f, 11.0f);
+            p.startNewSubPath (19.0f, 20.5f); p.lineTo (19.0f, 8.0f);
+            p.startNewSubPath (2.5f, 8.0f); p.lineTo (21.5f, 8.0f);
+            p.startNewSubPath (9.5f, 4.0f); p.lineTo (12.0f, 6.5f); p.lineTo (14.5f, 4.0f);
+            break;
+        case Page::Sheet:   // a sheet with ticks
+            p.addRoundedRectangle (4.0f, 2.5f, 16.0f, 19.0f, 1.5f);
+            p.startNewSubPath (7.0f, 8.0f); p.lineTo (8.5f, 9.5f); p.lineTo (11.0f, 6.5f);
+            p.startNewSubPath (13.0f, 8.0f); p.lineTo (17.0f, 8.0f);
+            p.startNewSubPath (7.0f, 14.0f); p.lineTo (8.5f, 15.5f); p.lineTo (11.0f, 12.5f);
+            p.startNewSubPath (13.0f, 14.0f); p.lineTo (17.0f, 14.0f);
             break;
         case Page::TuningReport:
         case Page::MonitorReport:   // a page with lines
@@ -221,6 +236,15 @@ public:
         repaint();
     }
 
+    // The step to do next: marked in the list ("NEXT" and an accent edge), with what to do there as its tooltip.
+    void setNext (int page, const juce::String& what)
+    {
+        if (page == nextPage && what == nextWhat) return;
+        nextPage = page;
+        nextWhat = what;
+        repaint();
+    }
+
     void setVenue (const juce::String& venue, const juce::String& session, bool unsaved)
     {
         if (venue == venueName && session == sessionName && unsaved == dirty) return;
@@ -277,6 +301,11 @@ public:
                     g.setColour (p.accent);
                     g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 8.0f, 3.0f, (float) r.getHeight() - 16.0f, 1.5f);
                 }
+                if (i == nextPage && ! active)
+                {
+                    g.setColour (p.accent.withAlpha (0.8f));
+                    g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 6.0f, 1.3f);
+                }
 
                 auto iconBox = juce::Rectangle<float> (24.0f, 24.0f).withCentre ({ (float) r.getX() + 20.0f, (float) r.getCentreY() });
                 auto icon = pageIcon (i);
@@ -286,6 +315,13 @@ public:
 
                 const auto& e = entries[i];
                 auto text = r.withTrimmedLeft (38).withTrimmedRight (e.status == StepStatus::None ? 6 : 24);
+                if (i == nextPage)
+                {
+                    // "NEXT" before the status, and what to do there as the second line
+                    g.setColour (p.accent);
+                    g.setFont (font (9.0f, true));
+                    g.drawText ("NEXT", text.withTrimmedTop (3).withHeight (12), juce::Justification::topRight);
+                }
                 juce::String name = pageName (i);
                 if (isTuningStep (i)) name = juce::String (tuningStepNumber (i)) + "  " + name;
                 g.setColour (active ? p.text : shade (p.text, p.dark ? -0.15f : 0.2f));
@@ -293,9 +329,9 @@ public:
                 if (e.text.isNotEmpty())
                 {
                     g.drawText (name, text.removeFromTop (r.getHeight() / 2 + 1).withTrimmedTop (2), juce::Justification::bottomLeft, true);
-                    g.setColour (e.status == StepStatus::Attention ? p.warn : p.textDim);
-                    g.setFont (font (10.0f));
-                    g.drawText (e.text, text, juce::Justification::topLeft, true);
+                    g.setColour (e.status == StepStatus::Attention ? p.warn : i == nextPage ? p.accent : p.textDim);
+                    g.setFont (font (10.0f, i == nextPage));
+                    g.drawText (i == nextPage && nextWhat.isNotEmpty() ? nextWhat : e.text, text, juce::Justification::topLeft, true);
                 }
                 else
                     g.drawText (name, text, juce::Justification::centredLeft, true);
@@ -362,7 +398,8 @@ public:
         hoverPoint = e.getPosition();
         const int h = itemAt (e.getPosition());
         if (h != hover) hover = h;
-        if (h >= 0 && entries[h].text.isNotEmpty()) setTooltip (juce::String (pageName (h)) + ": " + entries[h].text);
+        if (h >= 0 && h == nextPage && nextWhat.isNotEmpty()) setTooltip ("Next: " + nextWhat + (entries[h].text.isNotEmpty() ? " (" + entries[h].text + ")" : juce::String()));
+        else if (h >= 0 && entries[h].text.isNotEmpty()) setTooltip (juce::String (pageName (h)) + ": " + entries[h].text);
         else setTooltip ({});
         repaint();
     }
@@ -442,7 +479,9 @@ private:
     }
 
     Entry entries[kNumPages];
-    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, false };
+    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false };
+    int nextPage = -1;
+    juce::String nextWhat;
 
     // A heading shows when any page under it does.
     bool headingVisible (int h) const

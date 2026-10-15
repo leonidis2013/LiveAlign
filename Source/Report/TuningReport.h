@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// The tuning report: a PDF of the open session's system tuning. A cover with the contents, then chapters: a summary
-// with the system as found and as left, the venue plan (landscape), the speakers and the settings for the processor
-// (crossover, EQ, time alignment), room EQ, the feedback test, room acoustics, the measurement mics with their serial
-// numbers and calibration, and the measured traces. Sections can be left out (Reports > Tuning report).
+// The tuning report: a PDF of the open session's system tuning, in the order of the tuning steps. A cover with the
+// contents, then chapters: a summary with the system as found and as left, the venue plan (landscape), the speakers
+// (responses as found and as left, polarity, crossover, time alignment), the level balance, room acoustics with its
+// verdict, room EQ, the feedback test, the processor sheet, the measurement mics with their serial numbers and
+// calibration, and the measured traces. Sections can be left out (Reports > Tuning report).
 #include "ReportCommon.h"
 #include "../UI/RoomPage.h"
 #include "../UI/SpeakersPage.h"
@@ -19,10 +20,12 @@ inline const std::vector<TuningSection>& tuningSections()
     static const std::vector<TuningSection> s {
         { "summary", "Summary: as found and as left", "What was done, and the processor settings before and after this session" },
         { "plan", "Venue plan", "Where the speakers and tuning mics were (a landscape page)" },
-        { "speakers", "Speakers and processor settings", "The system, the crossover, EQ, time alignment and the predicted sum" },
-        { "room", "Room EQ", "The listening positions against the target, as found and as left" },
+        { "speakers", "Speakers", "The system, polarity, the crossover, time alignment, and the responses as found and as left" },
+        { "level", "Level balance", "Each speaker's level at the listening points, the trims, and the check" },
+        { "acoustics", "Room acoustics", "Reverberation, clarity, intelligibility, room modes, coverage, noise, and what it means" },
+        { "room", "Room EQ", "The listening points against the target, as found and as left" },
         { "feedback", "Feedback test", "The rings found and the cuts for them" },
-        { "acoustics", "Room acoustics", "Reverberation, clarity, intelligibility, room modes, coverage and noise" },
+        { "sheet", "Processor sheet", "Every setting to enter, output by output, and which are entered" },
         { "mics", "Measurement mics and checks", "Mics with serial numbers, calibration and this session's checks" },
         { "measurements", "Measurements", "The transfer functions and RTA traces captured in this session" } };
     return s;
@@ -151,7 +154,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
     // ---------- speakers ----------
     if (has ("speakers"))
     {
-        L.chapter ("Speakers and processor settings");
+        L.chapter ("Speakers");
         {
             std::vector<juce::StringArray> rows;
             for (int i = 0; i < (int) sys.sources.size(); ++i)
@@ -262,7 +265,143 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                 L.need (360.0f);
                 L.sub ("Measured responses with the processing, and their predicted sum");
                 L.picture (img, 330.0f);
+                bool found = false;
+                for (const auto& s : sys.sources) found = found || s.asFound.freq.size() > 4;
+                if (found)
+                {
+                    const auto img2 = snapshotLight (graph, 820, 450, [] (ui::SpeakerGraph& gr) { gr.setWithProcessing (true); gr.setShowAsFound (true); gr.rebuild(); });
+                    L.need (360.0f);
+                    L.sub ("As found (dashed) and as left");
+                    L.picture (img2, 330.0f);
+                }
             }
+        }
+    }
+
+    // ---------- level balance ----------
+    if (has ("level"))
+    {
+        L.chapter ("Level balance");
+        const auto& lv = p.level;
+        if (lv.readings.empty()) L.para ("The levels were not balanced in this session.", 9.5f, dim);
+        else
+        {
+            L.para ("Each speaker on its own, with its processing in place, at the listening points: its level through its own range (dB against "
+                    "the reference). The first point is the centre, where left and right, and the sub and the tops, are compared.", 9.5f);
+            std::vector<juce::StringArray> rows;
+            for (int i = 0; i < (int) sys.sources.size(); ++i)
+            {
+                double lo, hi;
+                sys.playRange (i, lo, hi);
+                juce::StringArray row { sys.nameOf (i) };
+                for (const auto& pt : lv.points)
+                {
+                    const auto* a = lv.find (i, pt, false);
+                    const auto* b = lv.find (i, pt, true);
+                    juce::String cell = a != nullptr ? juce::String (a->band (lo, hi), 1) : juce::String ("-");
+                    if (b != nullptr) cell << " -> " << juce::String (b->band (lo, hi), 1);
+                    row.add (cell);
+                }
+                row.add (std::abs (sys.sources[(size_t) i].trimDb) > 0.04 ? (sys.sources[(size_t) i].trimDb > 0.0 ? "+" : "") + juce::String (sys.sources[(size_t) i].trimDb, 1) + " dB" : juce::String ("-"));
+                rows.push_back (row);
+            }
+            juce::StringArray head { "Speaker" };
+            std::vector<float> widths { 2.0f };
+            for (const auto& pt : lv.points) { head.add (pt + " (dB)"); widths.push_back (1.4f); }
+            head.add ("Trim");
+            widths.push_back (1.0f);
+            L.table (widths, head, rows);
+            L.para ("\"a -> b\": as found, then the check after the trims.", 8.0f, dim);
+            juce::StringArray lines;
+            for (const auto& t : lv.suggest (sys, room.target, true)) lines.add (t.why);
+            for (const auto& t : LevelBalance::cabinetNotes (sys)) lines.add (t.why);
+            if (! lines.isEmpty()) { L.sub ("Result"); for (const auto& t : lines) L.para (t, 9.5f); }
+        }
+    }
+
+    // ---------- acoustics ----------
+    if (has ("acoustics"))
+    {
+        L.chapter ("Room acoustics");
+        if (room.acousticsCount() == 0) L.para ("The room's acoustics were not measured in this session.", 9.5f, dim);
+        else
+        {
+            const auto a = room.acousticsAverage();
+            double rtLo, rtHi, stiMin;
+            RoomTuning::useTargets (room.use, rtLo, rtHi, stiMin);
+            std::array<double, acoustics::kNoiseBands> L8 {};
+            juce::String who;
+            const bool noise = ui::noiseOctaves (p, L8, who);
+            auto n2 = [] (double v, int d) { return ! std::isfinite (v) ? juce::String ("-") : d == 0 ? juce::String (juce::roundToInt (v)) : juce::String (v, d); };
+            L.tiles ({ { "RT (500 Hz - 1 kHz)", n2 (a.rtMid(), 2), "s" }, { "EDT", n2 (a.mid (&acoustics::Band::edt), 2), "s" },
+                       { "C50 / C80", n2 (a.mid (&acoustics::Band::c50), 1) + " / " + n2 (a.mid (&acoustics::Band::c80), 1), "dB" },
+                       { "STI", n2 (a.sti, 2), acoustics::stiRating (a.sti) },
+                       { "Noise", noise ? "NC " + juce::String (juce::roundToInt (acoustics::noiseCriterion (L8))) : juce::String ("-"), "" } });
+            L.para ("Room use: " + RoomTuning::useNames()[room.use] + ". Typical reverberation for it: " + juce::String (rtLo, 1) + " - " + juce::String (rtHi, 1)
+                    + " s; speech intelligibility (STI) of " + juce::String (stiMin, 2) + " or more.", 9.0f);
+
+            ui::AcousticsChart chart (p);
+            const auto img = snapshotLight (chart, 820, 380, [] (ui::AcousticsChart& c) { c.setMetric (0); });
+            L.need (290.0f);
+            L.picture (img, 270.0f);
+
+            std::vector<juce::StringArray> rows;
+            for (int b = 0; b < acoustics::kBands; ++b)
+            {
+                const auto& o = a.band[(size_t) b];
+                rows.push_back ({ juce::String (juce::roundToInt (acoustics::octaves()[(size_t) b])) + " Hz", n2 (o.edt, 2), n2 (o.t20, 2), n2 (o.t30, 2),
+                                  n2 (o.c50, 1), n2 (o.c80, 1), n2 (o.d50 * 100.0, 0) + " %" });
+            }
+            L.sub ("Per octave (average of the positions)");
+            L.table ({ 1.0f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f }, { "Octave", "EDT (s)", "T20 (s)", "T30 (s)", "C50 (dB)", "C80 (dB)", "D50" }, rows, 8.0f);
+
+            std::vector<juce::StringArray> prow;
+            if (room.acousticsFromSweeps())
+            {
+                for (const auto& w : room.sweeps)
+                    if (w.ac.valid)
+                        prow.push_back ({ w.position + " (sweep)", n2 (w.ac.rtMid(), 2), n2 (w.ac.mid (&acoustics::Band::edt), 2), n2 (w.ac.mid (&acoustics::Band::c50), 1),
+                                          n2 (w.ac.mid (&acoustics::Band::c80), 1), n2 (w.ac.sti, 2) + " " + acoustics::stiRating (w.ac.sti) });
+            }
+            else for (const auto& m : room.meas)
+                if (m.ac.valid)
+                    prow.push_back ({ m.position + (m.after ? juce::String (" (check)") : juce::String()), n2 (m.ac.rtMid(), 2), n2 (m.ac.mid (&acoustics::Band::edt), 2),
+                                      n2 (m.ac.mid (&acoustics::Band::c50), 1), n2 (m.ac.mid (&acoustics::Band::c80), 1), n2 (m.ac.sti, 2) + " " + acoustics::stiRating (m.ac.sti) });
+            L.sub ("Each position");
+            L.table ({ 2.0f, 0.9f, 0.9f, 0.9f, 0.9f, 1.3f }, { "Position", "RT (s)", "EDT (s)", "C50", "C80", "STI" }, prow, 8.0f);
+
+            const auto modes = room.modes();
+            if (! modes.empty())
+            {
+                std::vector<juce::StringArray> mrow;
+                for (const auto& m : modes)
+                    mrow.push_back ({ juce::String (juce::roundToInt (m.freq)) + " Hz", "+" + juce::String (m.heightDb, 1) + " dB",
+                                      std::isfinite (m.seatSpreadDb) ? juce::String (m.seatSpreadDb, 1) + " dB" : juce::String ("-") });
+                L.sub ("Room modes (low-frequency peaks)");
+                L.table ({ 1.0f, 1.0f, 1.6f }, { "Frequency", "Height", "Varies between seats" }, mrow, 8.0f);
+            }
+            const double spread = room.levelSpread (room.count (true) > 0);
+            if (std::isfinite (spread)) L.para ("Coverage: the level (500 Hz - 4 kHz) varies " + juce::String (spread, 1) + " dB across the positions.", 9.0f);
+            if (noise)
+            {
+                std::vector<juce::StringArray> nrow { {} };
+                juce::StringArray head { "" };
+                nrow[0].add ("dB SPL");
+                for (int b = 0; b < acoustics::kNoiseBands; ++b) { head.add (juce::String (juce::roundToInt (acoustics::noiseOctaves()[(size_t) b])) + " Hz"); nrow[0].add (n2 (L8[(size_t) b], 0)); }
+                L.sub ("Background noise (" + who + ", from the noise floor check)");
+                L.table (std::vector<float> (9, 1.0f), head, nrow, 8.0f);
+                L.para ("NC " + juce::String (juce::roundToInt (acoustics::noiseCriterion (L8))) + " (noise criterion), NR "
+                        + juce::String (juce::roundToInt (acoustics::noiseRating (L8))) + " (noise rating).", 9.0f);
+            }
+            {
+                juce::String why;
+                room.acousticsVerdict (why);
+                L.sub ("What it means");
+                L.para (why, 10.0f);
+            }
+            L.para (juce::String (room.acousticsFromSweeps() ? "From sweeps through the system" : "Estimated from the Room EQ pink noise")
+                        + " at the listening points (ISO 3382-1 decay, IEC 60268-16 indirect STI without noise corrections). A full acoustic survey "
+                        "uses an omnidirectional source.", 8.0f, dim);
         }
     }
 
@@ -355,75 +494,24 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         }
     }
 
-    // ---------- acoustics ----------
-    if (has ("acoustics"))
+    // ---------- processor sheet ----------
+    if (has ("sheet"))
     {
-        L.chapter ("Room acoustics");
-        if (room.acousticsCount() == 0) L.para ("The room's acoustics come from the Room EQ measurements; none were made in this session.", 9.5f, dim);
-        else
+        L.chapter ("Processor sheet");
+        L.para ("Every setting to enter, output by output. Filters in dB/octave; gain includes the crossover's level and the level-balance trim.", 9.5f);
+        std::vector<juce::StringArray> rows;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
         {
-            const auto a = room.acousticsAverage();
-            double rtLo, rtHi, stiMin;
-            RoomTuning::useTargets (room.use, rtLo, rtHi, stiMin);
-            std::array<double, acoustics::kNoiseBands> L8 {};
-            juce::String who;
-            const bool noise = ui::noiseOctaves (p, L8, who);
-            auto n2 = [] (double v, int d) { return ! std::isfinite (v) ? juce::String ("-") : d == 0 ? juce::String (juce::roundToInt (v)) : juce::String (v, d); };
-            L.tiles ({ { "RT (500 Hz - 1 kHz)", n2 (a.rtMid(), 2), "s" }, { "EDT", n2 (a.mid (&acoustics::Band::edt), 2), "s" },
-                       { "C50 / C80", n2 (a.mid (&acoustics::Band::c50), 1) + " / " + n2 (a.mid (&acoustics::Band::c80), 1), "dB" },
-                       { "STI", n2 (a.sti, 2), acoustics::stiRating (a.sti) },
-                       { "Noise", noise ? "NC " + juce::String (juce::roundToInt (acoustics::noiseCriterion (L8))) : juce::String ("-"), "" } });
-            L.para ("Room use: " + RoomTuning::useNames()[room.use] + ". Typical reverberation for it: " + juce::String (rtLo, 1) + " - " + juce::String (rtHi, 1)
-                    + " s; speech intelligibility (STI) of " + juce::String (stiMin, 2) + " or more.", 9.0f);
-
-            ui::AcousticsChart chart (p);
-            const auto img = snapshotLight (chart, 820, 380, [] (ui::AcousticsChart& c) { c.setMetric (0); });
-            L.need (290.0f);
-            L.picture (img, 270.0f);
-
-            std::vector<juce::StringArray> rows;
-            for (int b = 0; b < acoustics::kBands; ++b)
-            {
-                const auto& o = a.band[(size_t) b];
-                rows.push_back ({ juce::String (juce::roundToInt (acoustics::octaves()[(size_t) b])) + " Hz", n2 (o.edt, 2), n2 (o.t20, 2), n2 (o.t30, 2),
-                                  n2 (o.c50, 1), n2 (o.c80, 1), n2 (o.d50 * 100.0, 0) + " %" });
-            }
-            L.sub ("Per octave (average of the positions)");
-            L.table ({ 1.0f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f }, { "Octave", "EDT (s)", "T20 (s)", "T30 (s)", "C50 (dB)", "C80 (dB)", "D50" }, rows, 8.0f);
-
-            std::vector<juce::StringArray> prow;
-            for (const auto& m : room.meas)
-                if (m.ac.valid)
-                    prow.push_back ({ m.position + (m.after ? juce::String (" (check)") : juce::String()), n2 (m.ac.rtMid(), 2), n2 (m.ac.mid (&acoustics::Band::edt), 2),
-                                      n2 (m.ac.mid (&acoustics::Band::c50), 1), n2 (m.ac.mid (&acoustics::Band::c80), 1), n2 (m.ac.sti, 2) + " " + acoustics::stiRating (m.ac.sti) });
-            L.sub ("Each position");
-            L.table ({ 2.0f, 0.9f, 0.9f, 0.9f, 0.9f, 1.3f }, { "Position", "RT (s)", "EDT (s)", "C50", "C80", "STI" }, prow, 8.0f);
-
-            const auto modes = room.modes();
-            if (! modes.empty())
-            {
-                std::vector<juce::StringArray> mrow;
-                for (const auto& m : modes)
-                    mrow.push_back ({ juce::String (juce::roundToInt (m.freq)) + " Hz", "+" + juce::String (m.heightDb, 1) + " dB",
-                                      std::isfinite (m.seatSpreadDb) ? juce::String (m.seatSpreadDb, 1) + " dB" : juce::String ("-") });
-                L.sub ("Room modes (low-frequency peaks)");
-                L.table ({ 1.0f, 1.0f, 1.6f }, { "Frequency", "Height", "Varies between seats" }, mrow, 8.0f);
-            }
-            const double spread = room.levelSpread (room.count (true) > 0);
-            if (std::isfinite (spread)) L.para ("Coverage: the level (500 Hz - 4 kHz) varies " + juce::String (spread, 1) + " dB across the positions.", 9.0f);
-            if (noise)
-            {
-                std::vector<juce::StringArray> nrow { {} };
-                juce::StringArray head { "" };
-                nrow[0].add ("dB SPL");
-                for (int b = 0; b < acoustics::kNoiseBands; ++b) { head.add (juce::String (juce::roundToInt (acoustics::noiseOctaves()[(size_t) b])) + " Hz"); nrow[0].add (n2 (L8[(size_t) b], 0)); }
-                L.sub ("Background noise (" + who + ", from the noise floor check)");
-                L.table (std::vector<float> (9, 1.0f), head, nrow, 8.0f);
-                L.para ("NC " + juce::String (juce::roundToInt (acoustics::noiseCriterion (L8))) + " (noise criterion), NR "
-                        + juce::String (juce::roundToInt (acoustics::noiseRating (L8))) + " (noise rating).", 9.0f);
-            }
-            L.para ("Estimates from the system measurements at the listening positions (ISO 3382-1 decay, IEC 60268-16 indirect STI without "
-                    "noise corrections). A full acoustic survey uses an omnidirectional source.", 8.0f, dim);
+            const auto rw = sheet::row (sys, i);
+            rows.push_back ({ sheet::entered (sys, i) ? "yes" : "no", rw.name, rw.output, rw.hpf, rw.lpf, rw.delay.upToFirstOccurrenceOf ("  (", false, false), rw.polarity, rw.gain });
+        }
+        L.table ({ 0.7f, 1.8f, 1.1f, 2.0f, 2.0f, 1.0f, 1.0f, 1.6f }, { "Entered", "Speaker", "Output", "High-pass", "Low-pass", "Delay", "Polarity", "Gain" }, rows, 7.5f);
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            const auto rw = sheet::row (sys, i);
+            if (rw.eq == "none") continue;
+            L.sub (rw.name + " EQ");
+            L.para (rw.eq, 9.0f);
         }
     }
 

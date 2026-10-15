@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.16.1**: speakers sharing an output (a pair on All outputs) are measured by muting the others at the console or processor: LiveAlign says which to mute and asks you to confirm. **0.16.0**: a new Mics page (mic positions on top with the mic attached from your locker, the mics below, the checklist beside them); calibration files at any angle (0, 30, 45, 60, 90, 180 degrees); Room EQ as a loop (as found, enter the EQ, check, refine, as left) on the whole system, with gentler bands; room acoustics measured with a sweep; time alignment with pink noise, a sweep or music from the console; a feedback watch and delay tracking while monitoring; a crossover only when there is a sub, Automatic or By hand; the app icon; and fixes (outputs shared by two speakers, the interface change, signal quality, the top + sub sum). **0.15.0**: polarity of every speaker and every cabinet, checked while capturing speaker responses, with a quick check for speakers set "Same as" another and for each cabinet on a shared output. **0.14.1**: close up, each speaker can be measured with its own mic (picked on Speaker response or in the guided pop-up). **0.14.0**: guided measuring: a pop-up with the venue plan showing where each mic goes and how to aim it, one Measure button with a count-in and the time left, then Next point (Room EQ and Speaker response). **0.13.0**: a new navigation (Setup, Tuning, Monitoring, Reports) with Speaker response, Crossover and Time alignment as their own steps; close-up speaker measurements with a picture of where to put the mic; a time alignment wizard (play the main, play the sub, apply, check) that matches phase at the crossover; Room EQ in rounds with several mics or one mic moved between positions; a feedback test; room acoustics (RT60, EDT, C50 / C80, STI, room modes, coverage, NC / NR); a dedicated monitoring mic and event panel; tuning and live monitoring reports in chapters with the settings as found and as left; seating and two mic layers on the Venue plan; a new logo and Home page; true full screen on macOS. **0.12.1**: the crossover pair follows the speakers' roles (top above, sub below), with a warning and a Swap button when a sub is set above a top. **0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.17.0**: a smoother tuning flow. The steps run Speaker response, Crossover, **Level balance** (new), Time alignment, Room acoustics, Room EQ, Feedback test, and the navigation pane is the one way between them (it marks the next step; Home is a dashboard with the next step, what needs attention and a **quick re-check** of a tuned system). Every measurement goes through the guided pop-up (`Space` measure, `Enter` next, `Esc` stop), with the mutes, mic moves and wiring changes as its "First:" line. Listening points are made on the Venue plan; the mic's aim follows what is measured (at the speaker, or pointing up), limited to the angles it has files for. Calibration files are added in the mic locker, each one's angle read from its name. Polarity comes from every speaker's own capture, a speaker set "Same as" another is measured and compared with it ("matches Main L", "OPPOSITE to Main L"), and an inversion needs two tests to agree. The Room EQ target follows what the speakers can play. Room acoustics comes before Room EQ, with a decision tree. One **processor sheet** lists every setting to enter, ticked off as you go, with CSV and PDF export. **0.16.1**: speakers sharing an output (a pair on All outputs) are measured by muting the others at the console or processor: LiveAlign says which to mute and asks you to confirm. **0.16.0**: a new Mics page (mic positions on top with the mic attached from your locker, the mics below, the checklist beside them); calibration files at any angle (0, 30, 45, 60, 90, 180 degrees); Room EQ as a loop (as found, enter the EQ, check, refine, as left) on the whole system, with gentler bands; room acoustics measured with a sweep; time alignment with pink noise, a sweep or music from the console; a feedback watch and delay tracking while monitoring; a crossover only when there is a sub, Automatic or By hand; the app icon; and fixes (outputs shared by two speakers, the interface change, signal quality, the top + sub sum). **0.15.0**: polarity of every speaker and every cabinet, checked while capturing speaker responses, with a quick check for speakers set "Same as" another and for each cabinet on a shared output. **0.14.1**: close up, each speaker can be measured with its own mic (picked on Speaker response or in the guided pop-up). **0.14.0**: guided measuring: a pop-up with the venue plan showing where each mic goes and how to aim it, one Measure button with a count-in and the time left, then Next point (Room EQ and Speaker response). **0.13.0**: a new navigation (Setup, Tuning, Monitoring, Reports) with Speaker response, Crossover and Time alignment as their own steps; close-up speaker measurements with a picture of where to put the mic; a time alignment wizard (play the main, play the sub, apply, check) that matches phase at the crossover; Room EQ in rounds with several mics or one mic moved between positions; a feedback test; room acoustics (RT60, EDT, C50 / C80, STI, room modes, coverage, NC / NR); a dedicated monitoring mic and event panel; tuning and live monitoring reports in chapters with the settings as found and as left; seating and two mic layers on the Venue plan; a new logo and Home page; true full screen on macOS. **0.12.1**: the crossover pair follows the speakers' roles (top above, sub below), with a warning and a Swap button when a sub is set above a top. **0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -20,19 +20,21 @@ Everything runs from the **navigation pane** on the left (it scrolls with the mo
 
 | Group | Page | What it does |
 |------|------|--------------|
-| | **Home** | Venue name and notes, sessions, and every page of the workflow with where it stands |
-| **Setup** | **Mics** | Mic positions (aim, mic attached from the locker), the mics (input, calibration, sound level) and the checklist |
-| | **Speakers** | The system: cabinets, roles, channels (Mono, Left, Centre, Right), outputs, models; how the speakers are measured |
-| | **Venue plan** | A sketch of the room, seating, speakers, and the tuning and monitoring mics |
-| **Tuning** | **1 Speaker response** | Measure each speaker close up (or from one spot), or import its response |
+| | **Home** | A dashboard: the next step, what needs attention, every step with where it stands, the quick re-check, venue and sessions |
+| **Setup** | **Mics** | The mics (from the locker; input, where each one is, sound level), the checklist and the pre-flight run |
+| | **Speakers** | The system: cabinets, roles, channels (Mono, Left, Centre, Right), outputs, models (edited only here) |
+| | **Venue plan** | The listening points, the room, seating, speakers, and the tuning and monitoring mics |
+| **Tuning** | **1 Speaker response** | Each speaker close up, its polarity from the same capture; or import its response |
 | | **2 Crossover** | Find the best crossover your processor can do, or adjust by hand |
-| | **3 Time alignment** | Line up the sub to the main, fills and delays: play one, play the other, apply, check |
-| | **4 Room EQ** | As found, enter the suggested EQ, check, refine, as left: the system as a whole against a target |
-| | **5 Feedback test** | Raise the gain on an open mic and catch the frequencies that start to ring |
-| | **6 Room acoustics** | A sweep at the positions: RT60, EDT, clarity, speech intelligibility, room modes, coverage, noise |
-| **Monitoring** | **Monitor mic** | The mic used during the event (usually one at FOH): input, calibration, sound level, where it is |
+| | **3 Level balance** | Each speaker alone at the listening points: left against right, fills against the mains, the sub against the tops |
+| | **4 Time alignment** | Line up the sub to the main, fills and delays: each alone at the spot where they meet, then both together |
+| | **5 Room acoustics** | A sweep at the points: RT60, EDT, clarity, intelligibility, modes; a decision tree says whether EQ can help |
+| | **6 Room EQ** | As found, enter the suggested EQ, check, refine, as left: the system as a whole against a target |
+| | **7 Feedback test** | Raise the gain on an open mic and catch the frequencies that start to ring |
+| **Monitoring** | **Monitor mic** | The mic used during the event (usually one at FOH): from the locker, input, sound level, its point on the plan |
 | | **Live monitoring** | RTA, transfer function, impulse response, waterfall, sound level, feedback watch, delay tracking, traces |
-| **Reports** | **Tuning report** | Pick the chapters and export the PDF |
+| **Reports** | **Processor sheet** | Every setting to enter, output by output, ticked off as entered; copy, CSV or PDF |
+| | **Tuning report** | Pick the chapters and export the PDF |
 | | **Monitoring report** | The event's sound level against the limit, the monitoring mic and traces |
 
 **Mic locker** and **Settings** sit at the bottom of the pane, above the venue and session. Each page has its own icon
@@ -43,8 +45,10 @@ Home; click a step there to open it. The generator strip only appears on the pag
 **Window:** on macOS the window uses the standard red / yellow / green buttons, and green (or `F`) gives true full
 screen. On Windows the usual minimise / maximise / close.
 
-**Next button:** the top right of every page shows the one thing to do next and, once a page is done, **Continue to**
-the next one. On Home it starts where you left off.
+**The next step:** the navigation pane is the one way between the steps. The step to do next has an accent outline,
+**NEXT**, and what to do there as its second line (hover for more); Home shows the same at the top, with a **Go to**
+button and a line listing anything that needs attention. A step is green only once it is verified (Room acoustics
+from a real sweep, not the Room EQ estimate; polarity only red when two tests agree).
 
 **Autosave:** every two minutes, unsaved changes are copied to a recovery file in LiveAlign's user folder (your
 venue file is only written by Save). If LiveAlign did not close normally, the next start offers to restore them.
@@ -67,6 +71,10 @@ one visit.
 | Speaker setup, and whether it has been marked as changed | Room noise floor |
 | Analysis settings, target curve | Delay compensation for each mic |
 
+- **Quick re-check** (top right of the steps): for a system already tuned, one guided pass that measures each speaker
+  close up, then each one and the whole system at FOH, and flags only what has drifted: a polarity that flipped, a
+  level more than 2 dB off, a delay that is not what was set (against the level balance readings), or the tonal balance
+  moved since Room EQ. The result is listed on Home.
 - **New session** starts a visit: the setup carries over and the measurements start fresh. Mic setup then asks for
   a quick re-check: confirm each mic's sound level ("Still correct" with the calibrator on, or calibrate again), rerun
   the loopback check and the noise floor.
@@ -86,10 +94,12 @@ A simple drawing of how the setup is laid out, seen from above, **not to scale**
 - **Speakers** come from the Speakers step, each tagged with its name, channel, output and delay, drawn as a cabinet
   (a square for subs) with an arrow for the way it faces.
 - **Mics** come from the Mic setup table, numbered in their colour and tagged with name, position and input. A mic
-  aimed at the speaker shows an arrow; a mic pointing up shows a dot in the circle. Selecting a mic also lets you
-  change its aim (the same setting as on Mic setup), which picks its 0 or 90 degree calibration.
-- **Area...** adds a stage, FOH, seating, balcony, choir ... (resize from the corner), **Mic position...** a named
-  position (one of the venue's positions, a time alignment spot, or a new one) and **Note...** a note.
+  aimed at the speaker shows an arrow; a mic pointing up shows a dot in the circle.
+- **Listening points** are made here: **+ Measurement point...** adds one (FOH, Row 8, Balcony ...); drag it where it
+  is, double-click to rename (everywhere), Delete to remove (with its measurements). Level balance, Room acoustics and
+  Room EQ each tick which points they measure, and the guided pop-up walks the mic from one to the next. A new venue
+  starts with FOH, Centre, Rear and Balcony.
+- **Area...** adds a stage, FOH, seating, balcony, choir ... (resize from the corner) and **Note...** a note.
 - Drag to move, drag the small dot to turn (15 degree steps; hold Alt for any angle, or use `[` and `]`),
   double-click to rename, Delete to remove. New speakers and mics are placed for you; **Place missing speakers and
   mics** puts back any that are not on the drawing.
@@ -101,23 +111,19 @@ A simple drawing of how the setup is laid out, seen from above, **not to scale**
 
 ### Mic setup (the Mics page)
 
-**Mic positions** (top): every listening position of the venue (FOH, Row 8, Balcony ...), each with its **aim** and the
-**mic attached** to it. The aim belongs to the position and picks the calibration file of whichever mic is there:
-0 degrees (at the speaker), 30, 45 or 60 degrees (angled), 90 degrees (pointing up, usual in the seats) or 180. Pick
-the mic from this venue's mics or straight from your **mic locker**: a locker mic joins the venue's mics, with its
-calibration files and sound level. **+ Position** adds one; click a name to rename it (everywhere); `x` removes it
-(everywhere, with its measurements). Positions are one list shared with Room EQ and the venue plan, where each has
-its marker (placed for you; drag it where it really is).
+**Mics:** the venue's mics, each picked from your **mic locker** (**+ Add mic** offers the locker's mics first, or a new
+one), with its input, **At** (the listening point it stands at now, or **Moves (guided)** for a mic the guided pop-up
+walks from point to point), its calibration files, its sound level (Calibrate, or Re-check level when it was
+calibrated in an earlier session) and a live level meter. The locker owns a locker mic's calibration files and sound
+level: its Calibration files button opens it in the locker. A *mic* is the hardware; a *point* is a place in the room,
+made on the Venue plan.
 
-**Mics** (below): the venue's mics, filled in as you attach them, each with its input, the position it is attached to,
-its calibration files (load, clear, or mark that the mic has none), its sound level (Calibrate, or Re-check level when it
-was calibrated in an earlier session) and a live level meter. **+ Add mic** offers your locker's mics first, or a new
-one; the `x` removes one. A *mic* is the hardware; a *position* is a place in the room. One mic can measure many
-positions one after another, and a position keeps its measurements whichever mic took them.
+**Aim:** set by what is measured, not per mic or per point. Close to a speaker the mic points at it (its 0 degree
+file); in the room it points straight up (its 90 degree file, or the nearest angle it has a file for). The guided pop-up
+says how to aim it and which file is used, and its **Aim** picker offers only the angles the mic has files for.
 
-**Calibration files at any angle:** a mic can have files for 0, 30, 45, 60, 90 and 180 degrees. Select them together
-and each goes to its angle by its name (miniDSP's `_90deg`, Sonarworks' `30deg`, "90 deg", "-90" ...; a number inside a
-serial number does not count). The aim of the position picks the file closest to it.
+**Pre-flight** (top of the checklist): each session, **Run the pre-flight** does the loopback check, then the room
+noise, then opens the sound level re-check for the first mic that needs one.
 
 **Checklist** (beside the mics; each turns green when done, amber when done with a warning). When the interface or a
 mic's input changes after this session's checks, the Audio interface step says what changed ("was Scarlett Solo USB,
@@ -139,49 +145,37 @@ which list every input and output on its own (not in stereo pairs) and show the 
 
 The RTA beside the checklist shows every mic in its own colour.
 
-**0 and 90 degree calibration:** many mics come with two files: **0 degrees** for the mic pointed at the speaker,
-and **90 degrees** for the mic pointing up at the ceiling (sound arriving from the side, the usual way to measure in
-the seats). They differ mostly above about 5 kHz. **Load cal file(s)...** takes both at once; each goes to its
-angle by its name (miniDSP's `..._90deg.txt`, "90 deg", "-90" ...), and the file menu can load, clear or swap each
-angle by hand. The **Aim** column (enabled once a mic has both files) picks which one is used: *at speaker* (0
-degrees) or *pointing up* (90 degrees, the default). The **Speakers** step switches to the 0 degree file while it
-measures (point the mic at each speaker) and back afterwards; the measurement records which file it used. A mic
-with one file uses it either way. The Monitoring status line shows the file in use (CAL 0 or 90 degrees). Both
-files are kept in the venue and in the mic locker; venues and lockers from earlier versions keep their one file,
-placed by its name.
+**Calibration files** (in the mic locker): **Add calibration files...** takes one or more files at once (0, 30, 45, 60,
+90, 180 degrees). Each one's angle is read from its name (miniDSP's `_90deg`, Sonarworks' `_0degree`, "90 deg", "-90",
+"on-axis", "vertical" ...; a number inside a serial number does not count). The locker lists only the files added, each
+with an angle picker set to the guess; a name that gives no angle is put at the first free usual angle and flagged
+in amber to check. **Remove** takes a file out.
 
 **Mic locker** (button at the bottom of the navigation pane): the mics you own, saved on this computer (not in a
-venue). Each has a model, serial number, optional name, its 0 and 90 degree calibration files, its last sound level
-calibration and notes. **+ Add mic** adds one; **Save a mic from this venue...** copies a mic from the mic table. On
-Mic setup, the **Locker** button beside a mic's name (it reads **Linked** for a mic from the locker) offers:
+venue): model, serial number, optional name, calibration files, last sound level calibration and notes. **+ Add mic**
+adds one; **Save a mic from this venue...** copies one of the venue's mics. A venue mic picked from the locker stays
+**linked**: a new calibration file or sound level calibration updates the locker too, and opening a venue picks up the
+mic's latest calibration from the locker. The locker is the file `MicLocker.xml` in LiveAlign's user folder.
 
-- **Pick a saved mic** to put it in that row: its name, calibration file and sound level offset come with it. The
-  sound level still needs a quick "Still correct" check each session, since the interface gain may differ.
-- **Save this mic to the locker...** after loading its calibration file and calibrating it, with a name you will
-  recognise (model and serial number).
-- A row that came from the locker stays **linked** (the arrow is tinted): a new calibration file or sound level
-  calibration updates the locker too, and opening a venue picks up the mic's latest calibration from the locker.
-  **Unlink** stops that for the row.
-- **Mic locker...** (beside + Add mic) lists the saved mics, which row of this venue uses each one, and Rename /
-  Remove. The locker is the file `MicLocker.xml` in LiveAlign's user folder.
-
-### Speakers and Tuning steps 1 - 3
+### Speakers and Tuning steps 1, 2 and 4
 
 **Speakers are individual cabinets or outputs.** **Add speaker** offers a *left / right pair* (Main L and Main R,
 the right one sharing the left one's settings), a sub, a front fill, a delay speaker, a centre or another speaker.
 Each has a name, **model**, role, channel, output and **count** (cabinets on that output). **Same as ...** makes a
-speaker share another's filters, level and polarity (and delay, unless a time alignment gives it its own): it needs
-no measurement of its own. A new venue starts with Main L, Main R (same as Main L) and a sub.
+speaker share another's filters, level and polarity (and delay, unless a time alignment gives it its own). It is still
+measured: its own capture checks it against the one it follows (polarity, level, response). A new venue starts with
+Main L, Main R (same as Main L) and a sub. Speakers are edited only on the Speakers page; the tuning steps show the
+selected speaker read-only with **Edit on the Speakers page**.
 
 Set up once per venue, for any speakers and any speaker management system. The **Speakers** page builds the system;
 **Speaker response**, **Crossover** and **Time alignment** are the first three Tuning steps, each its own page in the
 navigation. Each turns green when done and amber while it is still needed.
 
-**How the speakers are measured** (Speakers page): **Close up** (the default) puts the measurement mic about 12 in
-(30 cm) from each speaker's cone, on its axis, so the room hardly shows; the page draws where the mic goes for the
-selected speaker and says which mic. **From one spot** keeps the mic in one place for every speaker (venues from
-earlier versions). Close-up measurements do not carry the speakers' true arrival times, so the time alignment step
-is then needed for the crossover pair.
+**How the speakers are measured:** always close up, the mic about 12 in (30 cm) from each speaker's cone, on its axis,
+so the room hardly shows (the room is Room acoustics' and Room EQ's job). **Measure the speakers** goes through every
+speaker in the guided pop-up, then each further cabinet on a shared output. Close-up measurements do not carry the
+speakers' true arrival times, so the time alignment step is then needed for the crossover pair. A capture that arrives
+much later than the other close-up ones (more than 3 ms) is flagged "was the mic close?" and its polarity is not trusted.
 
 **Is the signal reliable?** Coherence says how much of what the mic hears is the test signal rather than noise or
 late reflections. LiveAlign uses it everywhere in this step:
@@ -216,18 +210,21 @@ late reflections. LiveAlign uses it everywhere in this step:
   its response. From one spot, the first measurement sets the timing and **locks** it, so every later speaker keeps
   its true arrival relative to the first; keep the mic where it is. **Re-time** after moving
   the mic, then measure every speaker again.
-- **Polarity:** every speaker measured on its own has its polarity checked with the measurement, and the list shows it
-  (**+** normal, **-** inverted in red, **?** not clear, an empty ring when not checked). LiveAlign looks at the
-  speaker's phase through its loudest octaves, less what its own roll-offs do to the phase (its minimum phase) and a
-  small timing error: near 0 degrees is normal, near 180 inverted. On a full-range speaker the sign of its impulse
-  must agree; a sub's impulse rings, so for a sub the phase decides on its own. Speakers set **Same as** another
-  (Main R) and the other cabinets on one output (a pair of subs, an array on one amp channel) need a quick
-  **Check polarity of ...** with the mic close to that cabinet: it is compared with the speaker it should match
-  ("opposite to Main L"), which is the firmest test. An inverted speaker turns the Speaker response step amber, the
-  Next button takes you to check it again once rewired, and the tuning report lists polarity for every speaker and
-  any cabinet that needs a look. Measure with the processor's polarity for the output at normal. Speakers with an
-  inverted tweeter in their passive crossover, or a sub measured far from its cone, can read "check": listen, or use
-  a polarity tester.
+- **Polarity:** judged from every speaker's own capture, and shown in the list (**+** normal, **-** inverted in red,
+  **?** check, an empty ring when not checked). On its own, LiveAlign reads the phase through the **woofer's own
+  range** only (up to about 1.2 kHz, so a two-way box's own crossover, whose phase turn is not an inversion, is never
+  read across), less what its roll-offs do to the phase and a small timing error; near 0 degrees is normal. **Inverted
+  needs two tests to agree**: the phase and the sign of the impulse peak. The phase alone pointing to inverted is
+  **check** (amber), since the room, a late arrival or the box's own crossover can turn it. The firmest test is a
+  comparison: a speaker set **Same as** another, and each further cabinet on a shared output, is compared with that one
+  and given as how the two relate: "Main R matches Main L", or "Main R is OPPOSITE to Main L" (red: one of the two is
+  wired the other way round). An inversion turns the Speaker response step amber and the navigation's next step says
+  to fix it and measure again. Measure with the processor's polarity for the output at normal.
+- **Matching speakers:** for each speaker set "Same as" another, the level and response difference between the two
+  close-up captures ("Main R against Main L: level +0.3 dB, response within 1.1 dB"). More than 1 dB apart: check its amp
+  channel and gain.
+- **Signal quality** when nothing plays shows the last capture of the selected speaker; **As found** on the graph shows
+  each speaker's first capture (dashed) with the settings it had then.
 - **Import response...** uses a manufacturer's or another analyser's response instead (FRD, CSV or TXT: frequency,
   dB, optional phase). Without phase, LiveAlign uses minimum phase; enter how much later it arrives than the measured
   speakers with **Arrival**.
@@ -265,10 +262,34 @@ late reflections. LiveAlign uses it everywhere in this step:
   **Extra** few ms so the sound still seems to come from the main (often 5 - 10 ms for delay speakers, 0 for left /
   right). **Apply** puts it in the settings table. If the speaker you picked already arrives later, it offers to swap
   the pair. Levels at the spot are compared too; a stereo pair should match within 1 dB. Up to 8 alignments.
-- **Settings for your processor:** a table of every speaker's channel, output, high-pass, low-pass, delay, polarity
-  and gain, and each time alignment with its spot and whether it has been applied. **Copy settings** puts it on the
-  clipboard as text. **Mark speakers set up** once the settings are in your processor: the step stays ready in later
-  sessions until **Mark as changed** on the Home page.
+- **Settings for your processor** are on the **Processor sheet** (below); each step's page shows how many outputs are
+  entered, with a button to the sheet.
+
+### 3 Level balance
+
+Each speaker on its own, with its processing in place, measured at the listening points (tick them on the left: the
+centre / FOH first, then a seat in each fill's or delay's area), in the guided pop-up. The table shows each speaker's
+level through its own range at each point. LiveAlign then checks:
+
+- **Left against right** at the centre: within 1 dB, otherwise a trim down on the louder side.
+- **A fill or a delay against the mains** at the seat it covers (where it is loudest against them): about level, 0 to
+  -3 dB, otherwise a trim to about -1.5 dB.
+- **The sub against the tops** at the centre, against the Room EQ target's low end: within 1.5 dB, otherwise a sub trim.
+- **Cabinets on one output** (from their close-up captures): within 1.5 dB of the first, otherwise a note to check its
+  amp, wiring and driver.
+
+**Put the trims on the sheet** adds them to each speaker's level on the processor sheet (a trim is kept for a speaker
+set "Same as" another too); **Measure again to check** measures each speaker at the centre once they are entered, and
+the table shows "was" beside the new value. It comes before Time alignment, so the alignment works on level-matched
+speakers.
+
+### Processor sheet
+
+Every setting to enter, output by output, in plain words for any processor or console: high-pass and low-pass
+("Butterworth 12 dB/oct at 91 Hz"), delay (ms, with feet and metres), polarity, gain (the crossover's level plus the
+level-balance trim) and the room EQ bands. Click a row to tick it as entered; a change to its settings unticks it.
+Where a setting differs from how it was found this session, "was ..." shows the old value. **Copy as text**, **Export
+CSV...** and **Export PDF...**. The Speakers step is ready when every output is ticked.
 
 The speakers, their responses and the settings are saved in the venue file.
 
@@ -277,7 +298,7 @@ The speakers, their responses and the settings are saved in the venue file.
 ### Layout
 
 The generator is not shown here: monitoring listens to the programme (the transfer function works on music and
-speech too). The **mic picker** follows the mic whose position is FOH until you pick another one, and the Sound level
+speech too). The **mic picker** follows the mic whose point is FOH until you pick another one, and the Sound level
 box says which mic it is reading.
 
 The **mic picker** at the top chooses which mic the graphs and the sound level show, or the **average of all mics**
@@ -323,15 +344,20 @@ it plays. Choose the output it plays from. `G` toggles it.
 In the **app**, outputs carry only the generator; inputs are never passed through, so the mic cannot feed back into
 the PA. In the **VST3**, audio passes through untouched unless the generator is driving a channel.
 
-### 4 Room EQ
+### 6 Room EQ
 
 Measures the whole system at the listening positions and tunes it toward a target, as a loop: **measure as found,
 suggest EQ, enter it in your processor, measure a check, refine, and mark it as left**. LiveAlign never connects to
 your processor: you type the bands in, and press **I've entered this EQ** so LiveAlign knows what is in it.
 
-- **Listening positions** (left): every position with its aim and what has been measured there (as found, check).
-  **+ Position** adds one, **Remove position** removes it everywhere. **Where the mics are now** says where each mic
-  is; **Next positions** moves them on.
+- **Listening points** (left): every point of the venue plan, ticked to be measured, with what has been measured there
+  (as found, check). Points are made on the Venue plan (**Points on the plan**).
+- **The target follows the system:** from the speaker responses measured earlier (with their processing), LiveAlign
+  works out where the system plays (its -6 dB points) and its roll-off beyond. The target's shape applies inside that
+  range and follows the system's own roll-off outside it, so a system with no sub is not asked for bass it cannot make
+  ("No sub: below 95 Hz the target follows the tops' own low end"). The EQ stays inside the range (greyed out beyond),
+  and the RMS from the target counts only there. When Room acoustics says EQ can only partly help, or to treat the room
+  first, the card says so. Bands in the processor narrower than room EQ should be (from an earlier version) are flagged.
 - **Rounds:** tick the positions to measure. With as many mics as positions they are all measured at once; with fewer
   (two mics for six positions, say) LiveAlign measures in rounds and says which mic to move where. A mic left at a
   position already measured sits the round out.
@@ -352,42 +378,51 @@ latest measurement with the suggested EQ (dashed). The report shows as found bes
 
 ### Guided measuring
 
-With **Guided** switched on (beside Measure on Room EQ and Speaker response; on by default, remembered on this
-computer), Measure opens a pop-up that walks through the points one at a time:
+Every measurement goes through a pop-up that walks through the points one at a time (Speaker response, Level balance,
+Time alignment, Room acoustics, Room EQ and the quick re-check):
 
 - **The venue plan** with the point to measure now pulsing, the mic on it (its number and colour) and how it is aimed:
   a dot for pointing straight up, an arrow toward the speaker for aimed. Points already measured have a tick; the
   rest are outlined. A position that is not on the plan yet is placed for you (on an area of the same name, such as
   FOH, or spread across the seating); drag the pulsing point to where the mic really is and the plan keeps it.
-- **Where each mic goes** in words underneath ("Mic 1 to Row 8, pointing straight up"), with one line on how to set up.
+- **Where each mic goes** in words underneath ("Mic 1 to Row 8, seated ear height, pointing up (90 degree file)"), with
+  one line on how to set up. Anything to do first is the **First:** line in amber: mute the other speakers, enter a delay
+  and unmute both, or the wiring changed since the checks. Pressing Measure confirms it.
+- **Aim:** a picker with the angles the mic has calibration files for, when it has more than one.
 - **Measure:** a three-second count-in ("stand clear of the mic"), then the progress with the time left. **Stop**
   cancels.
 - **Next point** moves on (or **Measure again**; **Try again** if nothing reliable was measured). Room EQ also has
-  **Skip this point**. The dots along the bottom show how far through you are. **Close** or `Esc` leaves at any
-  time; `Space` or `Enter` presses the big button.
+  **Skip this point**. The dots along the bottom show how far through you are. Keys: `Space` measure (again),
+  `Enter` next point, `Esc` stop (then close).
 
 Room EQ measures as many positions at once as there are mics, so with three mics and five positions it is two
-rounds; a mic left at a position already measured sits the round out. Speaker response has one point per speaker
-that needs its own measurement (speakers set "Same as" another are skipped), with the mic about 12 in from the cone
-(or, measuring from one spot, where it stays for every speaker) and the speaker that plays ringed on the plan. After the
-responses come the polarity checks: one point for each speaker set "Same as" another and for each further cabinet on
-a shared output (these can be skipped); a point whose polarity is inverted or unclear shows a red **!** on the plan. Close up,
-a **Mic** picker at the bottom left of the pop-up chooses the mic for that speaker.
+rounds; a mic left at a position already measured sits the round out. Speaker response has one point per speaker (a
+speaker set "Same as" another too), with the mic about 12 in from the cone and the speaker that plays ringed on the
+plan, then one for each further cabinet on a shared output (these can be skipped); a point whose polarity is inverted
+or unclear shows a red **!** on the plan. A **Mic** picker chooses the mic for that speaker. Time alignment has three
+points at the spot where the two speakers meet: each alone, then both together (after the delay is entered).
 
-### 5 Feedback test
+### 7 Feedback test
 
 With a microphone open on stage and the system running, slowly raise the gain. LiveAlign watches the spectrum and
 flags a frequency that stands 12 dB or more above its neighbours (within a third of an octave) for several frames in
 a row, the start of a ring. Pull the gain back, put in the suggested cut (a narrow bell, Q 10) and go again for the
 next ring; tick each one once its cut is in. The rings, with the stage mic they were found on, go in the tuning report.
 
-### 6 Room acoustics
+### 5 Room acoustics
 
-**Measure with a sweep** plays a 4-second exponential sweep twice through the whole system and records every mic at
-the position it is attached to. Dividing what each mic heard by what was sent gives a long, clean impulse response
-(3.5 seconds), long enough for the reverberation of any room (a church's 2 seconds included). Move the mics and sweep
-again for more positions. Without a sweep, the page shows a quick estimate from the Room EQ measurements, whose
-impulse responses only cover the analysis window (about 0.7 s), so a long reverb reads short.
+Before Room EQ, because it decides whether EQ can help. **Measure with a sweep** plays a 4-second exponential sweep
+twice through the whole system at each ticked listening point, in the guided pop-up. Dividing what the mic heard by
+what was sent gives a long, clean impulse response (3.5 seconds), long enough for the reverberation of any room (a
+church's 2 seconds included). The step turns green only from real sweeps; an estimate from the Room EQ pink noise
+(whose impulse responses cover only about 0.7 s, so a long reverb reads short) shows as "Estimate only".
+
+**What it means** is a decision tree, each node with your numbers: 1 measured? 2 usable (enough decay above the
+noise, or sweep louder)? 3 reverberation against the room's use and size (the lows ringing longer than the mids is
+bass build-up: traps, sub placement or a cardioid sub array, since EQ won't shorten decay; long mids and highs:
+absorption on the side and back walls), with the room modes; 4 speech (STI) and late energy (an EDT much shorter than
+the RT points to an echo or a coupled space); 5 the verdict: **Room OK for EQ**, **EQ will help only partly**, or
+**Treat before EQ**. Room EQ shows the verdict when it is one of the last two.
 
 - **RT60** (from T20 or T30, T15 for a short or noisy response) and **EDT** per octave band, 63 Hz - 8 kHz.
 - **C50**, **C80** and **D50** (clarity and definition).
@@ -426,9 +461,10 @@ Two reports, each its own page under **Reports**: pick the chapters (remembered 
 and export the PDF. The cover lists the chapters in bold, numbered; every page is numbered "page x of y"; the venue
 plan has its own landscape page.
 
-- **Tuning report:** summary with the settings **as found** (when the session started) beside **as left**, the venue
-  plan (tuning mics), speakers and processor settings, crossover, time alignment, room EQ, feedback test, room
-  acoustics, mics and measurements.
+- **Tuning report:** in the order of the steps: summary with the settings **as found** (when the session started)
+  beside **as left**, the venue plan (tuning mics), speakers (polarity, crossover, time alignment, the responses as
+  found and as left), level balance (as found and after the trims), room acoustics with its verdict, room EQ,
+  feedback test, the processor sheet, mics and measurements.
 - **Live monitoring report:** sound level of the event against the limit, the monitoring mic and its calibration, the
   venue plan (monitoring mic) and the traces captured during the event.
 

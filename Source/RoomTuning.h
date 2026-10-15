@@ -58,6 +58,7 @@ struct RoomTuning
     std::vector<eq::Band> baseEq;   // the EQ in the processor: what was there as found, then each refinement you entered
     double offsetDb = 0.0, rmsBefore = 0.0, rmsAfter = 0.0;
     juce::StringArray skipped;      // positions left out of the measuring plan
+    juce::StringArray acSkipped;    // positions left out of the room acoustics sweeps
     int use = 1;                    // what the room is for (room acoustics guide): see useNames()
     bool tuned = false;             // the user marked the room as tuned
     juce::String tunedOn;
@@ -94,24 +95,125 @@ struct RoomTuning
         return eqGroup >= 0 && eqGroup < (int) sys.sources.size() ? sys.sources[(size_t) eqGroup].name : juce::String ("the whole system");
     }
 
-    // EQ range: from the lowest of the group's high-passes (or 30 Hz) to the highest of its low-passes (or 16 kHz),
-    // unless set.
+    // What the system can play, from the speaker responses measured earlier (with their processing), or from the
+    // crossover filters when there are none: the group's speakers added together, its -6 dB points, and its roll-off
+    // beyond them. The target follows that roll-off (a system with no sub is not asked for bass it cannot make), and
+    // the EQ stays inside it. Call before using the target or the range (after the speakers or the group change).
+    template <class System>
+    void updateSystem (const System& sys)
+    {
+        const auto g = grid();
+        sysShape.assign (g.size(), 0.0);
+        std::vector<double> power (g.size(), 0.0);
+        bool any = false, measured = false;
+        // the group, with what follows it ("Same as") and, for the whole system, every speaker
+        std::vector<int> who;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            const int m = sys.master (i);
+            for (int k : eqMembers (sys)) if (k == m) { who.push_back (i); break; }
+        }
+        for (int i : who)
+        {
+            const auto& s = sys.sources[(size_t) i];
+            const int src = s.hasResponse() ? i : sys.master (i);
+            const bool has = src >= 0 && src < (int) sys.sources.size() && sys.sources[(size_t) src].hasResponse();
+            // the level each plays at: its close-up capture's own level is not the level in the room, so each one is
+            // normalised to its own passband and only its shape (its roll-offs) is used
+            std::vector<double> db (g.size(), NAN);
+            for (size_t k = 0; k < g.size(); ++k)
+            {
+                const double filt = 20.0 * std::log10 (std::abs (s.proc.at (g[k])) + 1e-12) - s.proc.gainDb;
+                double v = filt;
+                if (has)
+                {
+                    const auto& t = sys.sources[(size_t) src].response;
+                    if (g[k] < t.freq.front() || g[k] > t.freq.back()) { v = NAN; }
+                    else v += t.dbAt (g[k]);
+                }
+                db[k] = v;
+            }
+            // to its own passband (smoothed 1/3 octave, the median of its top 10 dB)
+            const auto sm = eq::smooth (g, db, 1.0 / 3.0);
+            double peak = -1e9;
+            for (double v : sm) if (std::isfinite (v)) peak = std::max (peak, v);
+            if (peak < -1e8) continue;
+            std::vector<double> top;
+            for (double v : sm) if (std::isfinite (v) && v >= peak - 10.0) top.push_back (v);
+            const double ref = eq::median (top) + (s.role == 1 ? 0.0 : 0.0);
+            for (size_t k = 0; k < g.size(); ++k)
+                if (std::isfinite (sm[k])) power[k] += std::pow (10.0, (sm[k] - ref) / 10.0);
+            any = true;
+            measured = measured || has;
+        }
+        sysMeasured = measured;
+        sysHasShape = any;
+        sysLo = 30.0;
+        sysHi = 16000.0;
+        sysNote.clear();
+        if (! any) return;
+        std::vector<double> S (g.size(), -120.0);
+        for (size_t k = 0; k < g.size(); ++k) if (power[k] > 0.0) S[k] = 10.0 * std::log10 (power[k]);
+        // 0 dB = its level through the mids
+        std::vector<double> mids;
+        for (size_t k = 0; k < g.size(); ++k) if (g[k] >= 300.0 && g[k] <= 3000.0) mids.push_back (S[k]);
+        const double m0 = eq::median (mids);
+        for (auto& v : S) v -= m0;
+        // the -6 dB points, out from 1 kHz
+        size_t k1 = 0;
+        while (k1 + 1 < g.size() && g[k1] < 1000.0) ++k1;
+        size_t lo = k1, hi = k1;
+        while (lo > 0 && S[lo - 1] >= -6.0) --lo;
+        while (hi + 1 < g.size() && S[hi + 1] >= -6.0) ++hi;
+        sysLo = std::max (25.0, g[lo]);
+        sysHi = std::min (18000.0, g[hi]);
+        for (size_t k = 0; k < g.size(); ++k)
+        {
+            if (g[k] < sysLo) sysShape[k] = std::min (0.0, S[k] - S[lo]);
+            else if (g[k] > sysHi) sysShape[k] = std::min (0.0, S[k] - S[hi]);
+        }
+        if (! sys.hasSub() && sysLo > 45.0)
+        {
+            juce::String hp;
+            for (int i : who) if (sys.sources[(size_t) i].proc.hp.active()) { hp = " (" + juce::String (juce::roundToInt (sys.sources[(size_t) i].proc.hp.freq)) + " Hz high-pass)"; break; }
+            sysNote = "No sub: below " + juce::String (juce::roundToInt (sysLo)) + " Hz the target follows the tops' own low end" + hp + ".";
+        }
+        else if (sysLo > 45.0)
+            sysNote = "Below " + juce::String (juce::roundToInt (sysLo)) + " Hz the target follows " + (eqGroup == kMains ? juce::String ("the mains'") : juce::String ("the system's")) + " own roll-off.";
+    }
+
+    // EQ range: where the system plays (its -6 dB points), unless set by hand. Without any speaker data: from the
+    // group's crossover filters (or 30 Hz to 16 kHz).
     template <class System>
     void eqRange (const System& sys, double& lo, double& hi) const
     {
-        lo = 1e9;
-        hi = 0.0;
-        for (int i : eqMembers (sys))
+        if (sysHasShape)
         {
-            const auto& pr = sys.sources[(size_t) i].proc;
-            lo = std::min (lo, pr.hp.active() ? pr.hp.freq * 1.2 : 30.0);
-            hi = std::max (hi, pr.lp.active() ? pr.lp.freq / 1.2 : 16000.0);
+            lo = sysLo;
+            hi = sysHi;
         }
-        if (lo > 1e8) lo = 30.0;
-        if (hi <= 0.0) hi = 16000.0;
+        else
+        {
+            lo = 1e9;
+            hi = 0.0;
+            for (int i : eqMembers (sys))
+            {
+                const auto& pr = sys.sources[(size_t) i].proc;
+                lo = std::min (lo, pr.hp.active() ? pr.hp.freq * 1.2 : 30.0);
+                hi = std::max (hi, pr.lp.active() ? pr.lp.freq / 1.2 : 16000.0);
+            }
+            if (lo > 1e8) lo = 30.0;
+            if (hi <= 0.0) hi = 16000.0;
+        }
         if (fLo > 0.0) lo = fLo;
         if (fHi > 0.0) hi = fHi;
     }
+
+    // From updateSystem(): the system's roll-off below and above its range (0 inside), on grid().
+    std::vector<double> sysShape;
+    double sysLo = 30.0, sysHi = 16000.0;
+    bool sysHasShape = false, sysMeasured = false;
+    juce::String sysNote;
 
     // What the room is used for, with typical mid-frequency reverberation times and the speech intelligibility to aim for.
     static juce::StringArray useNames() { return { "Speech, lectures", "Contemporary worship, amplified music", "Traditional worship, choir", "Concerts, classical music" }; }
@@ -120,6 +222,34 @@ struct RoomTuning
         static const double lo[] = { 0.6, 0.8, 1.3, 1.6 }, hi[] = { 1.0, 1.3, 2.2, 2.2 }, sti[] = { 0.6, 0.5, 0.45, 0.4 };
         u = juce::jlimit (0, 3, u);
         rtLo = lo[u]; rtHi = hi[u]; stiMin = sti[u];
+    }
+
+    // The decision tree's answer, from the sweeps (or the estimate from the Room EQ measurements): 0 not measured,
+    // 1 room OK for EQ, 2 EQ will help only partly, 3 treat the room before EQ. `why` says it in a sentence.
+    int acousticsVerdict (juce::String& why) const
+    {
+        if (acousticsCount() == 0) { why = "Not measured yet."; return 0; }
+        const auto a = acousticsAverage();
+        double rtLo, rtHi, stiMin;
+        useTargets (use, rtLo, rtHi, stiMin);
+        const double rt = a.rtMid(), sti = a.sti;
+        const double low = 0.5 * ((std::isfinite (a.band[0].rt()) ? a.band[0].rt() : rt) + (std::isfinite (a.band[1].rt()) ? a.band[1].rt() : rt));
+        const double bassRatio = std::isfinite (rt) && rt > 0.05 ? low / rt : 1.0;
+        if (std::isfinite (rt) && (rt > rtHi * 1.5 || (std::isfinite (sti) && sti < stiMin - 0.1)))
+        {
+            why = "Treat before EQ: the room rings longer than EQ can fix (" + juce::String (rt, 2) + " s against " + juce::String (rtLo, 1) + " - "
+                  + juce::String (rtHi, 1) + " s for this use). EQ can't shorten reverberation.";
+            return 3;
+        }
+        if ((std::isfinite (rt) && rt > rtHi * 1.15) || bassRatio > 1.3)
+        {
+            why = bassRatio > 1.3 ? "EQ will help only partly: the low end rings " + juce::String (bassRatio, 1) + " times longer than the mids (bass build-up). "
+                                    "EQ can tame the level, not the decay."
+                                  : "EQ will help only partly: the room is livelier than usual for this use (" + juce::String (rt, 2) + " s).";
+            return 2;
+        }
+        why = "Room OK for EQ" + (std::isfinite (rt) ? " (" + juce::String (rt, 2) + " s, " + (std::isfinite (sti) ? "STI " + juce::String (sti, 2) : juce::String ("speech not rated")) + ")." : juce::String ("."));
+        return 1;
     }
 
     static std::vector<double> grid()
@@ -292,11 +422,17 @@ struct RoomTuning
         return hi >= lo ? hi - lo : NAN;
     }
 
+    // The target: its tonal shape where the system plays, and the system's own roll-off beyond (see updateSystem).
     std::vector<double> targetCurve() const
     {
         const auto g = grid();
         std::vector<double> t (g.size());
-        for (size_t i = 0; i < g.size(); ++i) t[i] = targets::db (target, g[i]);
+        const bool shaped = sysHasShape && sysShape.size() == g.size();
+        for (size_t i = 0; i < g.size(); ++i)
+        {
+            const double f = shaped ? juce::jlimit (sysLo, sysHi, g[i]) : g[i];
+            t[i] = targets::db (target, f) + (shaped ? sysShape[i] : 0.0);
+        }
         return t;
     }
 
@@ -330,6 +466,7 @@ struct RoomTuning
         e->setAttribute ("tuned", tuned);
         e->setAttribute ("tunedOn", tunedOn);
         e->setAttribute ("skipped", skipped.joinIntoString ("|"));
+        e->setAttribute ("acSkipped", acSkipped.joinIntoString ("|"));
         e->setAttribute ("use", use);
         for (const auto& b : suggested)
         {
@@ -393,6 +530,8 @@ struct RoomTuning
         tunedOn = e->getStringAttribute ("tunedOn");
         skipped.addTokens (e->getStringAttribute ("skipped"), "|", {});
         skipped.removeEmptyStrings();
+        acSkipped.addTokens (e->getStringAttribute ("acSkipped"), "|", {});
+        acSkipped.removeEmptyStrings();
         use = juce::jlimit (0, 3, e->getIntAttribute ("use", 1));
         for (const auto* c : e->getChildWithTagNameIterator ("Suggested"))
             suggested.push_back ({ c->getDoubleAttribute ("freq"), c->getDoubleAttribute ("gain"), c->getDoubleAttribute ("q", 1.0) });

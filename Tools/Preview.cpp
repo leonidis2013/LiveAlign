@@ -269,9 +269,9 @@ public:
                     };
                     std::printf ("polarity: Main L %s | Sub %s\n", pol (0, 0).toRawUTF8(), pol (2, 0).toRawUTF8());
                     shot ("response");
-                    // Main R (same as Main L) wired the wrong way round: the polarity check finds it
+                    // Main R (same as Main L) wired the wrong way round: its own capture finds it against Main L
                     simRightInverted = true;
-                    page.checkPolarity (1, 0);
+                    page.measure (1);
                     next (30);
                 }
                 break;
@@ -283,8 +283,8 @@ public:
                                  pc ? la::polarity::verdictName (pc->own) : "-", pc ? pc->phaseDeg : 0.0, pc ? la::polarity::verdictName (pc->relative) : "-",
                                  page.statusText().toRawUTF8());
                     shot ("polarity-inverted");
-                    simRightInverted = false;   // fixed: check again
-                    page.checkPolarity (1, 0);
+                    simRightInverted = false;   // fixed: measure it again
+                    page.measure (1);
                     next (31);
                 }
                 break;
@@ -294,8 +294,9 @@ public:
                     const auto* pc = proc.system.sources[1].polarityOf (0);
                     std::printf ("polarity check Main R (rewired): %s own=%s rel=%s\n", pc ? la::polarity::verdictName (pc->verdict) : "none",
                                  pc ? la::polarity::verdictName (pc->own) : "-", pc ? la::polarity::verdictName (pc->relative) : "-");
+                    shot ("response-pair");
                     subGain = -subGain;   // the sub wired the wrong way round
-                    page.checkPolarity (2, 0);
+                    page.measure (2);
                     next (32);
                 }
                 break;
@@ -307,7 +308,7 @@ public:
                     std::printf ("polarity check Sub (%s): %s excess=%.0f\n", stage == 32 ? "wired inverted" : "rewired",
                                  pc ? la::polarity::verdictName (pc->verdict) : "none", pc ? pc->phaseDeg : 0.0);
                     subGain = -subGain;
-                    if (stage == 32) { page.checkPolarity (2, 0); next (33); }
+                    if (stage == 32) { page.measure (2); next (33); }
                     else
                     {
                         subGain = -subGain;   // back as it was for the crossover
@@ -338,19 +339,62 @@ public:
                 if (after (10))
                 {
                     shot ("crossover");
-                    // a front fill on output 4; then line the sub up with the main where they meet (FOH)
+                    // a front fill on output 4; then the level balance at FOH and the centre, before the time alignment
                     la::SpeakerSource fill;
                     fill.name = "Front fill";
                     fill.role = (int) la::SpeakerRole::Fill;
                     fill.output = 4;
                     proc.system.sources.push_back (fill);
-                    editor->showPage ((int) P::Align);
                     page.refreshChoices();
-                    page.newAlignment();
-                    page.measureAlignment (0);
-                    next (5);
+                    proc.level.points = { "FOH", "Centre" };
+                    editor->showPage ((int) P::Level);
+                    levelTask = 0;
+                    editor->levelPageForPreview().measureNow (0, 0, false);
+                    next (60);
                 }
                 break;
+            case 60:   // each speaker alone at each point
+            case 61:   // and again at the centre after the trims
+            {
+                auto& lp = editor->levelPageForPreview();
+                if (stageTick + 5 < ticks && (! lp.busy() || timeout))
+                {
+                    const int n = (int) proc.system.sources.size();
+                    const int total = stage == 60 ? 2 * n : n;
+                    if (after (6) || stageTick + 6 < ticks)
+                    {
+                        if (++levelTask < total)
+                        {
+                            lp.measureNow (stage == 60 ? levelTask / n : 0, levelTask % n, stage == 61);
+                            stageTick = ticks;
+                            break;
+                        }
+                        if (stage == 60)
+                        {
+                            for (const auto& t : lp.trims (false)) std::printf ("level: %s (trim %.1f dB on %d%s)\n", t.why.toRawUTF8(), t.db, t.spk, t.attention ? ", attention" : "");
+                            shot ("level");
+                            lp.applyNow();
+                            // the sub's trim goes in the simulated processor too
+                            subGain *= std::pow (10.0, proc.system.sources[2].trimDb / 20.0);
+                            levelTask = 0;
+                            lp.measureNow (0, 0, true);
+                            next (61);
+                        }
+                        else
+                        {
+                            for (const auto& t : lp.trims (true)) std::printf ("level check: %s\n", t.why.toRawUTF8());
+                            std::printf ("level done=%d\n", (int) lp.done());
+                            shot ("level-checked");
+                            editor->showPage ((int) P::Align);
+                            page.refreshChoices();
+                            page.newAlignment();
+                            page.measureAlignment (0);
+                            next (5);
+                        }
+                    }
+                }
+                break;
+            }
             case 5:
                 if (stageTick + 5 < ticks && (! page.busy() || timeout))
                 {
@@ -412,9 +456,11 @@ public:
                                  a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs), page.statusText().toRawUTF8());
                     consoleOut = -1;
                     page.setAlignmentSignal (0);
-                    proc.settings.theme = 1;
-                    editor->showPage ((int) P::Response);
-                    next (8);
+                    // room acoustics before Room EQ: a sweep at FOH
+                    editor->showPage ((int) P::Acoustics);
+                    proc.setMicPosition (0, "FOH");
+                    editor->acousticsPageForPreview().startSweep();
+                    next (40);
                 }
                 break;
             case 8:
@@ -513,13 +559,16 @@ public:
                 }
                 break;
             case 14:
-                if (after (5)) { shot ("feedback"); editor->feedbackPageForPreview().stopListening(); proc.feedback.rings.front().applied = true; editor->showPage ((int) P::Acoustics); }
-                if (after (12))
+                if (after (5)) { shot ("feedback"); editor->feedbackPageForPreview().stopListening(); proc.feedback.rings.front().applied = true; }
+                if (after (8))
                 {
-                    const auto a = proc.room.acousticsAverage();
-                    std::printf ("acoustics (Room EQ estimate): positions=%d RT %.2f s\n", proc.room.acousticsCount(), a.rtMid());
-                    editor->acousticsPageForPreview().doNext();   // measure with a sweep
-                    next (40);
+                    // venue plan: a named position, a note, curved seating and the monitoring layer
+                    proc.plan.items.push_back ({ la::PlanItem::Marker, "Row 3 (alignment)", 0.36f, 0.42f, 0.0f, 0.0f });
+                    proc.plan.items.push_back ({ la::PlanItem::Note, "Sub under stage lip", 0.82f, 0.12f, 0.0f, 0.0f });
+                    proc.plan.items.push_back ({ la::PlanItem::Area, "Balcony", 0.86f, 0.62f, 0.2f, 0.3f, la::PlanItem::Curved });
+                    proc.plan.edited = true;
+                    editor->showPage ((int) P::Plan);
+                    next (15);
                 }
                 break;
             case 40:
@@ -540,14 +589,13 @@ public:
                                  a.mid (&la::acoustics::Band::edt), a.mid (&la::acoustics::Band::c80), a.mid (&la::acoustics::Band::c50), a.sti, la::acoustics::stiRating (a.sti),
                                  (int) proc.room.modes().size());
                     shot ("acoustics");
-                    // venue plan: a named position, a note, curved seating and the monitoring layer
-                    proc.plan.items.push_back ({ la::PlanItem::Marker, "Row 3 (alignment)", 0.36f, 0.42f, 0.0f, 0.0f });
-                    proc.plan.items.push_back ({ la::PlanItem::Note, "Sub under stage lip", 0.82f, 0.12f, 0.0f, 0.0f });
-                    proc.plan.items.push_back ({ la::PlanItem::Area, "Balcony", 0.86f, 0.62f, 0.2f, 0.3f, la::PlanItem::Curved });
-                    proc.plan.edited = true;
-                    editor->showPage ((int) P::Plan);
-                    next (15);
+                    editor->openGuided (editor->acousticsPageForPreview());
+                    next (42);
                 }
+                break;
+            case 42:
+                if (after (6)) { shot ("guided-acoustics"); editor->guided()->closeNow(); }
+                if (after (10)) { proc.settings.theme = 1; editor->showPage ((int) P::Response); next (8); }
                 break;
             case 15:
                 if (after (8)) { shot ("plan"); editor->planPageForPreview().setLayer (1); }
@@ -577,6 +625,12 @@ public:
                     t.created = "12 Oct 2026 19:40";
                     for (double f = 20.0; f <= 20000.0; f *= 1.05) { t.data.freq.push_back (f); t.data.db.push_back (3.0 * std::sin (std::log (f) * 2.0) - (f > 8000.0 ? 4.0 : 0.0)); }
                     proc.traces.add (t);
+                    // the processor sheet, one output ticked as entered
+                    proc.system.sources[0].sheetEntered = la::sheet::signature (proc.system, 0);
+                    editor->showPage ((int) P::Sheet);
+                    shot ("sheet");
+                    editor->sheetPageForPreview().writePdf (dir.getChildFile ("sheet.pdf"));
+                    std::printf ("sheet: %d bytes, csv:\n%s", (int) dir.getChildFile ("sheet.pdf").getSize(), la::sheet::csv (proc.system).toRawUTF8());
                     editor->showPage ((int) P::TuningReport);
                 }
                 if (after (10))
@@ -593,6 +647,9 @@ public:
                     m.cals.name[0] = "7012345.txt";
                     m.cals.table[0].freq = { 20, 1000, 20000 };
                     m.cals.table[0].db = { 1, 0, -1 };
+                    m.cals.guessed[0] = true;   // the name gave no angle
+                    m.cals.name[1] = "7012345_90deg.txt";
+                    m.cals.table[1] = m.cals.table[0];
                     m.hasSpl = true;
                     m.splOffset = 111.25f;
                     m.splDate = "12 Oct 2026";
@@ -602,7 +659,32 @@ public:
                     proc.locker.load();
                     editor->showPage ((int) P::Home);
                 }
-                if (after (20)) { shot ("home"); next (17); }
+                if (after (20))
+                {
+                    shot ("home");
+                    // the quick re-check of the tuned system, point by point
+                    auto& rc = editor->recheckForPreview();
+                    rc.begin();
+                    proc.system.sources[2].proc.invert = ! proc.system.sources[2].proc.invert;   // someone flipped the sub's polarity
+                    rc.guidedStart();
+                    next (80);
+                }
+                break;
+            case 80:
+            {
+                auto& rc = editor->recheckForPreview();
+                if (stageTick + 5 < ticks && (! rc.guidedBusy() || timeout))
+                {
+                    if (rc.current() >= 0 && ticks - stageTick < 20000) { rc.guidedStart(); stageTick = ticks; break; }
+                    proc.system.sources[2].proc.invert = ! proc.system.sources[2].proc.invert;
+                    for (const auto& l : proc.recheck.lines) std::printf ("recheck [%d]: %s\n", l.level, l.text.toRawUTF8());
+                    editor->showPage ((int) P::Home);
+                    next (81);
+                }
+                break;
+            }
+            case 81:
+                if (after (10)) { shot ("home-recheck"); next (17); }
                 break;
             case 17:
             {
@@ -805,7 +887,7 @@ public:
     std::vector<Biquad> system;
     std::vector<MicPath> paths;
     std::vector<Biquad> top, sub;
-    int stage = 0, stageTick = 0, lastOut = 0;
+    int stage = 0, stageTick = 0, lastOut = 0, levelTask = 0;
     std::vector<Biquad> fillChain;
     std::vector<float> lineTop, lineSub, lineFill;
     std::array<Reverb, 3> reverbs;

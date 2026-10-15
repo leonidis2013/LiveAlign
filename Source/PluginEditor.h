@@ -14,6 +14,9 @@
 #include "UI/GuidedMeasure.h"
 #include "UI/FeedbackPage.h"
 #include "UI/AcousticsPage.h"
+#include "UI/LevelPage.h"
+#include "UI/SheetPage.h"
+#include "UI/RecheckGuide.h"
 #include "UI/MonitorMicPage.h"
 #include "UI/ReportPage.h"
 #include "UI/MicLockerPanel.h"
@@ -40,6 +43,11 @@ public:
     la::ui::RoomPage& roomPageForPreview() { return *roomPage; }
     la::ui::FeedbackPage& feedbackPageForPreview() { return *feedbackPage; }
     la::ui::AcousticsPage& acousticsPageForPreview() { return *acousticsPage; }
+    la::ui::LevelPage& levelPageForPreview() { return *levelPage; }
+    la::ui::SheetPage& sheetPageForPreview() { return *sheetPage; }
+    la::ui::MicSetupPage& micPageForPreview() { return *micPage; }
+    la::ui::MicLockerPage& lockerPageForPreview() { return *lockerPage; }
+    la::ui::RecheckGuide& recheckForPreview() { return *recheck; }
     void exportReportTo (bool monitoring, const juce::File& f);   // without the file chooser (local screenshot tool)
     void updateStatuses();
 
@@ -96,12 +104,16 @@ private:
     std::unique_ptr<la::ui::MicLockerPage> lockerPage;
     std::unique_ptr<la::ui::FeedbackPage> feedbackPage;
     std::unique_ptr<la::ui::AcousticsPage> acousticsPage;
+    std::unique_ptr<la::ui::LevelPage> levelPage;
+    std::unique_ptr<la::ui::SheetPage> sheetPage;
+    std::unique_ptr<la::ui::RecheckGuide> recheck;
+    void exportSheet (bool csv);
     std::unique_ptr<la::ui::MonitorMicPage> monitorMicPage;
     std::unique_ptr<la::ui::ReportPage> tuningReportPage, monitorReportPage;
     std::unique_ptr<la::ui::GuidedOverlay> guidedOverlay;   // the guided measuring pop-up, while it is open
 public:
     void openGuided (la::ui::GuidedSource& source);
-    static std::vector<int> anglesFor (const juce::Array<juce::File>& files, int angle);
+    static std::vector<int> anglesFor (const juce::Array<juce::File>& files, int angle, const la::MicCalSet* existing = nullptr, std::vector<bool>* guessed = nullptr);
     la::ui::GuidedOverlay* guided() { return guidedOverlay.get(); }   // for the preview
 private:
     static constexpr int kMonitorMic = -2;   // the monitoring mic, for the calibration pop-ups
@@ -123,9 +135,7 @@ private:
     la::ui::GeneratorStrip generator;
 
     juce::TextButton runButton, resetButton { "RESET AVG" };
-    juce::TextButton nextButton;            // header: the one next action on this page
-    std::function<void()> nextAction;
-    void refreshNext();
+    void refreshNext();                     // the next step: marked in the navigation and on Home
     void offerRecovery();
     juce::TooltipWindow tooltip { this, 600 };
 

@@ -170,17 +170,14 @@ void LiveAlignProcessor::swapCalibrationAngle (int mic)
 
 int LiveAlignProcessor::effectiveAim (int mic) const
 {
-    if (aimOverrideValue >= 0) return aimOverrideValue;
-    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
-    const int a = positionAimOf (mics.position[(size_t) mic]);
-    return a >= 0 ? a : mics.aim[(size_t) mic];
+    juce::ignoreUnused (mic);
+    return aimOverrideValue >= 0 ? aimOverrideValue : roomAim;
 }
 
 int LiveAlignProcessor::ownAim (int mic) const
 {
-    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
-    const int a = positionAimOf (mics.position[(size_t) mic]);
-    return a >= 0 ? a : mics.aim[(size_t) mic];
+    juce::ignoreUnused (mic);
+    return roomAim;
 }
 
 int LiveAlignProcessor::positionAimOf (const juce::String& position) const
@@ -199,12 +196,12 @@ void LiveAlignProcessor::setPositionAim (const juce::String& position, int aim)
         if (mics.position[(size_t) m] == position) { mics.aim[(size_t) m] = aim; applyCalibration (m); }
 }
 
+// The aim of the mics in the room (pointing up, or an angle): one setting for every room measurement.
 void LiveAlignProcessor::setMicAim (int mic, int aim)
 {
-    mic = juce::jlimit (0, la::kMaxMics - 1, mic);
-    mics.aim[(size_t) mic] = juce::jlimit (0, la::kCalSlots - 1, aim);
-    if (mics.position[(size_t) mic].isNotEmpty()) setPositionAim (mics.position[(size_t) mic], aim);
-    applyCalibration (mic);
+    juce::ignoreUnused (mic);
+    roomAim = juce::jlimit (0, la::kCalSlots - 1, aim);
+    for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
 }
 
 void LiveAlignProcessor::setMicPosition (int mic, const juce::String& position)
@@ -220,7 +217,7 @@ void LiveAlignProcessor::setMicPosition (int mic, const juce::String& position)
 
 void LiveAlignProcessor::setAimOverride (int aim)
 {
-    aimOverrideValue = aim < 0 ? -1 : (aim == 0 ? 0 : 1);
+    aimOverrideValue = aim < 0 ? -1 : juce::jlimit (0, la::kCalSlots - 1, aim);
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
 }
 
@@ -630,6 +627,8 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::sessionBody() const
     checks.save (*b);
     traces.save (*b);
     room.save (*b);
+    level.save (*b);
+    recheck.save (*b);
     feedback.save (*b);
     asFound.save (*b);
     splLog.save (*b);
@@ -655,6 +654,8 @@ void LiveAlignProcessor::loadSessionBody (const juce::XmlElement* b)
     checks = {};
     traces.clear();
     room.load (b);
+    level.load (b);
+    recheck.load (b);
     feedback.load (b);
     asFound.load (b);
     splLog.load (b);
@@ -741,6 +742,10 @@ void LiveAlignProcessor::resetVenue()
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     positions = { "FOH", "Centre", "Rear", "Balcony" };
     positionAim.clear();
+    roomAim = la::Cal90;
+    speakerAim = la::Cal0;
+    level = {};
+    recheck = {};
     speakers = {};
     system = la::SpeakerSystem::defaults();
     plan = la::VenuePlan::defaults();
@@ -793,11 +798,12 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     mics.save (*x);
     saveMicCalibrations (*x);
     auto* pos = x->createNewChildElement ("Positions");
+    pos->setAttribute ("roomAim", la::calSlotDegrees (roomAim));
+    pos->setAttribute ("speakerAim", la::calSlotDegrees (speakerAim));
     for (const auto& p : positions)
     {
         auto* e = pos->createNewChildElement ("Position");
         e->setAttribute ("name", p);
-        if (positionAimOf (p) >= 0) e->setAttribute ("aim", la::calSlotDegrees (positionAimOf (p)));
     }
     speakers.save (*x);
     system.save (*x);
@@ -843,11 +849,11 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     if (const auto* pos = x.getChildByName ("Positions"))
     {
         positions.clear();
+        // earlier versions kept an aim per position: the aim is now set by what is measured (room points up)
+        roomAim = la::calSlotFromDegrees (pos->getIntAttribute ("roomAim", 90));
+        speakerAim = la::calSlotFromDegrees (pos->getIntAttribute ("speakerAim", 0));
         for (const auto* p : pos->getChildWithTagNameIterator ("Position"))
-        {
             positions.add (p->getStringAttribute ("name"));
-            if (p->hasAttribute ("aim")) positionAim[p->getStringAttribute ("name")] = la::calSlotFromDegrees (p->getIntAttribute ("aim"));
-        }
         for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     }
     speakers.load (x);
@@ -930,6 +936,7 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     const auto keepCals = cals;
     const auto keepPositions = positions;
     const auto keepAim = positionAim;
+    const int keepRoomAim = roomAim, keepSpeakerAim = speakerAim;
     const auto keepPlan = plan;
     auto keepMonitor = monitorMic;
     if (monitorModeOn) { keepMonitor.delayMs = settings.micDelayMs[0].load(); keepMonitor.splOffset = settings.micSplOffset[0].load(); }
@@ -943,6 +950,8 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     positions = keepPositions;
     positionAim = keepAim;
+    roomAim = keepRoomAim;
+    speakerAim = keepSpeakerAim;
     plan = keepPlan;
     for (auto& s : keepSystem.sources)
     {
@@ -954,6 +963,11 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
         s.proc.delayMs = 0.0;
         s.proc.eq.clear();
         s.nearField = false;
+        s.trimDb = 0.0;
+        s.sheetEntered.clear();
+        s.asFound = {};
+        s.asFoundWhen.clear();
+        s.polarity.clear();
     }
     keepSystem.alignments.clear();
     keepSystem.lastResult = {};
@@ -1033,7 +1047,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
     {
         if (! x->hasTagName ("LiveAlign")) return;
         settings.theme = juce::jlimit (0, 1, x->getIntAttribute ("theme", 0));
-        settings.currentTab = juce::jlimit (0, 14, x->getIntAttribute ("currentTab", 0));
+        settings.currentTab = juce::jlimit (0, 16, x->getIntAttribute ("currentTab", 0));
         if (const auto* project = x->getChildByName ("LiveAlignProject"))
         {
             loadProjectXml (*project);

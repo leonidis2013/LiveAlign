@@ -3,8 +3,8 @@
 
 #pragma once
 // Mic locker page: the measurement mics you own, kept on this computer. Each has a name, model, serial number,
-// its 0 and 90 degree calibration files and its last sound level calibration. Mics are put into a venue from the
-// Locker button on a Mic setup row.
+// its calibration files (one per angle, each file's angle read from its name) and its last sound level calibration.
+// The locker owns these: the Mics page only picks mics from it.
 #include <functional>
 #include "Theme.h"
 #include "../PluginProcessor.h"
@@ -50,16 +50,28 @@ public:
         notesEditor.setMultiLine (true);
         notesEditor.setReturnKeyStartsNewLine (true);
 
-        for (int a = 0; a < kCalSlots; ++a)
+        // one row per file loaded: its name, the angle it is for (guessed from the name, changeable) and Remove
+        for (int k = 0; k < kCalSlots; ++k)
         {
-            loadButtons[a].setButtonText ("Load " + calAngleName (a) + " file...");
-            loadButtons[a].onClick = [this, a] { if (auto* m = current(); m != nullptr && onLoadCal) onLoadCal (m->id, a); };
-            clearButtons[a].onClick = [this, a] { if (auto* m = current()) { m->cals.clear (a); saveAndRefresh(); } };
-            addAndMakeVisible (loadButtons[a]);
-            addAndMakeVisible (clearButtons[a]);
+            for (int a : calSlotsInOrder()) angleBoxes[k].addItem (calAngleName (a) + "  " + calAimText (a).upToFirstOccurrenceOf (" (", false, false), a + 1);
+            angleBoxes[k].setTooltip ("The angle this file is for. Guessed from the file's name; change it if the guess is wrong.");
+            angleBoxes[k].onChange = [this, k]
+            {
+                auto* m = current();
+                if (m == nullptr || rowSlot[k] < 0) return;
+                const int to = angleBoxes[k].getSelectedId() - 1;
+                if (to < 0 || to == rowSlot[k]) return;
+                m->cals.moveTo (rowSlot[k], to);
+                saveAndRefresh();
+            };
+            removeButtons[k].setButtonText ("Remove");
+            removeButtons[k].onClick = [this, k] { if (auto* m = current(); m != nullptr && rowSlot[k] >= 0) { m->cals.clear (rowSlot[k]); saveAndRefresh(); } };
+            addChildComponent (angleBoxes[k]);
+            addChildComponent (removeButtons[k]);
         }
         loadBothButton.onClick = [this] { if (auto* m = current(); m != nullptr && onLoadCal) onLoadCal (m->id, -1); };
-        loadBothButton.setTooltip ("Select every angle's file together (0, 30, 90 degrees ...); each goes to its angle by its name");
+        loadBothButton.setTooltip ("Pick one or more calibration files (0, 30, 90 degrees ...). Each one's angle is taken from its name; "
+                                   "check it in the list and change it if needed.");
         addAndMakeVisible (loadBothButton);
         clearSplButton.onClick = [this] { if (auto* m = current()) { m->hasSpl = false; m->splDate.clear(); saveAndRefresh(); } };
         clearSplButton.setTooltip ("Forget the sound level calibration (calibrate again on Mic setup)");
@@ -78,7 +90,18 @@ public:
         for (auto* c : std::initializer_list<juce::Component*> { &nameEditor, &modelEditor, &serialEditor, &notesEditor, &loadBothButton,
                                                                  &clearSplButton, &removeButton })
             c->setVisible (m != nullptr);
-        for (int a = 0; a < kCalSlots; ++a) { loadButtons[a].setVisible (m != nullptr); clearButtons[a].setVisible (m != nullptr); }
+        for (int k = 0; k < kCalSlots; ++k) rowSlot[k] = -1;
+        int rows = 0;
+        if (m != nullptr)
+            for (int a : calSlotsInOrder())
+                if (m->cals.has (a)) rowSlot[rows++] = a;
+        for (int k = 0; k < kCalSlots; ++k)
+        {
+            const bool show = m != nullptr && rowSlot[k] >= 0;
+            angleBoxes[k].setVisible (show);
+            removeButtons[k].setVisible (show);
+            if (show) angleBoxes[k].setSelectedId (rowSlot[k] + 1, juce::dontSendNotification);
+        }
         if (m != nullptr)
         {
             updating = true;
@@ -87,11 +110,6 @@ public:
             if (! serialEditor.hasKeyboardFocus (true)) serialEditor.setText (m->serial, juce::dontSendNotification);
             if (! notesEditor.hasKeyboardFocus (true)) notesEditor.setText (m->notes, juce::dontSendNotification);
             updating = false;
-            for (int a = 0; a < kCalSlots; ++a)
-            {
-                clearButtons[a].setButtonText ("Clear");
-                clearButtons[a].setEnabled (m->cals.has (a));
-            }
             clearSplButton.setEnabled (m->hasSpl);
         }
         for (auto* e : { &nameEditor, &modelEditor, &serialEditor, &notesEditor }) e->applyColourToAllText (pal().text);
@@ -148,10 +166,26 @@ public:
             g.drawText (l.second.toUpperCase(), l.first, juce::Justification::centredLeft, true);
         }
         g.setFont (font (12.0f));
-        for (int a = 0; a < kCalSlots; ++a)
+        int shown = 0;
+        for (int k = 0; k < kCalSlots; ++k)
         {
-            g.setColour (m->cals.has (a) ? p.text : p.textFaint);
-            g.drawText (m->cals.has (a) ? m->cals.name[a] : juce::String ("none"), calName[a], juce::Justification::centredLeft, true);
+            if (rowSlot[k] < 0) continue;
+            ++shown;
+            const int a = rowSlot[k];
+            auto r = calName[k];
+            g.setColour (p.text);
+            g.drawText (m->cals.name[a], r.removeFromTop (r.getHeight() * 3 / 5), juce::Justification::bottomLeft, true);
+            g.setFont (font (10.5f));
+            g.setColour (m->cals.guessed[a] ? p.warn : p.textDim);
+            g.drawText (m->cals.guessed[a] ? juce::String ("The name gives no angle: set the right one") : "Angle from the file name",
+                        r, juce::Justification::topLeft, true);
+            g.setFont (font (12.0f));
+        }
+        if (shown == 0)
+        {
+            g.setColour (p.textFaint);
+            g.drawFittedText ("No calibration files yet. Add the files that came with the mic (one per angle: 0, 30, 90 degrees ...); "
+                              "each one's angle is read from its name.", calEmpty, juce::Justification::topLeft, 2);
         }
         g.setColour (m->hasSpl ? p.text : p.textFaint);
         g.drawText (m->hasSpl ? juce::String (m->splOffset, 2) + " dB SPL at 0 dBFS, calibrated " + m->splDate
@@ -193,21 +227,27 @@ public:
             field ("Serial", serialEditor);
             field ("Name", nameEditor);
             c.removeFromTop (10);
-            labels.push_back ({ c.removeFromTop (18), "Calibration files" });
-            c.removeFromTop (4);
-            loadBothButton.setBounds (c.removeFromTop (30).withWidth (260));
-            c.removeFromTop (8);
-            for (int a : calSlotsInOrder())
             {
-                auto row = c.removeFromTop (26);
-                labels.push_back ({ row.removeFromLeft (110), calAngleName (a) + (a == Cal0 ? "  at speaker" : a == Cal90 ? "  pointing up" : "") });
-                clearButtons[a].setBounds (row.removeFromRight (70));
+                auto head = c.removeFromTop (30);
+                labels.push_back ({ head.removeFromLeft (110), "Calibration files" });
+                loadBothButton.setBounds (head.removeFromLeft (240));
+            }
+            c.removeFromTop (8);
+            calEmpty = {};
+            int rowsShown = 0;
+            for (int k = 0; k < kCalSlots; ++k)
+            {
+                if (rowSlot[k] < 0) { calName[k] = {}; continue; }
+                ++rowsShown;
+                auto row = c.removeFromTop (34).withTrimmedLeft (110);
+                removeButtons[k].setBounds (row.removeFromRight (80).withSizeKeepingCentre (80, 28));
                 row.removeFromRight (8);
-                loadButtons[a].setBounds (row.removeFromRight (140));
+                angleBoxes[k].setBounds (row.removeFromRight (220).withSizeKeepingCentre (220, 28));
                 row.removeFromRight (12);
-                calName[a] = row;
+                calName[k] = row;
                 c.removeFromTop (4);
             }
+            if (rowsShown == 0) calEmpty = c.removeFromTop (36).withTrimmedLeft (110);
             c.removeFromTop (12);
             {
                 auto row = c.removeFromTop (30);
@@ -322,9 +362,11 @@ private:
     int selected = -1, hoverRow = -1;
     bool updating = false;
     juce::TextButton addButton { "+ Add mic" }, fromVenueButton { "Save a mic from this venue..." }, removeButton { "Remove from locker" };
-    juce::TextButton loadBothButton { "Load the files (any angles)..." }, loadButtons[kCalSlots], clearButtons[kCalSlots], clearSplButton { "Clear" };
+    juce::TextButton loadBothButton { "Add calibration files..." }, removeButtons[kCalSlots], clearSplButton { "Clear" };
+    juce::ComboBox angleBoxes[kCalSlots];
+    int rowSlot[kCalSlots] { -1, -1, -1, -1, -1, -1 };   // the angle shown in each file row
     juce::TextEditor nameEditor, modelEditor, serialEditor, notesEditor;
-    juce::Rectangle<int> listCard, editCard, listArea, pathLine, calName[kCalSlots], splLine, hintArea;
+    juce::Rectangle<int> listCard, editCard, listArea, pathLine, calName[kCalSlots], calEmpty, splLine, hintArea;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
 };
 } // namespace la::ui

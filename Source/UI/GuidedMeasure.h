@@ -4,8 +4,9 @@
 #pragma once
 // Guided measuring: a pop-up over the page with the venue plan, the point to measure highlighted (the mic, where it
 // goes and how it is aimed), one big button (Measure, then Next point), a short count-in before the noise starts and
-// the time left while it measures. Used by Room EQ (the listening positions) and Speaker response (each speaker
-// close up). The page does the measuring; this only shows the way through it.
+// the time left while it measures. Every measurement goes through it: Speaker response, Level balance, Time
+// alignment, Room acoustics, Room EQ and the quick re-check. Anything to do first (mute the other speakers, move a
+// mic) is its "First:" line. The page does the measuring; this only shows the way through it.
 #include <functional>
 #include "PlanPage.h"
 #include "../UpdateChecker.h"
@@ -35,10 +36,27 @@ public:
     virtual juce::StringArray guidedMicChoices() const { return {}; }
     virtual int guidedMic() const { return 0; }
     virtual void setGuidedMic (int) {}
+    // How the mic is aimed for the point now: close to a speaker (the speaker aim) or in the room (the room aim).
+    // The pop-up offers the angles the mic has calibration files for. -1: no aim to choose.
+    enum AimKind { NoAim = -1, SpeakerAim = 0, RoomAim = 1 };
+    virtual int guidedAimKind() const { return NoAim; }
+    virtual int guidedAimMic() const { return guidedMic(); }
 
-    static bool enabled() { return UserPrefs::get ("guidedMeasure", "1") == "1"; }
-    static void setEnabled (bool on) { UserPrefs::set ("guidedMeasure", on ? "1" : "0"); }
+    // Every measurement is guided now: the pop-up is the one way to measure.
+    static bool enabled() { return true; }
 };
+
+// "pointing up (90 degree file)": how the mic is aimed for a kind of measurement, and which file that uses.
+inline juce::String aimHowText (const LiveAlignProcessor& p, int mic, int kind)
+{
+    const int want = kind == GuidedSource::SpeakerAim ? p.speakerAim : p.roomAim;
+    const auto& cs = p.calibrations (mic);
+    const int used = cs.pick (want);
+    juce::String t = calAimText (want).upToFirstOccurrenceOf (" (", false, false);
+    if (used < 0) t << " (no calibration file)";
+    else t << " (" << calAngleName (used) << " file" << (used != want ? ", the nearest loaded" : "") << ")";
+    return t;
+}
 
 //==============================================================================
 class GuidedOverlay : public juce::Component, private juce::Timer
@@ -67,6 +85,18 @@ public:
             reload();
         };
         addChildComponent (micPicker);
+        aimPicker.setTooltip ("How the mic is aimed, which picks its calibration file. Only the angles this mic has a file for.");
+        aimPicker.onChange = [this]
+        {
+            const int a = aimPicker.getSelectedId() - 1;
+            if (a < 0) return;
+            if (source.guidedAimKind() == GuidedSource::SpeakerAim) proc.speakerAim = a;
+            else proc.roomAim = a;
+            proc.setAimOverride (proc.aimOverride());   // re-applies the files
+            reload();
+            if (onChanged) onChanged();
+        };
+        addChildComponent (aimPicker);
         close.setButtonText ("Close");
         close.onClick = [this] { closeNow(); };
         addAndMakeVisible (close);
@@ -130,7 +160,10 @@ public:
                         row, juce::Justification::centredLeft, true);
             g.setFont (font (14.5f, true));
         }
-        const auto howTo = source.guidedHowTo();
+        auto howTo = source.guidedHowTo();
+        // the interface or the wiring changed since this session's checks: say so before anything else
+        if (proc.checks.setup.isNotEmpty() && proc.checks.setup != proc.setupFingerprint() && ! howTo.startsWith ("First:"))
+            howTo = "First: the wiring changed since this session's checks (" + proc.setupChanges().joinIntoString ("; ") + "). Run the pre-flight on Mics, or carry on.";
         const bool first = howTo.startsWith ("First:");   // something to do before measuring (mute the other speakers)
         g.setColour (first ? p.warn : p.textDim);
         g.setFont (font (first ? 13.5f : 12.5f, first));
@@ -191,6 +224,15 @@ public:
             g.setFont (font (11.0f, true));
             g.drawText ("MIC", micLabel, juce::Justification::centredLeft);
         }
+        if (aimPicker.isVisible())
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (11.0f, true));
+            g.drawText ("AIM", aimLabel, juce::Justification::centredLeft);
+        }
+        g.setColour (p.textFaint);
+        g.setFont (font (10.5f));
+        g.drawText ("Space: measure    Enter: next point    Esc: stop / close", keysLine, juce::Justification::centredRight, true);
 
         // a dot for every point
         auto dots = dotsArea;
@@ -216,6 +258,7 @@ public:
         header = c.removeFromTop (44);
         close.setBounds (header.withTrimmedLeft (header.getWidth() - 96).withSizeKeepingCentre (96, 30));
         c.removeFromTop (10);
+        keysLine = c.removeFromBottom (14);
         auto buttons = c.removeFromBottom (46);
         c.removeFromBottom (12);
         dotsArea = c.removeFromBottom (16);
@@ -237,13 +280,30 @@ public:
             micPicker.setBounds (buttons.removeFromLeft (220).withSizeKeepingCentre (220, 34));
             buttons.removeFromLeft (12);
         }
+        if (aimPicker.isVisible())
+        {
+            aimLabel = buttons.removeFromLeft (34);
+            aimPicker.setBounds (buttons.removeFromLeft (230).withSizeKeepingCentre (230, 34));
+            buttons.removeFromLeft (12);
+        }
         skip.setBounds (buttons.removeFromLeft (150).withSizeKeepingCentre (150, 34));
     }
 
     bool keyPressed (const juce::KeyPress& k) override
     {
-        if (k == juce::KeyPress::escapeKey) { closeNow(); return true; }
-        if (k == juce::KeyPress::spaceKey || k == juce::KeyPress::returnKey) { pressPrimary(); return true; }
+        if (k == juce::KeyPress::escapeKey)
+        {
+            if (state == State::CountIn || state == State::Measuring) pressPrimary();   // stop first
+            else closeNow();
+            return true;
+        }
+        if (k == juce::KeyPress::spaceKey)
+        {
+            if (state == State::Ready || state == State::CountIn || state == State::Measuring || ! resultOk) pressPrimary();
+            else { source.guidedRedo (justDone); state = State::Ready; reload(); startCountIn(); }   // measure this point again
+            return true;
+        }
+        if (k == juce::KeyPress::returnKey) { if (state == State::Done || state == State::Ready) pressPrimary(); return true; }
         return true;   // the page underneath does not get keys while this is open
     }
 
@@ -329,6 +389,21 @@ private:
             micPicker.clear (juce::dontSendNotification);
             micPicker.addItemList (mics, 1);
             micPicker.setSelectedItemIndex (source.guidedMic(), juce::dontSendNotification);
+        }
+        // the aim: only the angles this mic has a calibration file for (two or more to choose from)
+        {
+            const int kind = source.guidedAimKind();
+            const auto& cs = proc.calibrations (source.guidedAimMic());
+            const bool aim = kind != GuidedSource::NoAim && cs.count() > 1 && state == State::Ready && ! finished;
+            aimPicker.setVisible (aim);
+            if (aim)
+            {
+                aimPicker.clear (juce::dontSendNotification);
+                for (int a : calSlotsInOrder())
+                    if (cs.has (a)) aimPicker.addItem (calAngleName (a) + "  " + calAimText (a).upToFirstOccurrenceOf (" (", false, false), a + 1);
+                const int want = kind == GuidedSource::SpeakerAim ? proc.speakerAim : proc.roomAim;
+                aimPicker.setSelectedId (cs.pick (want) + 1, juce::dontSendNotification);
+            }
         }
         resized();
         int now = 0;
@@ -420,8 +495,8 @@ private:
     GuidedSource& source;
     PlanCanvas canvas;
     juce::TextButton primary, again, skip, close;
-    juce::ComboBox micPicker;
-    juce::Rectangle<int> micLabel;
+    juce::ComboBox micPicker, aimPicker;
+    juce::Rectangle<int> micLabel, aimLabel, keysLine;
     juce::Rectangle<int> card, header, instr, progressArea, dotsArea;
     std::vector<GuideSpot> spots, nowSpots, justDone;
     State state = State::Ready;

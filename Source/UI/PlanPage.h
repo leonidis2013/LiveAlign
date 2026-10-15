@@ -749,7 +749,7 @@ public:
 
         auto setup = [this] (juce::TextButton& b, const juce::String& tip) { b.setTooltip (tip); addAndMakeVisible (b); };
         setup (addAreaButton, "Add an area: stage, FOH, seating, balcony, choir ...");
-        setup (addMarkerButton, "Add a named mic position: where a mic was moved to, or a time alignment spot");
+        setup (addMarkerButton, "Add a measurement point: a seat or spot where the mic goes (FOH, Row 8, Balcony ...). Room EQ, Room acoustics and Level balance measure at these points.");
         setup (addNoteButton, "Add a note on the drawing");
         setup (exportButton, "Save the plan as a picture (PNG) to print or share");
         setup (renameButton, "Rename the selected area, position or note (or double-click it)");
@@ -785,14 +785,14 @@ public:
                 if (sp.isNotEmpty() && ! proc.positions.contains (sp)) m.addItem (500 + a, sp + "  (alignment spot)");
             }
             m.addSeparator();
-            m.addItem (999, "New position...");
+            m.addItem (999, "New point...");
             juce::Component::SafePointer<PlanPage> safe (this);
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addMarkerButton), [safe] (int r)
             {
                 if (safe == nullptr || r == 0) return;
                 auto& pr = safe->proc;
                 if (r == 999)
-                    safe->askName ("New mic position", "Row 5", [safe] (const juce::String& t)
+                    safe->askName ("New measurement point", "Row 5", [safe] (const juce::String& t)
                     {
                         if (safe == nullptr) return;
                         if (! safe->proc.positions.contains (t)) safe->proc.positions.add (t);
@@ -1005,7 +1005,7 @@ private:
         const bool item = t == PlanCanvas::Sel::Item && i >= 0 && i < (int) proc.plan.items.size();
         rotLeftButton.setVisible (sym);
         rotRightButton.setVisible (sym);
-        aimBox.setVisible (t == PlanCanvas::Sel::Mic || t == PlanCanvas::Sel::MonitorMic);
+        aimBox.setVisible (t == PlanCanvas::Sel::MonitorMic);   // the tuning mics' aim is set by what is measured
         const bool area = item && proc.plan.items[(size_t) i].kind == PlanItem::Area;
         seatingBox.setVisible (area);
         if (area) seatingBox.setSelectedItemIndex (proc.plan.items[(size_t) i].seating, juce::dontSendNotification);
@@ -1019,7 +1019,6 @@ private:
         }
         renameButton.setVisible (item);
         deleteButton.setVisible (item);
-        if (t == PlanCanvas::Sel::Mic) setAimBox (aimBox, proc.ownAim (i));
 
         if (t == PlanCanvas::Sel::Speaker && i < (int) proc.system.sources.size())
         {
@@ -1031,7 +1030,7 @@ private:
         else if (t == PlanCanvas::Sel::Mic) selectionText = proc.mics.nameOf (i) + (proc.mics.position[(size_t) i].isNotEmpty() ? "\n" + proc.mics.position[(size_t) i] : juce::String());
         else if (item)
         {
-            static const char* kinds[] = { "Area", "Mic position", "Note" };
+            static const char* kinds[] = { "Area", "Measurement point", "Note" };
             selectionText = juce::String (kinds[proc.plan.items[(size_t) i].kind]) + "\n" + proc.plan.items[(size_t) i].text;
         }
         else selectionText = "Click something on the plan.";
@@ -1040,7 +1039,7 @@ private:
 
     LiveAlignProcessor& proc;
     PlanCanvas canvas;
-    juce::TextButton addAreaButton { "Area..." }, addMarkerButton { "Mic position..." }, addNoteButton { "Note..." };
+    juce::TextButton addAreaButton { "Area..." }, addMarkerButton { "+ Measurement point..." }, addNoteButton { "Note..." };
     juce::TextButton reportButton { "Tuning report (PDF)..." }, exportButton { "Save as picture..." }, resetButton { "Place missing speakers and mics" };
     juce::TextButton renameButton { "Rename" }, deleteButton { "Remove" };
     juce::TextButton rotLeftButton { juce::String (juce::CharPointer_UTF8 ("\xe2\x9f\xb2  Turn left")) }, rotRightButton { juce::String (juce::CharPointer_UTF8 ("Turn right  \xe2\x9f\xb3")) };

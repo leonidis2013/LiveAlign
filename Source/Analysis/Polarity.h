@@ -7,10 +7,10 @@
 // near 0 degrees when it is wired the right way and near 180 when it is not. Two speakers of the same model can also
 // be compared directly: their phase matches, or is 180 degrees apart.
 //
-// Two independent signs are used: the excess phase through the speaker's loudest octaves (the measured phase less the
+// Two independent signs are used: the excess phase through the woofer's loudest octaves (the measured phase less the
 // minimum phase its own roll-offs give, and less a small timing error), and the sign of the impulse peak from the
-// timing search. When they agree the answer is firm; when they
-// do not, or the phase is spread out, it is "check". Plain C++, no JUCE.
+// timing search. "Inverted" needs both; one sign alone, or a spread-out phase, is "check". Comparing two speakers
+// of the same model is the firmest test. Plain C++, no JUCE.
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -159,6 +159,7 @@ struct Result
     BandPhase band;
     bool peakInverted = false;
     bool peakKnown = false;
+    bool phaseSaysInverted = false;   // the phase alone pointed to inverted (shown as "check")
 };
 
 // Absolute polarity of a measurement timed to the speaker's own arrival. `peakKnown` / `peakInverted` come from
@@ -168,8 +169,19 @@ inline Result absolute (const FreqTable& t, double minCoh, bool peakKnown, bool 
     Result r;
     r.peakKnown = peakKnown;
     r.peakInverted = peakInverted;
-    const auto idx = passband (t, minCoh, 10.0);
+    auto idx = passband (t, minCoh, 10.0);
     if (idx.size() < 4) { r.verdict = peakKnown ? Unsure : Unknown; return r; }
+    // Only the woofer's own range: a two-way box has its own crossover (woofer to horn, often near 1.5 - 3 kHz) whose
+    // all-pass phase turn is not minimum phase, and read across it the phase can average near 180 degrees on a box
+    // wired correctly. A speaker that starts low is read up to 1.2 kHz; one that starts high (a mid / high box) over
+    // its lowest 1.5 octaves.
+    {
+        const double fLo = t.freq[idx.front()];
+        const double cap = fLo < 600.0 ? 1200.0 : fLo * 2.8;
+        std::vector<size_t> kept;
+        for (auto i : idx) if (t.freq[i] <= cap) kept.push_back (i);
+        if (kept.size() >= 4) idx = std::move (kept);
+    }
     // the minimum phase of its reliable magnitude: what its roll-offs alone do to the phase
     FreqTable mag;
     for (size_t i = 0; i < t.freq.size(); ++i)
@@ -194,7 +206,11 @@ inline Result absolute (const FreqTable& t, double minCoh, bool peakKnown, bool 
     // go either way. Below about three octaves of range, the phase decides on its own.
     if (f.back() < 8.0 * f.front()) peakKnown = false;
     r.peakKnown = peakKnown;
-    if (! peakKnown) r.verdict = v;
+    // "Inverted" needs two independent signs that agree (the phase and the impulse peak). The phase alone can say
+    // "normal", but an inversion from one sign only is "check": the room, a late arrival or the box's own crossover
+    // can turn the phase without anything being wired wrong.
+    r.phaseSaysInverted = v == Inverted;
+    if (! peakKnown) r.verdict = v == Inverted ? Unsure : v;
     else if (v == Unsure) r.verdict = Unsure;
     else r.verdict = (v == Inverted) == peakInverted ? v : Unsure;   // the two signs must agree
     return r;

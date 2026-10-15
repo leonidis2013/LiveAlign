@@ -4,6 +4,7 @@
 #pragma once
 #include <array>
 #include <cstdlib>
+#include <utility>
 // A measurement mic's calibration files, one per angle of incidence: 0 degrees (sound arriving on axis, the mic
 // pointed at the speaker), 90 degrees (from the side, the mic pointing up at the ceiling), and the in-between and
 // rear angles some makers also supply (30, 45, 60, 180). Any of them may be missing.
@@ -48,12 +49,29 @@ struct MicCalSet
 {
     FreqTable table[kCalSlots];
     juce::String name[kCalSlots];
+    bool guessed[kCalSlots] {};   // the file's name gave no angle: the angle was a guess, to check (not saved)
 
     bool has (int a) const { return a >= 0 && a < kCalSlots && ! table[a].empty(); }
     int count() const { int n = 0; for (int a = 0; a < kCalSlots; ++a) n += has (a) ? 1 : 0; return n; }
     bool any() const { return count() > 0; }
     bool both() const { return count() > 1; }   // more than one angle: the aim decides which is used
-    void clear (int a) { if (a >= 0 && a < kCalSlots) { table[a] = {}; name[a].clear(); } }
+    void clear (int a) { if (a >= 0 && a < kCalSlots) { table[a] = {}; name[a].clear(); guessed[a] = false; } }
+    // A file put at another angle: the two swap when the other angle has a file too.
+    void moveTo (int from, int to)
+    {
+        if (from < 0 || to < 0 || from >= kCalSlots || to >= kCalSlots || from == to) return;
+        std::swap (table[from], table[to]);
+        std::swap (name[from], name[to]);
+        std::swap (guessed[from], guessed[to]);
+        guessed[to] = false;   // set by hand now
+    }
+    // The first free angle for a file whose name says none: 0, then 90, then the others.
+    int firstFree (const bool* taken = nullptr) const
+    {
+        for (int a : { Cal0, Cal90, Cal30, Cal45, Cal60, Cal180 })
+            if (! has (a) && (taken == nullptr || ! taken[a])) return a;
+        return -1;
+    }
     void clearAll() { for (int a = 0; a < kCalSlots; ++a) clear (a); }
 
     // The file to use for an aim: the loaded angle closest to it (a mic with one file uses it whatever the aim).
@@ -88,10 +106,14 @@ struct MicCalSet
 
     // Which angle a calibration file is for, from its name: miniDSP's "_90deg", "90 deg", "-90", "90°", Sonarworks'
     // "30deg" ... A number counts only on its own (not part of a serial number). Nothing found: 0 degrees.
-    static int angleFromName (const juce::String& fileName)
+    static int angleFromName (const juce::String& fileName) { const int a = angleInName (fileName); return a >= 0 ? a : Cal0; }
+
+    // The angle the name gives, or -1 when it gives none ("on-axis" and "vertical" count).
+    static int angleInName (const juce::String& fileName)
     {
         const auto n = fileName.toLowerCase().replace (juce::String (juce::CharPointer_UTF8 ("\xc2\xb0")), "deg");
         if (n.contains ("vertical")) return Cal90;
+        if (n.contains ("on-axis") || n.contains ("onaxis") || n.contains ("on_axis") || n.contains ("horizontal")) return Cal0;
         for (int a : { Cal180, Cal90, Cal60, Cal45, Cal30 })
         {
             const juce::String num (calSlotDegrees (a));
@@ -106,7 +128,15 @@ struct MicCalSet
                 if (marked || separated) return a;
             }
         }
-        return Cal0;
+        // "0deg", "_0deg", "0 deg", "_0." : the on-axis file, said in so many words
+        for (int from = n.indexOf ("0"); from >= 0; from = n.indexOf (from + 1, "0"))
+        {
+            const juce::juce_wchar before = from > 0 ? n[from - 1] : ' ';
+            if (juce::CharacterFunctions::isDigit (before) || juce::CharacterFunctions::isLetter (before)) continue;
+            const auto rest = n.substring (from + 1);
+            if (rest.startsWith ("deg") || rest.startsWith (" deg") || rest.startsWith ("_deg") || rest.startsWith ("-deg")) return Cal0;
+        }
+        return -1;
     }
 
     static void saveTable (juce::XmlElement& e, const FreqTable& t)

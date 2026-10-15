@@ -133,6 +133,15 @@ inline void fillAimBox (juce::ComboBox& b)
     for (int a : calSlotsInOrder()) b.addItem (calAngleName (a) + "  " + calAimText (a).upToFirstOccurrenceOf (" (", false, false), a + 1);
 }
 inline void setAimBox (juce::ComboBox& b, int aim) { b.setSelectedId (juce::jlimit (0, kCalSlots - 1, aim) + 1, juce::dontSendNotification); }
+// Only the angles a mic has a calibration file for (all of them when it has none); the nearest loaded one is shown.
+inline void fillAimBoxFor (juce::ComboBox& b, const MicCalSet& cs, int aim)
+{
+    b.clear (juce::dontSendNotification);
+    for (int a : calSlotsInOrder())
+        if (! cs.any() || cs.has (a)) b.addItem (calAngleName (a) + "  " + calAimText (a).upToFirstOccurrenceOf (" (", false, false), a + 1);
+    const int shown = cs.any() ? cs.pick (aim) : aim;
+    b.setSelectedId (juce::jlimit (0, kCalSlots - 1, shown) + 1, juce::dontSendNotification);
+}
 inline int aimFromBox (const juce::ComboBox& b) { return juce::jmax (0, b.getSelectedId() - 1); }
 
 } // namespace la::ui

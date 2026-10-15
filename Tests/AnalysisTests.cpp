@@ -717,6 +717,8 @@ static la::FreqTable speakerTf (double hp, int hpOrder, double lp, int lpOrder, 
     return t;
 }
 
+static double pi180() { return 3.14159265358979323846 / 180.0; }
+
 static void testPolarity()
 {
     using namespace la::polarity;
@@ -730,7 +732,7 @@ static void testPolarity()
     a = absolute (topInv, 0.4, true, false);
     check (a.verdict == Unsure, "Polarity: phase and impulse disagree gives check", a.verdict, Unsure);
     a = absolute (topInv, 0.4, false, false);
-    check (a.verdict == Inverted, "Polarity: inverted from the phase alone", a.band.phaseDeg, 180.0);
+    check (a.verdict == Unsure && a.phaseSaysInverted, "Polarity: the phase alone saying inverted gives check", a.band.phaseDeg, 180.0);
 
     // a sub, crossover bypassed: ported (4th order at 35 Hz), the driver rolling off above about 600 Hz
     const auto sub = speakerTf (35.0, 4, 600.0, 2, false, 0.1, 3);
@@ -746,7 +748,7 @@ static void testPolarity()
     a = absolute (subLate, 0.4, true, false);
     check (a.verdict == Normal, "Polarity: sub timed 4 ms late, normal", a.band.phaseDeg, 0.0);
     a = absolute (subLateInv, 0.4, true, true);
-    check (a.verdict == Inverted, "Polarity: sub timed 4 ms late, inverted", a.band.phaseDeg, 180.0);
+    check (a.verdict == Unsure && a.phaseSaysInverted, "Polarity: sub timed 4 ms late, inverted: check (one sign only)", a.band.phaseDeg, 180.0);
     a = absolute (subLate, 0.4, true, true);
     check (a.verdict == Normal, "Polarity: a sub's ringing impulse peak does not decide", a.band.phaseDeg, 0.0);
 
@@ -760,6 +762,57 @@ static void testPolarity()
     // the second sub of a pair, opposite to the first
     r = relative (subInv, sub, 0.4);
     check (r.verdict == Inverted, "Polarity: second sub opposite to the first", r.band.phaseDeg, 180.0);
+
+    // a two-way top wired correctly: woofer (2nd order at 70 Hz, LR4 low-pass at 2 kHz) and horn (LR4 high-pass at
+    // 2 kHz) summed: the box's own crossover turns the phase 360 degrees, which must not read as inverted
+    {
+        using C = std::complex<double>;
+        auto twoWay = [] (bool inverted, unsigned seed)
+        {
+            la::FreqTable t;
+            unsigned st = seed;
+            auto rnd = [&st] { st = st * 1664525u + 1013904223u; return (double) (st >> 8) / (double) (1u << 24) - 0.5; };
+            const double pi = 3.14159265358979323846;
+            auto bw2 = [] (C s) { return 1.0 / (s * s + std::sqrt (2.0) * s + 1.0); };   // 2nd order Butterworth low-pass, s normalised
+            for (int i = 0; i < 537; ++i)
+            {
+                const double f = 20.0 * std::pow (1000.0, i / 536.0);
+                const C sw (0.0, f / 2000.0), sh (0.0, -2000.0 / f), s70 (0.0, -70.0 / f), s18 (0.0, f / 18000.0);
+                const C woofer = bw2 (s70) * bw2 (sw) * bw2 (sw);
+                const C horn = bw2 (sh) * bw2 (sh) * bw2 (s18);
+                C h = woofer + horn;
+                if (inverted) h = -h;
+                h *= std::exp (C (0.0, -2.0 * pi * f * 0.05 * 0.001));
+                t.freq.push_back (f);
+                t.db.push_back (20.0 * std::log10 (std::abs (h) + 1e-12));
+                double ph = std::arg (h) * 180.0 / pi + 6.0 * rnd();
+                ph = std::remainder (ph, 360.0);
+                t.phase.push_back (ph);
+                t.extra.push_back (0.95);
+            }
+            return t;
+        };
+        const auto tw = twoWay (false, 21), twInv = twoWay (true, 22);
+        a = absolute (tw, 0.4, true, false);
+        check (a.verdict == Normal, "Polarity: two-way top with its own crossover, wired normally", a.band.phaseDeg, 0.0);
+        a = absolute (tw, 0.4, false, false);
+        check (a.verdict != Inverted, "Polarity: two-way top, phase alone, never inverted", a.band.phaseDeg, 0.0);
+        a = absolute (twInv, 0.4, true, true);
+        check (a.verdict == Inverted, "Polarity: two-way top inverted (phase and peak agree)", a.band.phaseDeg, 180.0);
+        // far away: a strong reflection 4 ms later blurs the phase; still never a firm inversion of a box wired normally
+        auto far = tw;
+        for (size_t i = 0; i < far.freq.size(); ++i)
+        {
+            const double f = far.freq[i];
+            const C d = std::polar (std::pow (10.0, far.db[i] / 20.0), far.phase[i] * pi180());
+            const C r = d * 0.6 * std::exp (C (0.0, -2.0 * 3.14159265358979323846 * f * 0.004));
+            const C sum = d + r;
+            far.db[i] = 20.0 * std::log10 (std::abs (sum) + 1e-12);
+            far.phase[i] = std::arg (sum) / pi180();
+        }
+        a = absolute (far, 0.4, true, false);
+        check (a.verdict != Inverted, "Polarity: far away with a reflection, not called inverted", a.band.phaseDeg, 0.0);
+    }
 
     // nothing but noise: no answer
     auto junk = top;
