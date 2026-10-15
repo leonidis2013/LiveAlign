@@ -18,6 +18,7 @@ public:
     {
         sr = sampleRate;
         rampStep = 1.0 / (0.02 * sr);
+        rampUpStep = rampStep;
         resetState();
         pinkNorm = measurePinkNorm();
     }
@@ -28,6 +29,8 @@ public:
     void setFrequency (double hz) { freq = std::clamp (hz, 10.0, sr * 0.45); }
     void setSweepSeconds (double s) { sweepSec = std::clamp (s, 0.5, 30.0); }
     void setOn (bool on) { target = on ? 1.0 : 0.0; }
+    // How long switching on takes (switching off stays quick, 20 ms).
+    void setFadeInSeconds (double s) { rampUpStep = 1.0 / (std::max (0.02, s) * sr); }
     bool isOn() const { return target > 0.5; }
     bool isSilent() const { return target < 0.5 && gain <= 0.0; }
 
@@ -37,7 +40,7 @@ public:
         const double rms = amp / std::sqrt (2.0);              // RMS for the noises
         for (int i = 0; i < count; ++i)
         {
-            if (gain < target) gain = std::min (target, gain + rampStep);
+            if (gain < target) gain = std::min (target, gain + rampUpStep);
             else if (gain > target) gain = std::max (target, gain - rampStep);
 
             double s = 0.0;
@@ -133,7 +136,7 @@ private:
     }
 
     double sr = 48000.0, levelDb = -20.0, freq = 1000.0, sweepSec = 3.0;
-    double gain = 0.0, target = 0.0, rampStep = 0.001;
+    double gain = 0.0, target = 0.0, rampStep = 0.001, rampUpStep = 0.001;
     double b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, pinkNorm = 1.0;
     double phase = 0.0;
     int64_t t = 0;

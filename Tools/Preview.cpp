@@ -7,6 +7,7 @@
 #include <random>
 #include "../Source/PluginProcessor.h"
 #include "../Source/PluginEditor.h"
+#include "../Source/AcousticsSummary.h"
 #include "../Source/UI/SettingsPanel.h"
 #include "../Source/UI/CalibrationPanel.h"
 #include "../Source/Report/TuningReport.h"
@@ -190,12 +191,6 @@ public:
             proc.settings.theme = 0;
             la::ui::currentPalette() = &la::ui::darkPalette();
             la::ui::LALookAndFeel laf;
-            {
-                la::ui::SettingsPanel sp (proc);
-                sp.setLookAndFeel (&laf);
-                save (sp.createComponentSnapshot (sp.getLocalBounds()), "settings");
-                sp.setLookAndFeel (nullptr);
-            }
             {
                 la::ui::CalibrationPanel cp (proc.settings, 1, "Mic 2", [] { return -21.3f; }, [] { return juce::String ("7023270_90deg.txt"); });
                 cp.setLookAndFeel (&laf);
@@ -456,7 +451,10 @@ public:
                                  a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs), page.statusText().toRawUTF8());
                     consoleOut = -1;
                     page.setAlignmentSignal (0);
-                    // room acoustics before Room EQ: a sweep at FOH
+                    // room acoustics before Room EQ: a sweep at FOH (in a 22 x 14 x 7 m room)
+                    proc.plan.lengthM = 22.0;
+                    proc.plan.widthM = 14.0;
+                    proc.plan.heightM = 7.0;
                     editor->showPage ((int) P::Acoustics);
                     proc.setMicPosition (0, "FOH");
                     editor->acousticsPageForPreview().startSweep();
@@ -516,9 +514,20 @@ public:
                 if (stageTick + 5 < ticks && (! rp.busy() || timeout))
                 {
                     std::printf ("room round 2: %s count=%d spread=%.1f\n", rp.statusText().toRawUTF8(), proc.room.count (false), proc.room.levelSpread (false));
+                    // without the room acoustics allowance, then with it (the default)
+                    proc.venuePrefs.set ("roomAllow", 0.0);
+                    rp.refresh();
+                    rp.suggestNow();
+                    std::printf ("room suggest (allowance off): %s\n", rp.statusText().toRawUTF8());
+                    for (const auto& b : proc.room.suggested) std::printf ("  off: band %.0f Hz %.1f dB Q %.2f\n", b.freq, b.gainDb, b.q);
+                    shot ("room-allow-off");
+                    proc.venuePrefs.reset ("roomAllow");
+                    rp.refresh();
                     rp.suggestNow();
                     std::printf ("room suggest: %s\n", rp.statusText().toRawUTF8());
+                    for (const auto& n : proc.room.allow.notes) std::printf ("  allowance: %s\n", n.toRawUTF8());
                     for (const auto& b : proc.room.suggested) std::printf ("  band %.0f Hz %.1f dB Q %.2f\n", b.freq, b.gainDb, b.q);
+                    shot ("room-allow-on");
                     rp.applyNow();
                     // the EQ goes on the whole system: the top and the sub
                     for (const auto& b : proc.system.sources[(size_t) proc.room.eqMembers (proc.system).front()].proc.eq)
@@ -588,7 +597,26 @@ public:
                     std::printf ("acoustics: positions=%d RT %.2f s EDT %.2f C80 %.1f C50 %.1f STI %.2f (%s) modes=%d\n", proc.room.acousticsCount(), a.rtMid(),
                                  a.mid (&la::acoustics::Band::edt), a.mid (&la::acoustics::Band::c80), a.mid (&la::acoustics::Band::c50), a.sti, la::acoustics::stiRating (a.sti),
                                  (int) proc.room.modes().size());
+                    {
+                        const auto sm = la::summariseAcoustics (proc);
+                        std::printf ("acoustics more: BR %.2f TR %.2f Ts %.0f ms 63Hz %.2f (%s) STI raw %.2f corrected %.2f ALcons %.1f%% ITDG %.1f ms echo %d (%.0f ms, EK %.2f / %.2f) "
+                                     "flutter %.0f ms ringing %d Schroeder %.0f Hz Dc %s cov2k %.1f cov4k %.1f\n",
+                                     sm.bassRatio, sm.trebleRatio, sm.tsMid, sm.rt63, sm.rt63Reliable ? "clear" : "unsure", sm.stiRaw, sm.stiCorrected, sm.alcons, sm.itdgMs,
+                                     (int) sm.echo, sm.echoMs, sm.avg.echoSpeech, sm.avg.echoMusic, sm.flutterMs, sm.ringingThird, sm.schroederHz,
+                                     sm.criticalDistance.empty() ? "-" : (sm.criticalDistance.front().name + " " + juce::String (sm.criticalDistance.front().metres, 1) + " m").toRawUTF8(),
+                                     sm.coverage2k, sm.coverage4k);
+                    }
                     shot ("acoustics");
+                    editor->acousticsPageForPreview().showMetric (la::ui::AcousticsChart::Etc);
+                    next (43);
+                }
+                break;
+            case 43:
+                if (after (4)) { shot ("acoustics-etc"); editor->acousticsPageForPreview().showMetric (la::ui::AcousticsChart::Thirds); }
+                if (after (8))
+                {
+                    shot ("acoustics-thirds");
+                    editor->acousticsPageForPreview().showMetric (la::ui::AcousticsChart::RT);
                     editor->openGuided (editor->acousticsPageForPreview());
                     next (42);
                 }
@@ -684,7 +712,31 @@ public:
                 break;
             }
             case 81:
-                if (after (10)) { shot ("home-recheck"); next (17); }
+                if (after (10))
+                {
+                    shot ("home-recheck");
+                    // Settings: the tuning defaults with one value kept for this venue
+                    proc.venuePrefs.set ("eqClose", 2.0);
+                    editor->showPage ((int) P::Settings);
+                    editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Tuning);
+                    next (82);
+                }
+                break;
+            case 82:
+                if (after (6)) { shot ("settings"); editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Monitoring); next (83); }
+                break;
+            case 83:
+                if (after (6)) { shot ("settings-monitoring"); editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Measurement); next (84); }
+                break;
+            case 84:
+                if (after (6))
+                {
+                    shot ("settings-measurement");
+                    std::printf ("settings: venue overrides=%s\n", proc.venuePrefs.describe().joinIntoString ("; ").toRawUTF8());
+                    proc.venuePrefs.reset ("eqClose");
+                    editor->showPage ((int) P::Home);
+                    next (17);
+                }
                 break;
             case 17:
             {

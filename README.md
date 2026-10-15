@@ -5,7 +5,7 @@ impulse response, delay finder, sound level meter and a signal generator. Built 
 (for tuning: it drives the PA and measures through your mic) and a **VST3** (for live monitoring in a host such as
 LiveProfessor). Windows and macOS.
 
-**Version 0.17.0**: a smoother tuning flow. The steps run Speaker response, Crossover, **Level balance** (new), Time alignment, Room acoustics, Room EQ, Feedback test, and the navigation pane is the one way between them (it marks the next step; Home is a dashboard with the next step, what needs attention and a **quick re-check** of a tuned system). Every measurement goes through the guided pop-up (`Space` measure, `Enter` next, `Esc` stop), with the mutes, mic moves and wiring changes as its "First:" line. Listening points are made on the Venue plan; the mic's aim follows what is measured (at the speaker, or pointing up), limited to the angles it has files for. Calibration files are added in the mic locker, each one's angle read from its name. Polarity comes from every speaker's own capture, a speaker set "Same as" another is measured and compared with it ("matches Main L", "OPPOSITE to Main L"), and an inversion needs two tests to agree. The Room EQ target follows what the speakers can play. Room acoustics comes before Room EQ, with a decision tree. One **processor sheet** lists every setting to enter, ticked off as you go, with CSV and PDF export. **0.16.1**: speakers sharing an output (a pair on All outputs) are measured by muting the others at the console or processor: LiveAlign says which to mute and asks you to confirm. **0.16.0**: a new Mics page (mic positions on top with the mic attached from your locker, the mics below, the checklist beside them); calibration files at any angle (0, 30, 45, 60, 90, 180 degrees); Room EQ as a loop (as found, enter the EQ, check, refine, as left) on the whole system, with gentler bands; room acoustics measured with a sweep; time alignment with pink noise, a sweep or music from the console; a feedback watch and delay tracking while monitoring; a crossover only when there is a sub, Automatic or By hand; the app icon; and fixes (outputs shared by two speakers, the interface change, signal quality, the top + sub sum). **0.15.0**: polarity of every speaker and every cabinet, checked while capturing speaker responses, with a quick check for speakers set "Same as" another and for each cabinet on a shared output. **0.14.1**: close up, each speaker can be measured with its own mic (picked on Speaker response or in the guided pop-up). **0.14.0**: guided measuring: a pop-up with the venue plan showing where each mic goes and how to aim it, one Measure button with a count-in and the time left, then Next point (Room EQ and Speaker response). **0.13.0**: a new navigation (Setup, Tuning, Monitoring, Reports) with Speaker response, Crossover and Time alignment as their own steps; close-up speaker measurements with a picture of where to put the mic; a time alignment wizard (play the main, play the sub, apply, check) that matches phase at the crossover; Room EQ in rounds with several mics or one mic moved between positions; a feedback test; room acoustics (RT60, EDT, C50 / C80, STI, room modes, coverage, NC / NR); a dedicated monitoring mic and event panel; tuning and live monitoring reports in chapters with the settings as found and as left; seating and two mic layers on the Venue plan; a new logo and Home page; true full screen on macOS. **0.12.1**: the crossover pair follows the speakers' roles (top above, sub below), with a warning and a Swap button when a sub is set above a top. **0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
+**Version 0.18.0**: more room acoustics, a Room EQ that allows for them, and a new Settings page. Room acoustics adds the bass and treble ratios, the 63 Hz band, reverberation in 1/3 octaves, centre time (Ts), STI corrected for the room noise and the speech level, %ALcons, echo and flutter echo detection, the energy-time curve with the first reflection, the spread across the points, the coverage at 2 and 4 kHz, and (with the room's size) the Schroeder frequency and each speaker's critical distance. Room EQ's **Allow for the room acoustics** (on by default) uses them: below the Schroeder frequency the seats' median and cuts only on room modes most seats share, sized to how long they ring, with no boosts into nulls; long reverb corrected from the direct sound; the target's low end eased where the room rings long; nothing suggested where the noise is too close; no high boosts when clarity is poor; shallow cuts when the room needs treatment. **Settings** is a full page with a category menu, a Reset to defaults for each, and new tuning defaults (that a venue can override), generator safety (a ceiling and a fade-in), monitoring defaults (limit, A or C weighting, feedback watch sensitivity, delay tracking) and reports and files (paper size, a logo, the default folder, autosave). **0.17.0**: a smoother tuning flow. The steps run Speaker response, Crossover, **Level balance** (new), Time alignment, Room acoustics, Room EQ, Feedback test, and the navigation pane is the one way between them (it marks the next step; Home is a dashboard with the next step, what needs attention and a **quick re-check** of a tuned system). Every measurement goes through the guided pop-up (`Space` measure, `Enter` next, `Esc` stop), with the mutes, mic moves and wiring changes as its "First:" line. Listening points are made on the Venue plan; the mic's aim follows what is measured (at the speaker, or pointing up), limited to the angles it has files for. Calibration files are added in the mic locker, each one's angle read from its name. Polarity comes from every speaker's own capture, a speaker set "Same as" another is measured and compared with it ("matches Main L", "OPPOSITE to Main L"), and an inversion needs two tests to agree. The Room EQ target follows what the speakers can play. Room acoustics comes before Room EQ, with a decision tree. One **processor sheet** lists every setting to enter, ticked off as you go, with CSV and PDF export. **0.16.1**: speakers sharing an output (a pair on All outputs) are measured by muting the others at the console or processor: LiveAlign says which to mute and asks you to confirm. **0.16.0**: a new Mics page (mic positions on top with the mic attached from your locker, the mics below, the checklist beside them); calibration files at any angle (0, 30, 45, 60, 90, 180 degrees); Room EQ as a loop (as found, enter the EQ, check, refine, as left) on the whole system, with gentler bands; room acoustics measured with a sweep; time alignment with pink noise, a sweep or music from the console; a feedback watch and delay tracking while monitoring; a crossover only when there is a sub, Automatic or By hand; the app icon; and fixes (outputs shared by two speakers, the interface change, signal quality, the top + sub sum). **0.15.0**: polarity of every speaker and every cabinet, checked while capturing speaker responses, with a quick check for speakers set "Same as" another and for each cabinet on a shared output. **0.14.1**: close up, each speaker can be measured with its own mic (picked on Speaker response or in the guided pop-up). **0.14.0**: guided measuring: a pop-up with the venue plan showing where each mic goes and how to aim it, one Measure button with a count-in and the time left, then Next point (Room EQ and Speaker response). **0.13.0**: a new navigation (Setup, Tuning, Monitoring, Reports) with Speaker response, Crossover and Time alignment as their own steps; close-up speaker measurements with a picture of where to put the mic; a time alignment wizard (play the main, play the sub, apply, check) that matches phase at the crossover; Room EQ in rounds with several mics or one mic moved between positions; a feedback test; room acoustics (RT60, EDT, C50 / C80, STI, room modes, coverage, NC / NR); a dedicated monitoring mic and event panel; tuning and live monitoring reports in chapters with the settings as found and as left; seating and two mic layers on the Venue plan; a new logo and Home page; true full screen on macOS. **0.12.1**: the crossover pair follows the speakers' roles (top above, sub below), with a warning and a Swap button when a sub is set above a top. **0.12.0**: Room tuning (measure the listening positions with several mics or one mic moved between them, average against a target, suggested parametric EQ within your processor's limits, check after), the mic aim and calibration file following the position, a Next button on every page, advanced analysis settings tucked away, autosave with crash recovery, and new venues based on an existing one. **0.11.0**: a PDF tuning report, the Mic locker as its own page (model and serial number for each mic), speakers as individual cabinets with left / right pairs, the system's own window buttons, and the navigation grouped into Configuration, Tuning and Monitoring. **0.10.0**: the Venue plan, a sketch of where the speakers and mics are. **0.9.0**: 0 and 90 degree calibration files for each mic, with an Aim setting. **0.8.0**: a mic locker that remembers your mics' calibration across venues, and Check for updates. **0.7.0**: signal reliability (coherence) throughout the Speakers step with an adjustable minimum, and the Speakers step laid out as guided steps (Measure, Crossover, Time alignment) instead of tabs. **0.6.0** added time alignment of fills, delays and left / right mains at the seats where they meet, and a channel (mono, left, centre, right, L+R) for every speaker. **0.5.0** added the Speakers step (measure each speaker with one mic or import its response, crossover designer for any processor, settings summary), a waterfall view on Monitoring, amber outlines on required steps that are not done yet, and a slimmer navigation pane
 
 ## What you need
 
@@ -370,8 +370,21 @@ your processor: you type the bands in, and press **I've entered this EQ** so Liv
   EQ is provisional. The card lists the bands **to enter** and those **in your processor now**. After a check, **Refine
   the EQ** suggests the changes on top of what is entered (a band close to an existing one changes it instead of
   taking another).
+- **Allow for the room acoustics** (under the target, on by default; the default is in Settings, Tuning defaults, and a
+  venue can keep its own): once Room acoustics is measured, Suggest EQ
+  - uses the median of the seats below the **Schroeder frequency** (from the room's size; 200 Hz assumed without it)
+    and cuts only **room modes** that most seats share, each with a width that matches how long it rings there;
+  - never boosts below it: a deep dip is marked "null: move, don't boost";
+  - in octaves where the reverb is long, corrects the **direct sound** (a frequency-dependent window of each
+    measurement's impulse response) rather than the reverb;
+  - eases the target's **low end** down where the lows ring longer than the mids;
+  - leaves alone the bands where the **noise** is too close (low coherence, or a short decay range in the sweeps);
+  - makes **no boosts above 2 kHz** when speech clarity is poor;
+  - keeps **cuts shallow** (6 dB) when the decision tree says to treat the room.
+  Each shows on the graph (the Schroeder line, the modes, the nulls, the noisy and direct-sound bands) and as a line
+  in the card. Off, Room EQ fits the average as measured, as before.
 - **3 Check:** as found and the latest check against the target (RMS and worst), and the level spread across the
-  positions. Within 1.5 dB RMS it says it is close enough; **Mark the room as tuned (as left)**.
+  positions. Within the "close enough" of Settings (1.5 dB RMS by default) it says so; **Mark the room as tuned (as left)**.
 
 The graph shows each position (thin), the as-found and check averages, the target with a +/-3 dB band, and the
 latest measurement with the suggested EQ (dashed). The report shows as found beside as left.
@@ -424,11 +437,22 @@ absorption on the side and back walls), with the room modes; 4 speech (STI) and 
 the RT points to an echo or a coupled space); 5 the verdict: **Room OK for EQ**, **EQ will help only partly**, or
 **Treat before EQ**. Room EQ shows the verdict when it is one of the last two.
 
-- **RT60** (from T20 or T30, T15 for a short or noisy response) and **EDT** per octave band, 63 Hz - 8 kHz.
-- **C50**, **C80** and **D50** (clarity and definition).
-- **STI** per position (speech intelligibility, IEC 60268-16 indirect method from the impulse response, male weights).
+- **RT60** (from T20 or T30, T15 for a short or noisy response) and **EDT** per octave band, 63 Hz - 8 kHz (63 Hz
+  marked when its decay is too short to trust), and the RT per **1/3 octave** (100 Hz - 5 kHz), with a band that rings
+  well above its neighbours flagged.
+- **Bass ratio** (warmth: 125 + 250 Hz over 500 Hz + 1 kHz) and **treble ratio** (brilliance: 2 + 4 kHz over the same).
+- **C50**, **C80**, **D50** and **centre time Ts** (clarity and definition).
+- **STI** per position (IEC 60268-16 indirect method from the impulse response, male weights), and the STI **with the
+  room noise**, auditory masking and the hearing threshold at the speech level in Settings (70 dBA by default), with
+  **%ALcons**.
+- **Reflections:** the **energy-time curve** with the first reflection (initial time delay gap), **echoes** (Dietsch and
+  Kraak's echo criterion for speech and music, with how much further the echo travelled) and **flutter echo** (a
+  regular repeat between parallel surfaces, with their spacing). EQ can't fix either: the decision tree says so.
+- **Room size** (Length, width, ceiling height, or a volume): the **Schroeder frequency** and each speaker's **critical
+  distance** (directivity typical for its role, or set per speaker by clicking the line).
+- **Spread** of each measure across the points (average, standard deviation, range), and **coverage**: the level
+  across the Room EQ points at 2 and 4 kHz, against the common +/-3 dB.
 - **Room modes**: peaks that the positions share below about 300 Hz.
-- **Coverage**: level spread across the positions.
 - **NC** and **NR** ratings of the background noise.
 
 These are estimates from a live-sound measurement through the PA, not a certified acoustic survey (which uses an
@@ -489,20 +513,29 @@ Updates > **Check for updates** checks by hand. Installing a new version keeps y
 
 ## Settings
 
-Settings (bottom of the navigation pane) holds the options that are not part of a step. The analysis details
-(transfer function, RTA, impulse response and waterfall) are hidden until **Show advanced analysis settings** is on;
-the defaults suit most tuning.
+Settings (bottom of the navigation pane) is a full page: the categories on the left, one shown at a time, each with
+**Reset to defaults**. Everything keeps the defaults earlier versions used until you change it.
 
-- **Inputs:** audio device (app only; this replaces the app's Options menu), reference. Mics are set up on the Mic
-  setup page.
-- **Minimum coherence** (always shown): how reliable a point must be to count.
-- **Transfer function** (advanced): FFT size (8k to 64k), averaging, smoothing, magnitude range.
-- **RTA** (advanced): resolution (1/1 to 1/48 octave), speed, reference overlay, peak hold.
-- **Screen:** number of graphs, stacked or side by side, theme.
-- **Impulse response:** linear or log (ETC), time range.
-- **Waterfall:** history length and colour range.
-- **Environment:** temperature (Celsius or Fahrenheit), distance in feet or metres.
+- **Audio:** audio device (app only), reference, minimum coherence. Mics are set up on the Mics page.
+- **Measurement:** transfer function (FFT size, averaging, smoothing, magnitude range) and RTA (resolution, speed,
+  reference overlay, peak hold).
+- **Display:** number of graphs, stacked or side by side, theme; impulse response (linear or ETC, time range);
+  waterfall (history, colour range).
+- **Units and environment:** temperature (Celsius or Fahrenheit), distance in feet or metres.
+- **Tuning defaults:** Room EQ (target for new venues, close enough, narrowest cut and boost, bands and boost for new
+  venues, deepest cut, allow for the room acoustics), level balance (left and right within, the fill's range, the sub
+  within, the largest trim), the close-up distance, the speech level for the STI, and the quick re-check's
+  tolerances. Each has a **This venue** column: pick a value to keep one for the open venue only (saved with it and
+  listed in the report), or "Your default". **Clear this venue's own values** puts them all back.
+- **Generator and safety:** the level at start, a ceiling it never goes above, a fade-in (it always stops quickly), and
+  the acoustics sweep length.
+- **Monitoring:** for new sessions, the event level limit, its weighting (LAeq or LCeq) and window, and the log step;
+  the feedback watch's sensitivity; how often delay tracking follows the delay.
+- **Reports and files:** prepared by, a logo for the reports' covers, paper size (Letter or A4), the folder Open, Save
+  and the exports start in, and how often the recovery copy is saved.
 - **Updates:** check now, and whether to check when LiveAlign starts.
+
+In the VST3 the audio and tuning categories are hidden (the host owns the audio; the plug-in only monitors).
 
 ## Calibration
 

@@ -2,336 +2,554 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// The Settings pop-up: every option in one place, grouped into sections in two columns.
+// Settings: a full page with the categories listed on the left (Audio, Measurement, Display, Units, Tuning defaults,
+// Generator and safety, Monitoring, Reports and files, Updates) and one category shown at a time, each with its own
+// Reset to defaults. The tuning defaults can be overridden for the open venue (the "This venue" column).
 #include <functional>
 #include <memory>
 #include "Theme.h"
 #include "../PluginProcessor.h"
+#include "../Prefs.h"
 #include "../StandaloneHooks.h"
 
 namespace la::ui
 {
-class SettingsPanel : public juce::Component, private juce::Timer
+class SettingsPage : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void()> onThemeChanged, onLayoutChanged;
+    std::function<void()> onThemeChanged, onLayoutChanged, onPrefsChanged, onVenueChanged;
 
-    explicit SettingsPanel (LiveAlignProcessor& p) : settings (p.settings), updates (p.updates)
+    explicit SettingsPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), updates (p.updates)
     {
-        const int nIn = juce::jmax (1, p.numInputs());
-
-        // ================= left column =================
-        header (0, "Inputs  (mics are set up on the Mic setup page)");
-        if (StandaloneHooks::showAudioSettings())
+        for (int c = 0; c < kNumPrefCats; ++c)
         {
-            deviceButton.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
-            deviceButton.setTooltip ("Choose the audio interface, sample rate, buffer size and which channels are used");
-            row (0, "Audio device", deviceButton);
+            auto* b = catButtons.add (new juce::TextButton (prefCatName (c)));
+            b->setClickingTogglesState (true);
+            b->setRadioGroupId (8810);
+            b->onClick = [this, c] { if (catButtons[c]->getToggleState()) show (c); };
+            addAndMakeVisible (b);
         }
-        refBox.addItem ("Off", 1);
-        refBox.addItem ("Generator (internal copy)", 2);
-        for (int i = 0; i < nIn; ++i) refBox.addItem ("Input " + juce::String (i + 1) + " (loopback)", i + 3);
-        if (settings.refSource.load() <= nIn + 1) refBox.setSelectedItemIndex (settings.refSource.load(), juce::dontSendNotification);
-        refBox.setTextWhenNothingSelected ("Input " + juce::String (settings.refSource.load() - 1) + " (not on this interface)");
-        refBox.setTooltip ("What the mic is compared against. A loopback cable from the output that feeds the PA is the most "
-                           "accurate. The internal generator copy works without a cable but only with the generator.");
-        refBox.onChange = [this] { settings.refSource = refBox.getSelectedItemIndex(); settings.requestResetAverages = true; };
-        row (0, "Reference", refBox);
-
-        adv = true;   // analysis details: hidden unless "Show advanced settings" is on
-        header (0, "Transfer function");
-        static const int sizes[] = { 8192, 16384, 32768, 65536 };
-        fftBox.addItemList ({ "8k   (5.9 Hz, fast)", "16k  (2.9 Hz)", "32k  (1.5 Hz)", "64k  (0.7 Hz, slow)" }, 1);
-        for (int i = 0; i < 4; ++i) if (sizes[i] == settings.fftSize.load()) fftBox.setSelectedItemIndex (i, juce::dontSendNotification);
-        fftBox.setTooltip ("Bigger resolves low frequencies better but reacts more slowly. Resolution shown at 48 kHz.");
-        fftBox.onChange = [this] { settings.fftSize = sizes[juce::jlimit (0, 3, fftBox.getSelectedItemIndex())]; };
-        row (0, "FFT size", fftBox);
-
-        static const int avgs[] = { 1, 2, 4, 8, 16, 32, 64 };
-        for (int i = 0; i < 7; ++i)
-        {
-            avgBox.addItem (juce::String (avgs[i]) + (avgs[i] == 1 ? " (none)" : " frames"), i + 1);
-            if (avgs[i] == settings.averages.load()) avgBox.setSelectedItemIndex (i, juce::dontSendNotification);
-        }
-        avgBox.setTooltip ("More averages are steadier but slower to react");
-        avgBox.onChange = [this] { settings.averages = avgs[juce::jlimit (0, 6, avgBox.getSelectedItemIndex())]; };
-        row (0, "Averaging", avgBox);
-
-        static const int smooth[] = { 48, 24, 12, 6, 3 };
-        for (int i = 0; i < 5; ++i)
-        {
-            smoothBox.addItem ("1/" + juce::String (smooth[i]) + " octave", i + 1);
-            if (smooth[i] == settings.smoothing.load()) smoothBox.setSelectedItemIndex (i, juce::dontSendNotification);
-        }
-        smoothBox.setTooltip ("1/24 or 1/12 octave for tuning, 1/3 for the overall tonal shape");
-        smoothBox.onChange = [this] { settings.smoothing = smooth[juce::jlimit (0, 4, smoothBox.getSelectedItemIndex())]; };
-        row (0, "Smoothing", smoothBox);
-        adv = false;
-
-        blankBox.addItemList ({ "Off", "20 %", "40 % (default)", "60 %", "80 % (strict)" }, 1);
-        blankBox.setSelectedItemIndex (juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)), juce::dontSendNotification);
-        blankBox.setTooltip ("How reliable a measurement point must be to count. Points with less coherence are hidden on the "
-                             "transfer function and are not trusted by the speaker measurements and the crossover search. "
-                             "Raise it in a noisy room to be stricter.");
-        blankBox.onChange = [this] { settings.coherenceBlank = (float) blankBox.getSelectedItemIndex() / 5.0f; };
-        row (0, "Minimum coherence", blankBox);
-        adv = true;
-
-        static const float ranges[] = { 12.0f, 20.0f, 30.0f, 40.0f };
-        rangeBox.addItemList ({ "+/- 12 dB", "+/- 20 dB", "+/- 30 dB", "+/- 40 dB" }, 1);
-        for (int i = 0; i < 4; ++i) if (std::abs (ranges[i] - settings.magRange.load()) < 0.1f) rangeBox.setSelectedItemIndex (i, juce::dontSendNotification);
-        rangeBox.onChange = [this] { settings.magRange = ranges[juce::jlimit (0, 3, rangeBox.getSelectedItemIndex())]; };
-        row (0, "Magnitude range", rangeBox);
-
-        header (0, "RTA");
-        static const int bands[] = { 1, 3, 6, 12, 24, 48 };
-        for (int i = 0; i < 6; ++i)
-        {
-            bandsBox.addItem ("1/" + juce::String (bands[i]) + " octave", i + 1);
-            if (bands[i] == settings.rtaBands.load()) bandsBox.setSelectedItemIndex (i, juce::dontSendNotification);
-        }
-        bandsBox.onChange = [this] { settings.rtaBands = bands[juce::jlimit (0, 5, bandsBox.getSelectedItemIndex())]; };
-        row (0, "Resolution", bandsBox);
-
-        speedBox.addItemList ({ "Fast", "Medium", "Slow" }, 1);
-        speedBox.setSelectedItemIndex (settings.rtaSpeed.load(), juce::dontSendNotification);
-        speedBox.onChange = [this] { settings.rtaSpeed = speedBox.getSelectedItemIndex(); };
-        row (0, "Speed", speedBox);
-
-        refRtaToggle.setToggleState (settings.rtaShowRef.load(), juce::dontSendNotification);
-        refRtaToggle.onClick = [this] { settings.rtaShowRef = refRtaToggle.getToggleState(); };
-        peakToggle.setToggleState (settings.rtaPeakHold.load(), juce::dontSendNotification);
-        peakToggle.onClick = [this] { settings.rtaPeakHold = peakToggle.getToggleState(); settings.requestClearPeak = true; };
-        row (0, "Overlays", refRtaToggle, &peakToggle);
-        adv = false;
-
-        // ================= right column =================
-        header (1, "Screen");
-        countBox.addItemList ({ "1 graph", "2 graphs", "3 graphs" }, 1);
-        countBox.setSelectedItemIndex (settings.paneCount.load() - 1, juce::dontSendNotification);
-        countBox.setTooltip ("Split the screen to show the RTA, transfer function and impulse response together. "
-                             "Pick what each graph shows with the buttons above it.");
-        countBox.onChange = [this] { settings.paneCount = countBox.getSelectedItemIndex() + 1; if (onLayoutChanged) onLayoutChanged(); };
-        row (1, "Graphs", countBox);
-
-        layoutBox.addItemList ({ "Stacked", "Side by side" }, 1);
-        layoutBox.setSelectedItemIndex (settings.paneLayout.load(), juce::dontSendNotification);
-        layoutBox.onChange = [this] { settings.paneLayout = layoutBox.getSelectedItemIndex(); if (onLayoutChanged) onLayoutChanged(); };
-        row (1, "Arrangement", layoutBox);
-
-        themeBox.addItemList ({ "Dark", "Light" }, 1);
-        themeBox.setSelectedItemIndex (settings.theme.load(), juce::dontSendNotification);
-        themeBox.onChange = [this] { settings.theme = themeBox.getSelectedItemIndex(); if (onThemeChanged) onThemeChanged(); };
-        row (1, "Theme", themeBox);
-
-        adv = true;
-        header (1, "Impulse response");
-        irModeBox.addItemList ({ "Linear", "Log (ETC)" }, 1);
-        irModeBox.setSelectedItemIndex (settings.irMode.load(), juce::dontSendNotification);
-        irModeBox.onChange = [this] { settings.irMode = irModeBox.getSelectedItemIndex(); };
-        row (1, "Display", irModeBox);
-
-        irRangeBox.addItemList ({ "20 ms", "100 ms", "500 ms" }, 1);
-        irRangeBox.setSelectedItemIndex (settings.irRange.load(), juce::dontSendNotification);
-        irRangeBox.onChange = [this] { settings.irRange = irRangeBox.getSelectedItemIndex(); };
-        row (1, "Time range", irRangeBox);
-
-        header (1, "Waterfall");
-        wfSpanBox.addItemList ({ "10 seconds", "30 seconds", "60 seconds" }, 1);
-        wfSpanBox.setSelectedItemIndex (settings.wfSeconds.load(), juce::dontSendNotification);
-        wfSpanBox.onChange = [this] { settings.wfSeconds = wfSpanBox.getSelectedItemIndex(); };
-        row (1, "History", wfSpanBox);
-        wfRangeBox.addItemList ({ "40 dB", "60 dB", "80 dB" }, 1);
-        wfRangeBox.setSelectedItemIndex (settings.wfRange.load(), juce::dontSendNotification);
-        wfRangeBox.setTooltip ("Level range from the loudest band down to the darkest colour");
-        wfRangeBox.onChange = [this] { settings.wfRange = wfRangeBox.getSelectedItemIndex(); };
-        row (1, "Colour range", wfRangeBox);
-        adv = false;
-
-        header (1, "Environment");
-        tempUnitBox.addItemList ({ juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "C  Celsius")),
-                                   juce::String (juce::CharPointer_UTF8 ("\xc2\xb0" "F  Fahrenheit")) }, 1);
-        tempUnitBox.setSelectedItemIndex (settings.temperatureUnit.load(), juce::dontSendNotification);
-        tempUnitBox.onChange = [this] { settings.temperatureUnit = tempUnitBox.getSelectedItemIndex(); setupTemperatureSlider(); };
-        row (1, "Temperature unit", tempUnitBox);
-
-        tempSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-        tempSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 70, 24);
-        tempSlider.setTooltip ("Air temperature, used to turn delay times into distances (speed of sound)");
-        tempSlider.onValueChange = [this]
-        {
-            const double v = tempSlider.getValue();
-            settings.temperatureC = (float) (settings.temperatureUnit.load() == 1 ? (v - 32.0) * 5.0 / 9.0 : v);
-        };
-        setupTemperatureSlider();
-        row (1, "Temperature", tempSlider);
-
-        unitBox.addItemList ({ "Feet", "Metres" }, 1);
-        unitBox.setSelectedItemIndex (settings.distanceUnit.load(), juce::dontSendNotification);
-        unitBox.onChange = [this] { settings.distanceUnit = unitBox.getSelectedItemIndex(); };
-        row (1, "Distance unit", unitBox);
-
-        header (1, "Reports");
-        authorEditor.setFont (font (13.0f));
-        authorEditor.setText (UserPrefs::get ("reportAuthor"), juce::dontSendNotification);
-        authorEditor.setTextToShowWhenEmpty ("Your name or company", pal().textFaint);
-        authorEditor.setTooltip ("Shown as \"Prepared by\" on tuning reports");
-        authorEditor.onTextChange = [this] { UserPrefs::set ("reportAuthor", authorEditor.getText().trim()); };
-        row (1, "Prepared by", authorEditor);
-
-        header (0, "Updates");
-        checkButton.onClick = [this] { updates.check(); refreshUpdate(); };
-        checkButton.setTooltip ("Ask GitHub for the latest LiveAlign release");
-        row (0, "Version " + juce::String (JucePlugin_VersionString), checkButton);
-        autoUpdateToggle.setToggleState (updates.autoCheck(), juce::dontSendNotification);
-        autoUpdateToggle.setTooltip ("Check once each time LiveAlign starts (needs an internet connection; nothing is sent but the request)");
-        autoUpdateToggle.onClick = [this] { updates.setAutoCheck (autoUpdateToggle.getToggleState()); };
-        row (0, "Automatically", autoUpdateToggle);
-        refreshUpdate();
-
-        showAdvanced = UserPrefs::get ("showAdvanced") == "1";
-        advancedToggle.setToggleState (showAdvanced, juce::dontSendNotification);
-        advancedToggle.setTooltip ("FFT size, averaging, smoothing, graph ranges, RTA, impulse response and waterfall options. "
-                                   "The defaults suit most tuning; LiveAlign's guided steps pick what they need.");
-        advancedToggle.onClick = [this]
-        {
-            showAdvanced = advancedToggle.getToggleState();
-            UserPrefs::set ("showAdvanced", showAdvanced ? "1" : "0");
-            layout();
-        };
-        addAndMakeVisible (advancedToggle);
-        layout();
+        resetButton.onClick = [this] { resetCategory(); };
+        resetButton.setTooltip ("Put every setting in this category back to how LiveAlign comes");
+        addAndMakeVisible (resetButton);
+        clearVenueButton.onClick = [this] { proc.venuePrefs.values.clear(); changedVenue(); rebuildLater(); };
+        clearVenueButton.setTooltip ("Use your defaults for everything in this venue");
+        addAndMakeVisible (clearVenueButton);
+        view.setViewedComponent (&content, false);
+        view.setScrollBarsShown (true, false);
+        addAndMakeVisible (view);
+        const int last = juce::jlimit (0, kNumPrefCats - 1, UserPrefs::get ("settingsCategory", "0").getIntValue());
+        show (visibleCat (last) ? last : 0);
         startTimerHz (2);
     }
+
+    ~SettingsPage() override { stopTimer(); }
+
+    // After a venue opens (its overrides) or the theme changes.
+    void refresh() { build(); repaint(); }
+
+    int category() const { return cat; }
+    void showCategory (int c) { if (c >= 0 && c < kNumPrefCats && visibleCat (c)) show (c); }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
-        g.fillAll (p.panel);
-        g.setColour (p.text);
-        g.setFont (font (17.0f, true));
-        g.drawText ("SETTINGS", kPad, 8, 200, 30, juce::Justification::centredLeft);
-
-        // divider between the columns
-        g.setColour (p.border);
-        const int divX = kPad + kColW + kColGap / 2;
-        g.drawVerticalLine (divX, (float) kTop, (float) getHeight() - 36.0f);
-
-        for (const auto& h : headers)
-        {
-            if (! h.shown) continue;
-            const int x = colX (h.col);
-            g.setColour (p.accent);
-            g.fillRoundedRectangle ((float) x, (float) h.y + 7.0f, 3.0f, 12.0f, 1.5f);
-            g.setColour (p.text);
-            g.setFont (font (13.0f, true));
-            g.drawText (h.text, x + 10, h.y, kColW - 10, 26, juce::Justification::centredLeft);
-            g.setColour (p.border);
-            g.drawHorizontalLine (h.y + 27, (float) x, (float) (x + kColW));
-        }
-
-        g.setFont (font (12.5f));
-        for (const auto& r : rows)
-        {
-            if (! r.shown) continue;
-            g.setColour (p.text);
-            g.drawText (r.label, colX (r.col), r.y, kLabelW - 8, 28, juce::Justification::centredLeft);
-        }
-
-        g.setColour (updateState == UpdateInfo::Available ? p.accent : updateState == UpdateInfo::Failed ? p.warn : p.textDim);
-        g.setFont (font (11.5f, updateState == UpdateInfo::Available));
-        g.drawText (updateText, updateLine, juce::Justification::centredLeft, true);
-
+        drawPanel (g, menuCard.toFloat(), "Settings");
+        drawPanel (g, bodyCard.toFloat(), prefCatName (cat));
         g.setColour (p.textDim);
         g.setFont (font (11.0f));
-        g.drawText (deviceText, kPad, getHeight() - 30, getWidth() / 2, 20, juce::Justification::centredLeft);
-        g.drawText (juce::String (JucePlugin_Name) + " " + JucePlugin_VersionString, getWidth() / 2, getHeight() - 30,
-                    getWidth() / 2 - kPad, 20, juce::Justification::centredRight);
+        g.drawFittedText (catBlurb (cat), blurbArea, juce::Justification::topLeft, 2);
+        g.setColour (p.textFaint);
+        g.setFont (font (10.5f));
+        g.drawText (juce::String (JucePlugin_Name) + " " + JucePlugin_VersionString, menuCard.reduced (14, 10).removeFromBottom (18), juce::Justification::centredLeft);
     }
 
     void resized() override
     {
-        for (auto& r : rows)
+        auto r = getLocalBounds();
+        menuCard = r.removeFromLeft (230);
+        r.removeFromLeft (10);
+        bodyCard = r;
+        auto m = menuCard.reduced (10, 0).withTrimmedTop (40);
+        for (int c = 0; c < kNumPrefCats; ++c)
         {
-            if (! r.shown) continue;
-            auto area = juce::Rectangle<int> (colX (r.col) + kLabelW, r.y, kColW - kLabelW, 28);
-            if (r.second != nullptr)
-            {
-                const int w = (area.getWidth() - 8) / 2;
-                r.comp->setBounds (area.removeFromLeft (w));
-                area.removeFromLeft (8);
-                r.second->setBounds (area);
-            }
-            else
-                r.comp->setBounds (area);
+            auto* b = catButtons[c];
+            b->setVisible (visibleCat (c));
+            if (! b->isVisible()) continue;
+            b->setBounds (m.removeFromTop (34));
+            m.removeFromTop (4);
         }
+        auto body = bodyCard.reduced (16, 0).withTrimmedTop (38);
+        auto top = body.removeFromTop (34);
+        resetButton.setBounds (top.removeFromRight (170).withSizeKeepingCentre (170, 28));
+        top.removeFromRight (8);
+        clearVenueButton.setBounds (top.removeFromRight (220).withSizeKeepingCentre (220, 28));
+        clearVenueButton.setVisible (cat == (int) PrefCat::Tuning && ! proc.venuePrefs.values.empty());
+        blurbArea = top;
+        body.removeFromTop (6);
+        view.setBounds (body.withTrimmedBottom (10));
+        layoutContent();
     }
 
 private:
-    static constexpr int kColW = 400, kColGap = 48, kLabelW = 150, kRowH = 36, kTop = 44, kPad = 20;
-    static int colX (int col) { return kPad + col * (kColW + kColGap); }
-
-    struct Row { juce::String label; juce::Component* comp; juce::Component* second; int col, y; bool adv, shown; int order; };
-    struct Header { juce::String text; int col, y; bool adv, shown; int order; };
-
-    void header (int col, const juce::String& text) { headers.push_back ({ text, col, 0, adv, true, order++ }); }
-
-    void row (int col, const juce::String& label, juce::Component& c, juce::Component* second = nullptr)
+    // ---- a row: a label (and a line of help) with up to two controls ----
+    struct Row
     {
-        addAndMakeVisible (c);
-        if (second != nullptr) addAndMakeVisible (second);
-        rows.push_back ({ label, &c, second, col, 0, adv, true, order++ });
-    }
+        juce::String label, help;
+        juce::Component* a = nullptr;
+        juce::Component* b = nullptr;
+        bool heading = false;
+        juce::String note;   // shown where the second control would be
+    };
 
-    // Places the headers and rows (skipping the advanced ones when hidden) and sizes the panel.
-    void layout()
+    class Content : public juce::Component
     {
-        int y[2] { kTop, kTop };
-        int hi = 0, ri = 0;
-        while (hi < (int) headers.size() || ri < (int) rows.size())
+    public:
+        std::vector<Row> rows;
+        std::vector<std::unique_ptr<juce::Component>> owned;
+        bool twoColumns = false;   // tuning: "Your default" and "This venue"
+        juce::String status;       // the updates line
+        juce::Colour statusColour;
+
+        static constexpr int kLabelW = 330, kCtrlW = 230, kGap = 12;
+
+        void paint (juce::Graphics& g) override
         {
-            const bool takeHeader = ri >= (int) rows.size() || (hi < (int) headers.size() && headers[(size_t) hi].order < rows[(size_t) ri].order);
-            if (takeHeader)
+            const auto& p = pal();
+            int y = 0;
+            if (twoColumns)
             {
-                auto& h = headers[(size_t) hi++];
-                h.shown = showAdvanced || ! h.adv;
-                if (! h.shown) continue;
-                if (y[h.col] > kTop) y[h.col] += 10;
-                h.y = y[h.col];
-                y[h.col] += 32;
+                g.setColour (p.textDim);
+                g.setFont (font (10.5f, true));
+                g.drawText ("YOUR DEFAULT", kLabelW, 0, kCtrlW, 20, juce::Justification::centredLeft);
+                g.drawText ("THIS VENUE", kLabelW + kCtrlW + kGap, 0, kCtrlW, 20, juce::Justification::centredLeft);
+                y = 24;
             }
-            else
+            for (const auto& r : rows)
             {
-                auto& r = rows[(size_t) ri++];
-                r.shown = showAdvanced || ! r.adv;
-                r.comp->setVisible (r.shown);
-                if (r.second != nullptr) r.second->setVisible (r.shown);
-                if (! r.shown) continue;
-                r.y = y[r.col];
-                y[r.col] += kRowH;
+                if (r.heading)
+                {
+                    y += y > 0 ? 10 : 0;
+                    g.setColour (p.accent);
+                    g.fillRoundedRectangle (0.0f, (float) y + 7.0f, 3.0f, 12.0f, 1.5f);
+                    g.setColour (p.text);
+                    g.setFont (font (13.0f, true));
+                    g.drawText (r.label, 10, y, getWidth() - 10, 26, juce::Justification::centredLeft);
+                    g.setColour (p.border);
+                    g.drawHorizontalLine (y + 27, 0.0f, (float) getWidth());
+                    y += 34;
+                    continue;
+                }
+                const int h = rowHeight (r);
+                g.setColour (p.text);
+                g.setFont (font (12.5f));
+                g.drawText (r.label, 0, y + 2, kLabelW - 10, 20, juce::Justification::centredLeft, true);
+                if (r.help.isNotEmpty())
+                {
+                    g.setColour (p.textFaint);
+                    g.setFont (font (10.5f));
+                    g.drawFittedText (r.help, 0, y + 21, kLabelW - 14, h - 23, juce::Justification::topLeft, 2);
+                }
+                if (r.note.isNotEmpty())
+                {
+                    g.setColour (p.textFaint);
+                    g.setFont (font (10.5f));
+                    g.drawFittedText (r.note, kLabelW + kCtrlW + kGap, y + 2, kCtrlW, h - 4, juce::Justification::centredLeft, 2);
+                }
+                y += h;
+            }
+            if (status.isNotEmpty())
+            {
+                g.setColour (statusColour);
+                g.setFont (font (11.5f));
+                g.drawFittedText (status, 0, y + 6, getWidth(), 34, juce::Justification::topLeft, 2);
             }
         }
-        updateLine = { colX (0), y[0], kColW, 22 };
-        y[0] += 26;
-        const int bottom = juce::jmax (y[0], y[1]);
-        advancedToggle.setBounds (kPad, bottom + 6, 340, 26);
-        setSize (2 * kColW + kColGap + 2 * kPad, bottom + 6 + 26 + 40);
+
+        static int rowHeight (const Row& r) { return r.help.isNotEmpty() ? 52 : 38; }
+
+        int layout()
+        {
+            int y = twoColumns ? 24 : 0;
+            for (auto& r : rows)
+            {
+                if (r.heading) { y += (y > 0 ? 10 : 0) + 34; continue; }
+                const int h = rowHeight (r);
+                if (r.a != nullptr) r.a->setBounds (kLabelW, y + 2, kCtrlW, 28);
+                if (r.b != nullptr) r.b->setBounds (kLabelW + kCtrlW + kGap, y + 2, kCtrlW, 28);
+                y += h;
+            }
+            return y + (status.isNotEmpty() ? 44 : 10);
+        }
+    };
+
+    bool visibleCat (int c) const
+    {
+        if (proc.isStandalone() || proc.uiAsStandalone) return true;
+        // the VST3 only monitors: no audio device, no tuning
+        return c != (int) PrefCat::Tuning && c != (int) PrefCat::Audio;
+    }
+
+    static juce::String catBlurb (int c)
+    {
+        switch ((PrefCat) c)
+        {
+            case PrefCat::Audio: return "The interface and the reference the mics are compared against. The mics themselves are set up on Mics.";
+            case PrefCat::Measurement: return "How the transfer function and the RTA are worked out. The defaults suit most tuning; the guided steps pick what they need.";
+            case PrefCat::Display: return "What the screen shows and how.";
+            case PrefCat::Units: return "Distances and the air temperature (it sets the speed of sound for delays).";
+            case PrefCat::Tuning: return "Your defaults for every venue. A venue can keep its own value (This venue): it is saved with the venue and listed in the report.";
+            case PrefCat::Generator: return "The test signal: where it starts, how loud it may ever get and how gently it comes in.";
+            case PrefCat::Monitoring: return "Defaults for new sessions' event level, and how the feedback watch and the delay tracking behave.";
+            case PrefCat::Reports: return "What the reports look like, and where files go.";
+            case PrefCat::Updates:
+            default: return "LiveAlign asks GitHub for the latest release. Nothing is sent but the request.";
+        }
+    }
+
+    void show (int c)
+    {
+        cat = c;
+        catButtons[c]->setToggleState (true, juce::dontSendNotification);
+        UserPrefs::set ("settingsCategory", juce::String (c));
+        build();
         resized();
         repaint();
     }
 
-    void setupTemperatureSlider()
+    // ---- building a category ----
+    template <class T> T& make()
     {
-        const bool f = settings.temperatureUnit.load() == 1;
-        const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
-        tempSlider.setRange (f ? 14.0 : -10.0, f ? 113.0 : 45.0, 1.0);
-        tempSlider.setTextValueSuffix (" " + deg + (f ? "F" : "C"));
-        const double c = settings.temperatureC.load();
-        tempSlider.setValue (f ? c * 9.0 / 5.0 + 32.0 : c, juce::dontSendNotification);
+        auto c = std::make_unique<T>();
+        auto& ref = *c;
+        content.addAndMakeVisible (ref);
+        content.owned.push_back (std::move (c));
+        return ref;
     }
+    void heading (const juce::String& t) { Row r; r.label = t; r.heading = true; content.rows.push_back (r); }
+    void row (const juce::String& label, juce::Component& a, const juce::String& help = {}, juce::Component* b = nullptr, const juce::String& note = {})
+    {
+        Row r;
+        r.label = label; r.help = help; r.a = &a; r.b = b; r.note = note;
+        content.rows.push_back (r);
+    }
+
+    juce::ComboBox& combo (const juce::StringArray& items, int selectedIndex, std::function<void (int)> onPick)
+    {
+        auto& c = make<juce::ComboBox>();
+        c.addItemList (items, 1);
+        c.setSelectedItemIndex (selectedIndex, juce::dontSendNotification);
+        auto* cp = &c;
+        c.onChange = [cp, onPick] { onPick (cp->getSelectedItemIndex()); };
+        return c;
+    }
+
+    // A preference: your default, and (tuning) this venue's own value.
+    void prefRow (const PrefDef& d, bool withVenue)
+    {
+        auto& ap = AppPrefs::get();
+        juce::StringArray items;
+        int sel = 0;
+        const double now = ap.value (d.key);
+        for (size_t i = 0; i < d.values.size(); ++i)
+        {
+            items.add (d.text (d.values[i]));
+            if (std::abs (d.values[i] - now) < 1e-9) sel = (int) i;
+        }
+        const juce::String key (d.key);
+        auto& def = combo (items, sel, [this, key, &d] (int i)
+        {
+            AppPrefs::get().set (key, d.values[(size_t) juce::jlimit (0, (int) d.values.size() - 1, i)]);
+            changedPrefs();
+            rebuildLater();
+        });
+        def.setTooltip (d.help);
+        juce::Component* venueCtrl = nullptr;
+        juce::String note;
+        if (withVenue && d.venue)
+        {
+            juce::StringArray vi;
+            vi.add ("Your default (" + d.text (now) + ")");
+            int vs = 0;
+            for (size_t i = 0; i < d.values.size(); ++i)
+            {
+                vi.add (d.text (d.values[i]));
+                if (proc.venuePrefs.has (key) && std::abs (d.values[i] - proc.venuePrefs.value (key)) < 1e-9) vs = (int) i + 1;
+            }
+            auto& v = combo (vi, vs, [this, key, &d] (int i)
+            {
+                if (i <= 0) proc.venuePrefs.reset (key);
+                else proc.venuePrefs.set (key, d.values[(size_t) juce::jlimit (0, (int) d.values.size() - 1, i - 1)]);
+                changedVenue();
+                rebuildLater();
+            });
+            v.setTooltip (proc.venuePrefs.has (key) ? "This venue's own value (a venue override). Pick \"Your default\" to use yours."
+                                                    : "This venue uses your default. Pick a value to keep one for this venue only.");
+            if (proc.venuePrefs.has (key)) v.setColour (juce::ComboBox::outlineColourId, pal().accent);
+            venueCtrl = &v;
+        }
+        else if (withVenue)
+            note = juce::String (d.key) == "eqBands" || juce::String (d.key) == "eqMaxBoost" ? "Each venue: on Room EQ" : "For new venues";
+        row (d.label, def, d.help, venueCtrl, note);
+    }
+
+    void prefRows (PrefCat c, bool withVenue)
+    {
+        juce::String group;
+        for (const auto& d : prefs::all())
+        {
+            if (d.cat != c) continue;
+            if (group != d.group) { group = d.group; heading (group); }
+            prefRow (d, withVenue);
+        }
+    }
+
+    void build()
+    {
+        content.rows.clear();
+        content.owned.clear();
+        content.twoColumns = false;
+        content.status.clear();
+        const int nIn = juce::jmax (1, proc.numInputs());
+        switch ((PrefCat) cat)
+        {
+            case PrefCat::Audio:
+            {
+                if (StandaloneHooks::showAudioSettings())
+                {
+                    auto& b = make<juce::TextButton>();
+                    b.setButtonText ("Audio device...");
+                    b.onClick = [] { if (auto& f = StandaloneHooks::showAudioSettings()) f(); };
+                    row ("Audio device", b, "The interface, sample rate, buffer size and which channels are used");
+                }
+                juce::StringArray refs { "Off", "Generator (internal copy)" };
+                for (int i = 0; i < nIn; ++i) refs.add ("Input " + juce::String (i + 1) + " (loopback)");
+                auto& ref = combo (refs, settings.refSource.load() <= nIn + 1 ? settings.refSource.load() : -1,
+                                   [this] (int i) { settings.refSource = i; settings.requestResetAverages = true; });
+                if (settings.refSource.load() > nIn + 1) ref.setTextWhenNothingSelected ("Input " + juce::String (settings.refSource.load() - 1) + " (not on this interface)");
+                row ("Reference", ref, "A loopback cable from the output that feeds the PA is the most accurate; the generator copy needs no cable");
+                auto& coh = combo ({ "Off", "20 %", "40 % (default)", "60 %", "80 % (strict)" }, juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)),
+                                   [this] (int i) { settings.coherenceBlank = (float) i / 5.0f; });
+                row ("Minimum coherence", coh, "Points less reliable than this are hidden and not trusted; raise it in a noisy room");
+                content.status = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : juce::String ("Inputs and outputs come from the host");
+                content.statusColour = pal().textDim;
+                break;
+            }
+            case PrefCat::Measurement:
+            {
+                heading ("Transfer function");
+                static const int sizes[] = { 8192, 16384, 32768, 65536 };
+                int fi = 2;
+                for (int i = 0; i < 4; ++i) if (sizes[i] == settings.fftSize.load()) fi = i;
+                row ("FFT size", combo ({ "8k   (5.9 Hz, fast)", "16k  (2.9 Hz)", "32k  (1.5 Hz)", "64k  (0.7 Hz, slow)" }, fi, [this] (int i) { settings.fftSize = sizes[juce::jlimit (0, 3, i)]; }),
+                     "Bigger resolves low frequencies better but reacts more slowly (at 48 kHz)");
+                static const int avgs[] = { 1, 2, 4, 8, 16, 32, 64 };
+                juce::StringArray ai;
+                int as = 3;
+                for (int i = 0; i < 7; ++i) { ai.add (juce::String (avgs[i]) + (avgs[i] == 1 ? " (none)" : " frames")); if (avgs[i] == settings.averages.load()) as = i; }
+                row ("Averaging", combo (ai, as, [this] (int i) { settings.averages = avgs[juce::jlimit (0, 6, i)]; }), "More is steadier but slower to react");
+                static const int smooth[] = { 48, 24, 12, 6, 3 };
+                juce::StringArray si;
+                int ss = 1;
+                for (int i = 0; i < 5; ++i) { si.add ("1/" + juce::String (smooth[i]) + " octave"); if (smooth[i] == settings.smoothing.load()) ss = i; }
+                row ("Smoothing", combo (si, ss, [this] (int i) { settings.smoothing = smooth[juce::jlimit (0, 4, i)]; }), "1/24 or 1/12 octave to tune, 1/3 for the overall shape");
+                static const float ranges[] = { 12.0f, 20.0f, 30.0f, 40.0f };
+                int rs = 1;
+                for (int i = 0; i < 4; ++i) if (std::abs (ranges[i] - settings.magRange.load()) < 0.1f) rs = i;
+                row ("Magnitude range", combo ({ "+/- 12 dB", "+/- 20 dB", "+/- 30 dB", "+/- 40 dB" }, rs, [this] (int i) { settings.magRange = ranges[juce::jlimit (0, 3, i)]; }));
+                heading ("RTA");
+                static const int bands[] = { 1, 3, 6, 12, 24, 48 };
+                juce::StringArray bi;
+                int bs = 1;
+                for (int i = 0; i < 6; ++i) { bi.add ("1/" + juce::String (bands[i]) + " octave"); if (bands[i] == settings.rtaBands.load()) bs = i; }
+                row ("Resolution", combo (bi, bs, [this] (int i) { settings.rtaBands = bands[juce::jlimit (0, 5, i)]; }));
+                row ("Speed", combo ({ "Fast", "Medium", "Slow" }, settings.rtaSpeed.load(), [this] (int i) { settings.rtaSpeed = i; }));
+                auto& refT = make<juce::ToggleButton>();
+                refT.setButtonText ("Reference");
+                refT.setToggleState (settings.rtaShowRef.load(), juce::dontSendNotification);
+                refT.onClick = [this, &refT] { settings.rtaShowRef = refT.getToggleState(); };
+                auto& peakT = make<juce::ToggleButton>();
+                peakT.setButtonText ("Peak hold");
+                peakT.setToggleState (settings.rtaPeakHold.load(), juce::dontSendNotification);
+                peakT.onClick = [this, &peakT] { settings.rtaPeakHold = peakT.getToggleState(); settings.requestClearPeak = true; };
+                row ("Overlays", refT, "The reference's spectrum, and the highest level each band reached", &peakT);
+                break;
+            }
+            case PrefCat::Display:
+            {
+                heading ("Screen");
+                row ("Graphs", combo ({ "1 graph", "2 graphs", "3 graphs" }, settings.paneCount.load() - 1,
+                                      [this] (int i) { settings.paneCount = i + 1; if (onLayoutChanged) onLayoutChanged(); }),
+                     "Live monitoring can show the RTA, transfer function and impulse response together");
+                row ("Arrangement", combo ({ "Stacked", "Side by side" }, settings.paneLayout.load(), [this] (int i) { settings.paneLayout = i; if (onLayoutChanged) onLayoutChanged(); }));
+                row ("Theme", combo ({ "Dark", "Light" }, settings.theme.load(), [this] (int i)
+                {
+                    settings.theme = i;
+                    juce::Component::SafePointer<SettingsPage> safe (this);
+                    juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->onThemeChanged) safe->onThemeChanged(); });
+                }));
+                heading ("Impulse response");
+                row ("Display", combo ({ "Linear", "Log (ETC)" }, settings.irMode.load(), [this] (int i) { settings.irMode = i; }));
+                row ("Time range", combo ({ "20 ms", "100 ms", "500 ms" }, settings.irRange.load(), [this] (int i) { settings.irRange = i; }));
+                heading ("Waterfall");
+                row ("History", combo ({ "10 seconds", "30 seconds", "60 seconds" }, settings.wfSeconds.load(), [this] (int i) { settings.wfSeconds = i; }));
+                row ("Colour range", combo ({ "40 dB", "60 dB", "80 dB" }, settings.wfRange.load(), [this] (int i) { settings.wfRange = i; }),
+                     "From the loudest band down to the darkest colour");
+                break;
+            }
+            case PrefCat::Units:
+            {
+                const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+                row ("Temperature unit", combo ({ deg + "C  Celsius", deg + "F  Fahrenheit" }, settings.temperatureUnit.load(),
+                                                [this] (int i) { settings.temperatureUnit = i; rebuildLater(); }));
+                auto& t = make<juce::Slider>();
+                t.setSliderStyle (juce::Slider::LinearHorizontal);
+                t.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 24);
+                const bool f = settings.temperatureUnit.load() == 1;
+                t.setRange (f ? 14.0 : -10.0, f ? 113.0 : 45.0, 1.0);
+                t.setTextValueSuffix (" " + deg + (f ? "F" : "C"));
+                const double c = settings.temperatureC.load();
+                t.setValue (f ? c * 9.0 / 5.0 + 32.0 : c, juce::dontSendNotification);
+                t.onValueChange = [this, &t]
+                {
+                    const double v = t.getValue();
+                    settings.temperatureC = (float) (settings.temperatureUnit.load() == 1 ? (v - 32.0) * 5.0 / 9.0 : v);
+                };
+                row ("Temperature", t, "The air temperature sets the speed of sound, used to turn delays into distances");
+                row ("Distance unit", combo ({ "Feet", "Metres" }, settings.distanceUnit.load(), [this] (int i) { settings.distanceUnit = i; }));
+                break;
+            }
+            case PrefCat::Tuning:
+                content.twoColumns = true;
+                prefRows (PrefCat::Tuning, true);
+                break;
+            case PrefCat::Generator:
+                prefRows (PrefCat::Generator, false);
+                break;
+            case PrefCat::Monitoring:
+                prefRows (PrefCat::Monitoring, false);
+                break;
+            case PrefCat::Reports:
+            {
+                heading ("Reports");
+                auto& author = make<juce::TextEditor>();
+                author.setFont (font (13.0f));
+                author.setText (UserPrefs::get ("reportAuthor"), juce::dontSendNotification);
+                author.setTextToShowWhenEmpty ("Your name or company", pal().textFaint);
+                author.onTextChange = [&author] { UserPrefs::set ("reportAuthor", author.getText().trim()); };
+                row ("Prepared by", author, "Shown on the tuning report's cover");
+                fileRow ("Logo", "reportLogo", false, "A picture (PNG or JPEG) at the top right of the reports' covers");
+                for (const auto& d : prefs::all()) if (d.cat == PrefCat::Reports && juce::String (d.group) == "Reports") prefRow (d, false);
+                heading ("Files");
+                fileRow ("Venues and exports", "venueFolder", true, "Where Open, Save and the exports start (else Documents)");
+                for (const auto& d : prefs::all()) if (d.cat == PrefCat::Reports && juce::String (d.group) == "Files") prefRow (d, false);
+                break;
+            }
+            case PrefCat::Updates:
+            default:
+            {
+                auto& check = make<juce::TextButton>();
+                check.setButtonText (updates.info().state == UpdateInfo::Available ? "Download " + updates.info().latest + "..." : juce::String ("Check for updates"));
+                check.onClick = [this]
+                {
+                    if (updates.info().state == UpdateInfo::Available) updates.openReleasePage();
+                    else { updates.check(); refreshUpdate(); }
+                };
+                row ("Version " + juce::String (JucePlugin_VersionString), check);
+                auto& autoT = make<juce::ToggleButton>();
+                autoT.setButtonText ("Check when LiveAlign starts");
+                autoT.setToggleState (updates.autoCheck(), juce::dontSendNotification);
+                autoT.onClick = [this, &autoT] { updates.setAutoCheck (autoT.getToggleState()); };
+                row ("Automatically", autoT, "Needs an internet connection");
+                refreshUpdate();
+                break;
+            }
+        }
+        if (catButtons[cat] != nullptr) clearVenueButton.setVisible (cat == (int) PrefCat::Tuning && ! proc.venuePrefs.values.empty());
+        layoutContent();
+        content.repaint();
+    }
+
+    // A file or folder: a button that shows the choice, and Clear.
+    void fileRow (const juce::String& label, const juce::String& key, bool folder, const juce::String& help)
+    {
+        const juce::File f (UserPrefs::get (key));
+        auto& pick = make<juce::TextButton>();
+        pick.setButtonText (f.exists() ? f.getFileName() : juce::String (folder ? "Choose a folder..." : "Choose a picture..."));
+        pick.setTooltip (f.exists() ? f.getFullPathName() : help);
+        pick.onClick = [this, key, folder]
+        {
+            chooser = std::make_unique<juce::FileChooser> (folder ? "Choose the folder for venues and exports" : "Choose a logo for the reports",
+                                                           juce::File (UserPrefs::get (key)), folder ? juce::String() : juce::String ("*.png;*.jpg;*.jpeg"));
+            juce::Component::SafePointer<SettingsPage> safe (this);
+            chooser->launchAsync (folder ? juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories
+                                         : juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [safe, key] (const juce::FileChooser& fc)
+                                  {
+                                      if (safe == nullptr || fc.getResult() == juce::File()) return;
+                                      UserPrefs::set (key, fc.getResult().getFullPathName());
+                                      safe->rebuildLater();
+                                  });
+        };
+        auto& clear = make<juce::TextButton>();
+        clear.setButtonText ("Clear");
+        clear.setEnabled (f.exists());
+        clear.onClick = [this, key] { UserPrefs::set (key, {}); rebuildLater(); };
+        row (label, pick, help, &clear);
+    }
+
+    // Rebuilding deletes the control whose callback is running: do it once that has returned.
+    void rebuildLater()
+    {
+        juce::Component::SafePointer<SettingsPage> safe (this);
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) { safe->build(); safe->resized(); } });
+    }
+
+    void layoutContent()
+    {
+        const int w = juce::jmax (Content::kLabelW + 2 * Content::kCtrlW + Content::kGap, view.getWidth() - view.getScrollBarThickness() - 4);
+        const int h = content.layout();
+        content.setSize (w, juce::jmax (h, view.getHeight() - 4));
+    }
+
+    void resetCategory()
+    {
+        auto& ap = AppPrefs::get();
+        switch ((PrefCat) cat)
+        {
+            case PrefCat::Audio: settings.coherenceBlank = 0.4f; break;
+            case PrefCat::Measurement:
+                settings.fftSize = 32768; settings.averages = 8; settings.smoothing = 24; settings.magRange = 20.0f;
+                settings.rtaBands = 3; settings.rtaSpeed = 1; settings.rtaShowRef = false; settings.rtaPeakHold = false;
+                break;
+            case PrefCat::Display:
+                settings.paneCount = 1; settings.paneLayout = 0; settings.irMode = 0; settings.irRange = 1; settings.wfSeconds = 1; settings.wfRange = 1;
+                if (settings.theme.load() != 0) { settings.theme = 0; if (onThemeChanged) onThemeChanged(); }
+                if (onLayoutChanged) onLayoutChanged();
+                break;
+            case PrefCat::Units: settings.temperatureUnit = 1; settings.temperatureC = 20.0f; settings.distanceUnit = 0; break;
+            case PrefCat::Reports:
+                UserPrefs::set ("reportLogo", {});
+                UserPrefs::set ("venueFolder", {});
+                [[fallthrough]];
+            case PrefCat::Tuning:
+            case PrefCat::Generator:
+            case PrefCat::Monitoring:
+                for (const auto& d : prefs::all()) if ((int) d.cat == cat) ap.reset (d.key);
+                changedPrefs();
+                break;
+            case PrefCat::Updates:
+            default: updates.setAutoCheck (true); break;
+        }
+        build();
+    }
+
+    void changedPrefs() { proc.applyAppPrefs(); if (onPrefsChanged) onPrefsChanged(); }
+    void changedVenue() { if (onVenueChanged) onVenueChanged(); resized(); }
 
     void refreshUpdate()
     {
+        if (cat != (int) PrefCat::Updates) return;
         const auto& u = updates.info();
         juce::String t;
         switch (u.state)
@@ -343,41 +561,26 @@ private:
             case UpdateInfo::Unknown:
             default: t = "Not checked yet."; break;
         }
-        checkButton.setButtonText (u.state == UpdateInfo::Available ? "Download " + u.latest + "..." : juce::String ("Check for updates"));
-        checkButton.onClick = [this]
+        if (t != content.status)
         {
-            if (updates.info().state == UpdateInfo::Available) updates.openReleasePage();
-            else { updates.check(); refreshUpdate(); }
-        };
-        if (t != updateText) { updateText = t; updateState = u.state; repaint(); }
+            content.status = t;
+            content.statusColour = u.state == UpdateInfo::Available ? pal().accent : u.state == UpdateInfo::Failed ? pal().warn : pal().textDim;
+            layoutContent();
+            content.repaint();
+        }
     }
 
-    void timerCallback() override
-    {
-        refreshUpdate();
-        const auto d = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : juce::String ("Inputs and outputs come from the host");
-        if (d != deviceText) { deviceText = d; repaint(); }
-    }
+    void timerCallback() override { refreshUpdate(); }
 
+    LiveAlignProcessor& proc;
     Settings& settings;
     UpdateChecker& updates;
-    juce::TextButton checkButton { "Check for updates" };
-    juce::TextEditor authorEditor;
-    juce::ToggleButton autoUpdateToggle { "Check when LiveAlign starts" };
-    juce::String updateText;
-    int updateState = 0;
-    juce::Rectangle<int> updateLine;
-    std::vector<Row> rows;
-    std::vector<Header> headers;
-    bool adv = false, showAdvanced = false;
-    int order = 0;
-    juce::ToggleButton advancedToggle { "Show advanced analysis settings" };
-
-    juce::TextButton deviceButton { "Audio device..." };
-    juce::ComboBox refBox, fftBox, avgBox, smoothBox, blankBox, rangeBox, bandsBox, speedBox, countBox, layoutBox,
-        themeBox, irModeBox, irRangeBox, wfSpanBox, wfRangeBox, tempUnitBox, unitBox;
-    juce::ToggleButton refRtaToggle { "Reference" }, peakToggle { "Peak hold" };
-    juce::Slider tempSlider;
-    juce::String deviceText;
+    juce::OwnedArray<juce::TextButton> catButtons;
+    juce::TextButton resetButton { "Reset to defaults" }, clearVenueButton { "Clear this venue's own values" };
+    juce::Viewport view;
+    Content content;
+    std::unique_ptr<juce::FileChooser> chooser;
+    juce::Rectangle<int> menuCard, bodyCard, blurbArea;
+    int cat = 0;
 };
 } // namespace la::ui

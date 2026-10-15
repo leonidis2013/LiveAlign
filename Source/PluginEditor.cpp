@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #include "PluginEditor.h"
-#include "UI/SettingsPanel.h"
 #include "UI/CalibrationPanel.h"
 #include "StandaloneHooks.h"
 #include "Report/MonitoringReport.h"
@@ -30,7 +29,8 @@ const char* pageSubtitle (int page)
         "Every setting to enter in your processor, output by output",
         "A PDF of this session's tuning",
         "A PDF of the event: sound level against the limit, the monitor mic and the traces",
-        "The measurement mics you own: model, serial number, calibration files and sound level" };
+        "The measurement mics you own: model, serial number, calibration files and sound level",
+        "Your preferences for every venue, and this venue's own tuning values" };
     return subs[juce::jlimit (0, kNumPages - 1, page)];
 }
 } // namespace
@@ -144,6 +144,12 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     lockerPage->onLoadCal = [this] (const juce::String& id, int angle) { loadLockerCal (id, angle); };
     lockerPage->onChanged = [this] { micPage->refreshChoices(); pickerMics = -1; refreshMicPicker(); };
     addChildComponent (*lockerPage);
+    settingsPage = std::make_unique<SettingsPage> (p);
+    settingsPage->onThemeChanged = [this] { applyTheme (settings.theme.load()); settingsPage->refresh(); };
+    settingsPage->onLayoutChanged = [this] { layoutPanes(); };
+    settingsPage->onPrefsChanged = [this] { applyPrefs(); };
+    settingsPage->onVenueChanged = [this] { roomPage->refresh(); levelPage->refresh(); acousticsPage->refresh(); updateStatuses(); };
+    addChildComponent (*settingsPage);
     addChildComponent (*roomPage);
 
     feedbackPage = std::make_unique<FeedbackPage> (p);
@@ -296,8 +302,9 @@ void LiveAlignEditor::applyTheme (int theme)
 
 void LiveAlignEditor::showPage (int page)
 {
-    page = standalone ? juce::jlimit (0, kNumPages - 1, page) : (int) Page::Monitor;
+    page = standalone ? juce::jlimit (0, kNumPages - 1, page) : page == (int) Page::Settings ? page : (int) Page::Monitor;
     settings.currentTab = page;
+    if (shownPage != (int) Page::Settings && shownPage >= 0) lastPage = shownPage;
     shownPage = page;
     nav.setCurrent (page);
 
@@ -305,7 +312,8 @@ void LiveAlignEditor::showPage (int page)
     const bool mon = page == (int) Page::Monitor;
     // monitoring uses its own mic: switch the analysis over on the monitoring pages, back on the others
     const bool monitoringPage = mon || page == (int) Page::MonitorMic;
-    if (monitoringPage != processor.isMonitorMode())
+    // Settings leaves the analysis as it was (monitoring or tuning)
+    if (page != (int) Page::Settings && monitoringPage != processor.isMonitorMode())
     {
         processor.setMonitorMode (monitoringPage);
         pickerMics = -1;
@@ -322,6 +330,9 @@ void LiveAlignEditor::showPage (int page)
     roomPage->setVisible (page == (int) Page::Room);
     planPage->setVisible (page == (int) Page::Plan);
     lockerPage->setVisible (page == (int) Page::Locker);
+    settingsPage->setVisible (page == (int) Page::Settings);
+    nav.setSettingsActive (page == (int) Page::Settings);
+    if (page == (int) Page::Settings) settingsPage->refresh();
     feedbackPage->setVisible (page == (int) Page::Feedback);
     acousticsPage->setVisible (page == (int) Page::Acoustics);
     monitorMicPage->setVisible (page == (int) Page::MonitorMic);
@@ -590,14 +601,30 @@ void LiveAlignEditor::refreshNext()
     homePage->setNext (page, what);
 }
 
+// Where venues and exports go by default: the folder in Settings (Reports and files), else Documents.
+static juce::File homeFolder()
+{
+    const juce::File f (la::UserPrefs::get ("venueFolder"));
+    return f.isDirectory() ? f : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+}
+
 // ---------------------------------------------------------------------------- pop-ups
 
-void LiveAlignEditor::openSettings()
+void LiveAlignEditor::openSettings() { showPage (shownPage == (int) Page::Settings ? lastPage : (int) Page::Settings); }
+
+// This computer's preferences that the editor uses (feedback watch, paper size) and the processor's (generator).
+void LiveAlignEditor::applyPrefs()
 {
-    auto panel = std::make_unique<SettingsPanel> (processor);
-    panel->onThemeChanged = [this] { applyTheme (settings.theme.load()); };
-    panel->onLayoutChanged = [this] { layoutPanes(); };
-    juce::CallOutBox::launchAsynchronously (std::move (panel), nav.getBounds().withTrimmedTop (nav.getHeight() - 60), this);
+    const auto& ap = la::AppPrefs::get();
+    prefsSerial = ap.serial;
+    processor.applyAppPrefs();
+    const int sense = juce::roundToInt (ap.value ("fbSense"));
+    // Normal is what monitoring always used; Low waits longer for a bigger peak, High takes a smaller, shorter one
+    static const double prom[] = { 18.0, 15.0, 12.0 };
+    static const int frames[] = { 24, 18, 12 };
+    liveFb.setOptions ({ 80.0, 12000.0, prom[juce::jlimit (0, 2, sense)], frames[juce::jlimit (0, 2, sense)], 3, 1.0 / 12.0 });
+    la::pdf::Document::useA4() = ap.value ("paperA4") > 0.5;
+    generator.sync();
 }
 
 void LiveAlignEditor::refreshUpdate()
@@ -624,7 +651,7 @@ void LiveAlignEditor::exportPlan()
 {
     const auto name = juce::File::createLegalFileName (processor.venueName + " plan");
     chooser = std::make_unique<juce::FileChooser> ("Save the venue plan as a picture",
-                                                   juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name + ".png"), "*.png");
+                                                   homeFolder().getChildFile (name + ".png"), "*.png");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe] (const juce::FileChooser& fc)
     {
@@ -664,7 +691,7 @@ void LiveAlignEditor::exportReport (bool monitoring)
     const auto name = juce::File::createLegalFileName (processor.venueName + " - " + (cur < (int) sessions.size() ? sessions[(size_t) cur].name : juce::String ("session"))
                                                        + (monitoring ? " - monitoring report" : " - tuning report"));
     auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory()
-                                                     : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+                                                     : homeFolder();
     chooser = std::make_unique<juce::FileChooser> (monitoring ? "Save the monitoring report" : "Save the tuning report", dir.getChildFile (name + ".pdf"), "*.pdf");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe, monitoring] (const juce::FileChooser& fc)
@@ -684,7 +711,7 @@ void LiveAlignEditor::openMicLocker() { showPage ((int) Page::Locker); }
 void LiveAlignEditor::exportSheet (bool csv)
 {
     const auto name = juce::File::createLegalFileName (processor.venueName + " - processor sheet");
-    auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory() : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory() : homeFolder();
     chooser = std::make_unique<juce::FileChooser> (csv ? "Save the processor sheet as a CSV file" : "Save the processor sheet as a PDF",
                                                    dir.getChildFile (name + (csv ? ".csv" : ".pdf")), csv ? "*.csv" : "*.pdf");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
@@ -955,7 +982,7 @@ void LiveAlignEditor::exportTrace (int index)
     if (! processor.traces.valid (index)) return;
     const auto name = juce::File::createLegalFileName (processor.traces.all()[(size_t) index].name);
     chooser = std::make_unique<juce::FileChooser> ("Export trace as FRD",
-                                                   juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name + ".frd"), "*.frd");
+                                                   homeFolder().getChildFile (name + ".frd"), "*.frd");
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe, index] (const juce::FileChooser& fc)
     {
@@ -1026,7 +1053,7 @@ void LiveAlignEditor::saveProject (bool askForFile)
         return;
     }
     auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory()
-                                                     : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+                                                     : homeFolder();
     chooser = std::make_unique<juce::FileChooser> ("Save venue",
                                                    dir.getChildFile (juce::File::createLegalFileName (processor.venueName) + LiveAlignProcessor::projectExtension()),
                                                    "*" + LiveAlignProcessor::projectExtension());
@@ -1046,7 +1073,7 @@ void LiveAlignEditor::saveProject (bool askForFile)
 
 void LiveAlignEditor::openProject()
 {
-    chooser = std::make_unique<juce::FileChooser> ("Open venue", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+    chooser = std::make_unique<juce::FileChooser> ("Open venue", homeFolder(),
                                                    "*" + LiveAlignProcessor::projectExtension());
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe] (const juce::FileChooser& fc)
@@ -1084,6 +1111,7 @@ void LiveAlignEditor::afterProjectLoaded()
     acousticsPage->refresh();
     monitorMicPage->refresh();
     homePage->refresh();
+    settingsPage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
     tracesPanel.refresh();
@@ -1122,6 +1150,7 @@ bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
 void LiveAlignEditor::timerCallback()
 {
     ++tick;
+    if (la::AppPrefs::get().serial != prefsSerial) applyPrefs();
     if (settings.theme.load() != appliedTheme) applyTheme (settings.theme.load());
     if (settings.paneCount.load() != laidOutCount || settings.paneLayout.load() != laidOutLayout) layoutPanes();
     for (auto& pane : panes) pane->sync();
@@ -1176,7 +1205,7 @@ void LiveAlignEditor::timerCallback()
         inputPanel.setLevels (processor.takeMicPeak (m), processor.micRmsDb (m), processor.takeRefPeak(), processor.refRmsDb());
         delayPanel.setReport (processor.analyzer.readDelayReport());
         // delay tracking: find the delay on the programme every 5 seconds
-        if (delayPanel.tracking() && settings.refSource.load() >= 1 && juce::Time::getMillisecondCounter() - lastTrackRequest > 5000)
+        if (delayPanel.tracking() && settings.refSource.load() >= 1 && juce::Time::getMillisecondCounter() - lastTrackRequest > (juce::uint32) (1000.0 * la::AppPrefs::get().value ("trackSec")))
         {
             lastTrackRequest = juce::Time::getMillisecondCounter();
             settings.requestFindDelay = true;
@@ -1228,7 +1257,7 @@ void LiveAlignEditor::timerCallback()
     }
 
     if (tick % 15 == 0 && shownPage != (int) Page::Monitor) { refreshNext(); if (shownPage == (int) Page::Home || tick % 60 == 0) updateStatuses(); }
-    if (processor.isStandalone() && tick % (30 * 120) == 0) processor.autosave();   // every two minutes
+    if (processor.isStandalone() && tick % juce::jmax (30 * 60, (int) (30 * 60 * la::AppPrefs::get().value ("autosaveMin"))) == 0) processor.autosave();
     if (tick % 60 == 0 && processor.syncLocker() && shownPage == (int) Page::Mics) micPage->refreshChoices();
 
     if (tick % 15 == 0)
@@ -1315,6 +1344,7 @@ void LiveAlignEditor::resized()
     roomPage->setBounds (r);
     planPage->setBounds (r);
     lockerPage->setBounds (r);
+    settingsPage->setBounds (r);
     for (auto* pg : std::initializer_list<juce::Component*> { feedbackPage.get(), acousticsPage.get(), monitorMicPage.get(), tuningReportPage.get(), monitorReportPage.get(),
                                                               levelPage.get(), sheetPage.get() })
         pg->setBounds (r);

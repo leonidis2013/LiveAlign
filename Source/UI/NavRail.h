@@ -17,9 +17,9 @@ enum class Page
     Response, Crossover, Level, Align, Acoustics, Room, Feedback,            // tuning, in order
     MonitorMic, Monitor,                                                     // monitoring
     Sheet, TuningReport, MonitorReport,                                      // reports
-    Locker
+    Locker, Settings
 };
-constexpr int kNumPages = 17;
+constexpr int kNumPages = 18;
 // The navigation pane, top to bottom. Negative entries are section headings. The mic locker is opened from its
 // own button at the bottom. The pane is the one way between the steps: each shows its state, and the next step to do
 // is marked.
@@ -34,7 +34,7 @@ inline const char* pageName (int i)
 {
     static const char* names[] = { "Home", "Mics", "Speakers", "Venue plan", "Speaker response", "Crossover", "Level balance", "Time alignment",
                                    "Room acoustics", "Room EQ", "Feedback test", "Monitor mic", "Live monitoring", "Processor sheet",
-                                   "Tuning report", "Monitoring report", "Mic locker" };
+                                   "Tuning report", "Monitoring report", "Mic locker", "Settings" };
     return names[juce::jlimit (0, kNumPages - 1, i)];
 }
 
@@ -201,7 +201,7 @@ public:
     {
         settingsButton.onClick = [this] { if (onSettings) onSettings(); };
         lockerButton.onClick = [this] { if (onLocker) onLocker(); };
-        settingsButton.setTooltip ("Inputs, analysis, screen layout, units and theme");
+        settingsButton.setTooltip ("Audio, measurement, display, units, tuning defaults, generator safety, monitoring, reports and updates");
         lockerButton.setTooltip ("The measurement mics you own: model, serial number, calibration files and sound level");
         addAndMakeVisible (settingsButton);
         addAndMakeVisible (lockerButton);
@@ -212,6 +212,10 @@ public:
     void setCurrent (int page) { if (page != current) { current = page; scrollToShow (page); repaint(); } }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; repaint(); } }
     void setLockerAvailable (bool a) { lockerButton.setVisible (a); resized(); }
+    void setSettingsActive (bool a)
+    {
+        settingsButton.setColour (juce::TextButton::buttonColourId, a ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
+    }
     void setLockerActive (bool a)
     {
         lockerButton.setColour (juce::TextButton::buttonColourId, a ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
@@ -479,7 +483,7 @@ private:
     }
 
     Entry entries[kNumPages];
-    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false };
+    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false, false };
     int nextPage = -1;
     juce::String nextWhat;
 

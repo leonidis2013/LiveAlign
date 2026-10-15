@@ -30,6 +30,8 @@ struct Settings
     std::atomic<float> genLevelDb { -20.0f };
     std::atomic<float> genFreq { 1000.0f };
     std::atomic<float> genSweepSec { 3.0f };
+    std::atomic<float> genMaxDb { 0.0f };    // the generator never goes above this (Settings, Generator and safety)
+    std::atomic<float> genFadeMs { 20.0f };  // switching on takes this long
 
     // Transfer function
     std::atomic<int> fftSize { 32768 };

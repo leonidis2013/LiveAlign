@@ -132,14 +132,14 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
             double peakRoll = -1e9;
             for (double v : rolling) peakRoll = std::max (peakRoll, v);
             L.tiles ({ { "LAeq (whole event)", n1 (la), "dB" }, { "LCeq", n1 (lc), "dB" }, { "LC - LA", n1 (lc - la), "dB" },
-                       { "Highest " + juce::String (log.limitMinutes) + " min LAeq", n1 (peakRoll), "dB" }, { "Max LAF", n1 (log.maxLaf()), "dB" } });
+                       { "Highest " + juce::String (log.limitMinutes) + " min " + log.limitName(), n1 (peakRoll), "dB" }, { "Max LAF", n1 (log.maxLaf()), "dB" } });
             if (log.limitLaeq > 0.0)
-                L.para ("Limit: " + juce::String (juce::roundToInt (log.limitLaeq)) + " dBA LAeq over " + juce::String (log.limitMinutes) + " minutes. Over the limit for "
+                L.para ("Limit: " + juce::String (juce::roundToInt (log.limitLaeq)) + " " + log.limitUnit() + " " + log.limitName() + " over " + juce::String (log.limitMinutes) + " minutes. Over the limit for "
                         + juce::String (juce::roundToInt (log.minutesOver())) + " minutes of the event.", 9.5f, log.minutesOver() > 0.0 ? warn : ink);
             L.need (300.0f);
             L.picture (levelChart (log), 290.0f);
-            L.para ("Blue: LAeq every 5 seconds. Teal: the rolling " + juce::String (log.limitMinutes) + "-minute LAeq. Pink: the loudest moment (LAF max) "
-                    "in each 5 seconds." + juce::String (log.limitLaeq > 0.0 ? " Red dashes: the limit." : ""), 8.0f, dim);
+            L.para ("Blue: LAeq every " + juce::String (juce::roundToInt (log.interval)) + " seconds. Teal: the rolling " + juce::String (log.limitMinutes) + "-minute "
+                    + log.limitName() + ". Pink: the loudest moment (LAF max) in each " + juce::String (juce::roundToInt (log.interval)) + " seconds." + juce::String (log.limitLaeq > 0.0 ? " Red dashes: the limit." : ""), 8.0f, dim);
             // the loudest 15-minute windows (quarter hours)
             std::vector<juce::StringArray> rows;
             const double q = 900.0;

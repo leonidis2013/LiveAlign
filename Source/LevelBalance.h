@@ -38,6 +38,9 @@ struct LevelTrim
     bool attention = true;     // outside the tolerance (a change is suggested), or a note only
 };
 
+// The aims (Settings, Tuning defaults; a venue can have its own).
+struct LevelAims { double pairTol = 1.0, fillHi = 0.0, fillLo = -3.0, subTol = 1.5, trimCap = 6.0; };
+
 struct LevelBalance
 {
     std::vector<LevelReading> readings;
@@ -46,6 +49,7 @@ struct LevelBalance
     juce::String appliedOn;
 
     static constexpr double kPairTolDb = 1.0, kSubTolDb = 1.5, kMaxTrimDb = 6.0;
+    using Aims = LevelAims;
 
     // A speaker's EQ through its own range (dB): readings taken before the room EQ went in are compared allowing for it.
     static double eqInRange (const SpeakerSystem& sys, int i)
@@ -106,8 +110,10 @@ struct LevelBalance
     }
 
     // What to change, from the readings: `recheck` uses the latest readings (to see whether the trims took).
-    std::vector<LevelTrim> suggest (const SpeakerSystem& sys, int target, bool recheck = false) const
+    std::vector<LevelTrim> suggest (const SpeakerSystem& sys, int target, bool recheck = false, Aims aims = {}) const
     {
+        const double kPairTolDb = aims.pairTol, kSubTolDb = aims.subTol, kMaxTrimDb = aims.trimCap;
+        const double fillAim = 0.5 * (aims.fillHi + aims.fillLo);
         std::vector<LevelTrim> out;
         if (points.isEmpty()) return out;
         const auto centre = points[0];
@@ -164,12 +170,12 @@ struct LevelBalance
             if (bestPoint.isEmpty()) continue;
             LevelTrim t;
             t.spk = k;
-            if (best > 0.0) t.db = -1.5 - best;               // louder than the mains where it covers: down to about -1.5
-            else if (best < -3.0) t.db = -1.5 - best;         // too quiet to help there: up to about -1.5
+            if (best > aims.fillHi) t.db = fillAim - best;        // louder than the mains where it covers: down to the middle of the aim
+            else if (best < aims.fillLo) t.db = fillAim - best;   // too quiet to help there: up to the middle
             const bool capped = std::abs (t.db) > kMaxTrimDb;
             t.db = juce::jlimit (-kMaxTrimDb, kMaxTrimDb, t.db);
             t.attention = std::abs (t.db) > 0.05;
-            t.why = sys.nameOf (k) + " is " + f1 (best) + " dB against the mains at " + bestPoint + " (aim for 0 to -3 dB)"
+            t.why = sys.nameOf (k) + " is " + f1 (best) + " dB against the mains at " + bestPoint + " (aim for " + f1 (aims.fillHi) + " to " + f1 (aims.fillLo) + " dB)"
                     + (t.attention ? ": change it " + (t.db > 0.0 ? juce::String ("+") : juce::String()) + f1 (t.db) + " dB" + (capped ? " (as far as a trim should go: check its aim and amp too)." : ".") : ".");
             if (points.size() < 2) t.why << " Measure it at the seats it covers too (add the point).";
             out.push_back (t);

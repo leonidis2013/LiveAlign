@@ -969,7 +969,7 @@ public:
                 sp.speaker = i;
                 if (! t.response && sys.sources[(size_t) i].role == (int) SpeakerRole::Sub && sys.sources[(size_t) i].count > 1)
                     sp.how = "a few inches from this cabinet's cone, " + aimHowText (proc, sp.mic, SpeakerAim) + " (the others play too)";
-                else sp.how = "12 in (30 cm) from the cone, on its axis, " + aimHowText (proc, sp.mic, SpeakerAim);
+                else sp.how = proc.closeUpText() + " from the cone, on its axis, " + aimHowText (proc, sp.mic, SpeakerAim);
             }
             out.push_back (sp);
         }
@@ -2451,7 +2451,7 @@ private:
         const auto other = against ? (pc->against == i ? juce::String ("cabinet 1") : nameOf (pc->against)) : juce::String();
         const auto who = cabinetName (i, cab);
         if (pc->notClose)
-            return who + ": arrived much later than the other close-up captures, so the mic was probably not close. Measure it again 12 in from the cone to check its polarity.";
+            return who + ": arrived much later than the other close-up captures, so the mic was probably not close. Measure it again " + proc.closeUpShort() + " from the cone to check its polarity.";
         if (against && pc->relative == polarity::Inverted)
             return who + " is OPPOSITE to " + other + ": one of the two is wired the other way round"
                    + (pc->verdict == polarity::Normal ? juce::String (" (") + other + " looks inverted)." : juce::String (". Check its wiring and the processor's polarity for this output."));
@@ -3394,7 +3394,7 @@ private:
         g.drawArrow (juce::Line<float> (box.getRight() + 2.0f, my + 12.0f, mx - 10.0f, my + 12.0f), 1.2f, 5.0f, 5.0f);
         g.drawArrow (juce::Line<float> (mx - 10.0f, my + 12.0f, box.getRight() + 2.0f, my + 12.0f), 1.2f, 5.0f, 5.0f);
         g.setFont (font (10.0f, true));
-        g.drawText (near ? "12 in" : "FOH", juce::Rectangle<float> (box.getRight(), my + 15.0f, mx - box.getRight(), 12.0f), juce::Justification::centred);
+        g.drawText (near ? proc.closeUpShort() : juce::String ("FOH"), juce::Rectangle<float> (box.getRight(), my + 15.0f, mx - box.getRight(), 12.0f), juce::Justification::centred);
 
         // the instruction
         r.reduce (6, 8);
@@ -3402,7 +3402,7 @@ private:
         const auto micName = proc.mics.nameOf (guideMic), who = nameOf (selected);
         juce::String t;
         juce::ignoreUnused (near);
-        t << "Place " << micName << " 12 in (30 cm) from the centre of " << who << "'s woofer cone, pointed at it, "
+        t << "Place " << micName << " " << proc.closeUpText() << " from the centre of " << who << "'s woofer cone, pointed at it, "
           << "level with the cone. Measure goes through every speaker in turn.";
         if (proc.calibrations (guideMic).any()) t << " " << aimHowText (proc, guideMic, GuidedSource::SpeakerAim).substring (0, 1).toUpperCase()
                                                     << aimHowText (proc, guideMic, GuidedSource::SpeakerAim).substring (1) << ".";

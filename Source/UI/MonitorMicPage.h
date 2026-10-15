@@ -71,14 +71,26 @@ public:
         sameAsRoomButton.setTooltip ("Use the target the room was tuned to (Room EQ)");
         addAndMakeVisible (sameAsRoomButton);
 
-        static const int limits[] = { 0, 85, 90, 92, 94, 96, 98, 100, 102 };
-        for (int l : limits) limitBox.addItem (l == 0 ? juce::String ("No limit") : juce::String (l) + " dBA", l + 1);
-        limitBox.setTooltip ("A sound level limit, as an LAeq over the window below: the monitoring report shows the time over it");
-        limitBox.onChange = [this] { proc.splLog.limitLaeq = juce::jmax (0, limitBox.getSelectedId() - 1); changed(); };
+        // A-weighted limits (LAeq), then C-weighted ones (LCeq, the bass included)
+        limitBox.addItem ("No limit", 1);
+        limitBox.addSectionHeading ("A-weighted (LAeq)");
+        for (int l = 75; l <= 110; ++l) limitBox.addItem (juce::String (l) + " dBA", l + 1);
+        limitBox.addSectionHeading ("C-weighted (LCeq)");
+        for (int l = 85; l <= 125; ++l) limitBox.addItem (juce::String (l) + " dBC", 1000 + l);
+        limitBox.setTooltip ("A sound level limit, as an LAeq (or LCeq) over the window beside it: the monitoring report shows the time over it. "
+                             "The default for new sessions is in Settings, Monitoring.");
+        limitBox.onChange = [this]
+        {
+            const int id = limitBox.getSelectedId();
+            proc.splLog.limitC = id >= 1000;
+            proc.splLog.limitLaeq = id >= 1000 ? id - 1000 : juce::jmax (0, id - 1);
+            changed();
+        };
         addAndMakeVisible (limitBox);
         windowBox.addItem ("over 1 minute", 1);
         windowBox.addItem ("over 5 minutes", 5);
         windowBox.addItem ("over 15 minutes", 15);
+        windowBox.addItem ("over 10 minutes", 10);
         windowBox.addItem ("over 30 minutes", 30);
         windowBox.addItem ("over 60 minutes", 60);
         windowBox.onChange = [this] { proc.splLog.limitMinutes = juce::jmax (1, windowBox.getSelectedId()); changed(); };
@@ -124,7 +136,7 @@ public:
         calButton.setButtonText (mic.cal.any() ? mic.cal.label() : mic.noCalFile ? juce::String ("None (flat)") : juce::String ("Load cal file(s)..."));
         levelButton.setButtonText (mic.splCalibrated ? "Calibrated: re-check" : "Calibrate");
         targetBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, settings.targetCurve.load()), juce::dontSendNotification);
-        limitBox.setSelectedId ((int) proc.splLog.limitLaeq + 1, juce::dontSendNotification);
+        limitBox.setSelectedId (proc.splLog.limitLaeq <= 0.0 ? 1 : proc.splLog.limitC ? 1000 + (int) proc.splLog.limitLaeq : (int) proc.splLog.limitLaeq + 1, juce::dontSendNotification);
         if (limitBox.getSelectedId() == 0) limitBox.setSelectedId (1, juce::dontSendNotification);
         windowBox.setSelectedId (proc.splLog.limitMinutes, juce::dontSendNotification);
         repaint();

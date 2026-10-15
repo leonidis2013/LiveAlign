@@ -20,6 +20,7 @@
 #include "UI/MonitorMicPage.h"
 #include "UI/ReportPage.h"
 #include "UI/MicLockerPanel.h"
+#include "UI/SettingsPanel.h"
 #include "UI/Pages.h"
 #include "UI/MeasurePane.h"
 #include "UI/SidePanels.h"
@@ -47,6 +48,8 @@ public:
     la::ui::SheetPage& sheetPageForPreview() { return *sheetPage; }
     la::ui::MicSetupPage& micPageForPreview() { return *micPage; }
     la::ui::MicLockerPage& lockerPageForPreview() { return *lockerPage; }
+    la::ui::SettingsPage& settingsPageForPreview() { return *settingsPage; }
+    void applyThemeForPreview() { applyTheme (settings.theme.load()); }
     la::ui::RecheckGuide& recheckForPreview() { return *recheck; }
     void exportReportTo (bool monitoring, const juce::File& f);   // without the file chooser (local screenshot tool)
     void updateStatuses();
@@ -58,6 +61,8 @@ private:
     void refreshMicPicker();
 
     void openSettings();
+    void applyPrefs();
+    int prefsSerial = -1, lastPage = 0;
     void refreshUpdate();
     void showUpdate();
     void openMicLocker();
@@ -102,6 +107,7 @@ private:
     std::unique_ptr<la::ui::RoomPage> roomPage;
     std::unique_ptr<la::ui::PlanPage> planPage;
     std::unique_ptr<la::ui::MicLockerPage> lockerPage;
+    std::unique_ptr<la::ui::SettingsPage> settingsPage;
     std::unique_ptr<la::ui::FeedbackPage> feedbackPage;
     std::unique_ptr<la::ui::AcousticsPage> acousticsPage;
     std::unique_ptr<la::ui::LevelPage> levelPage;

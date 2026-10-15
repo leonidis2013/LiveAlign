@@ -11,6 +11,7 @@
 #include "../UI/RoomPage.h"
 #include "../UI/SpeakersPage.h"
 #include "../UI/AcousticsPage.h"
+#include "../AcousticsSummary.h"
 
 namespace la::report
 {
@@ -52,6 +53,8 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
     const int nMics = p.tuningMicCount();
     const auto& room = p.room;
     auto has = [&opt] (const char* id) { return included (opt.skip, id); };
+    updateRoomAllowance (p);   // the target and the allowance as Room EQ shows them
+    const auto acs = summariseAcoustics (p);
 
     // ---------- cover ----------
     L.y = cover (L, "SYSTEM TUNING REPORT", p.venueName, sessionName + "   -   " + LiveAlignProcessor::today());
@@ -313,7 +316,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             L.table (widths, head, rows);
             L.para ("\"a -> b\": as found, then the check after the trims.", 8.0f, dim);
             juce::StringArray lines;
-            for (const auto& t : lv.suggest (sys, room.target, true)) lines.add (t.why);
+            for (const auto& t : lv.suggest (sys, room.target, true, p.levelAims())) lines.add (t.why);
             for (const auto& t : LevelBalance::cabinetNotes (sys)) lines.add (t.why);
             if (! lines.isEmpty()) { L.sub ("Result"); for (const auto& t : lines) L.para (t, 9.5f); }
         }
@@ -333,9 +336,10 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             juce::String who;
             const bool noise = ui::noiseOctaves (p, L8, who);
             auto n2 = [] (double v, int d) { return ! std::isfinite (v) ? juce::String ("-") : d == 0 ? juce::String (juce::roundToInt (v)) : juce::String (v, d); };
+            const double stiShown = std::isfinite (acs.stiCorrected) ? acs.stiCorrected : a.sti;
             L.tiles ({ { "RT (500 Hz - 1 kHz)", n2 (a.rtMid(), 2), "s" }, { "EDT", n2 (a.mid (&acoustics::Band::edt), 2), "s" },
                        { "C50 / C80", n2 (a.mid (&acoustics::Band::c50), 1) + " / " + n2 (a.mid (&acoustics::Band::c80), 1), "dB" },
-                       { "STI", n2 (a.sti, 2), acoustics::stiRating (a.sti) },
+                       { std::isfinite (acs.stiCorrected) ? "STI (with noise)" : "STI", n2 (stiShown, 2), acoustics::stiRating (stiShown) },
                        { "Noise", noise ? "NC " + juce::String (juce::roundToInt (acoustics::noiseCriterion (L8))) : juce::String ("-"), "" } });
             L.para ("Room use: " + RoomTuning::useNames()[room.use] + ". Typical reverberation for it: " + juce::String (rtLo, 1) + " - " + juce::String (rtHi, 1)
                     + " s; speech intelligibility (STI) of " + juce::String (stiMin, 2) + " or more.", 9.0f);
@@ -346,14 +350,74 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             L.picture (img, 270.0f);
 
             std::vector<juce::StringArray> rows;
-            for (int b = 0; b < acoustics::kBands; ++b)
+            for (int b = -1; b < acoustics::kBands; ++b)
             {
-                const auto& o = a.band[(size_t) b];
-                rows.push_back ({ juce::String (juce::roundToInt (acoustics::octaves()[(size_t) b])) + " Hz", n2 (o.edt, 2), n2 (o.t20, 2), n2 (o.t30, 2),
-                                  n2 (o.c50, 1), n2 (o.c80, 1), n2 (o.d50 * 100.0, 0) + " %" });
+                const auto& o = b < 0 ? a.b63 : a.band[(size_t) b];
+                const bool unsure = b < 0 && ! acs.rt63Reliable;
+                rows.push_back ({ (b < 0 ? juce::String ("63") : juce::String (juce::roundToInt (acoustics::octaves()[(size_t) b]))) + " Hz" + (unsure ? " *" : ""),
+                                  n2 (o.edt, 2), n2 (o.t20, 2), n2 (o.t30, 2), n2 (o.c50, 1), n2 (o.c80, 1), n2 (o.d50 * 100.0, 0) + " %", n2 (o.ts, 0) });
             }
             L.sub ("Per octave (average of the positions)");
-            L.table ({ 1.0f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f }, { "Octave", "EDT (s)", "T20 (s)", "T30 (s)", "C50 (dB)", "C80 (dB)", "D50" }, rows, 8.0f);
+            L.table ({ 1.0f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.8f, 0.8f }, { "Octave", "EDT (s)", "T20 (s)", "T30 (s)", "C50 (dB)", "C80 (dB)", "D50", "Ts (ms)" }, rows, 8.0f);
+            if (! acs.rt63Reliable) L.para ("* 63 Hz: not enough decay above the noise to trust.", 8.0f, dim);
+            {
+                std::vector<juce::StringArray> t3 { {}, {} };
+                juce::StringArray h3;
+                for (int b = 0; b < acoustics::kThirds; ++b)
+                {
+                    h3.add (ui::freqLabel (acoustics::thirds()[(size_t) b]));
+                    t3[0].add (n2 (a.rt3[(size_t) b], 2));
+                }
+                t3.pop_back();
+                L.sub ("Reverberation time per 1/3 octave (s)");
+                L.table (std::vector<float> (acoustics::kThirds, 1.0f), h3, t3, 6.5f);
+            }
+            {
+                const bool feet = st.distanceUnit.load() == 0;
+                auto dist = [feet] (double m) { return ! std::isfinite (m) ? juce::String ("-") : feet ? juce::String (juce::roundToInt (m * 3.28084)) + " ft" : juce::String (m, 1) + " m"; };
+                std::vector<std::pair<juce::String, juce::String>> kv;
+                kv.push_back ({ "Bass ratio (warmth)", n2 (acs.bassRatio, 2) + "   (1.0 - 1.3 is usual; above means bass build-up)" });
+                kv.push_back ({ "Treble ratio (brilliance)", n2 (acs.trebleRatio, 2) });
+                kv.push_back ({ "Centre time Ts (500 Hz - 1 kHz)", n2 (acs.tsMid, 0) + " ms" });
+                kv.push_back ({ "STI", "room only " + n2 (acs.stiRaw, 2) + (std::isfinite (acs.stiCorrected) ? ";  with " + juce::String (acs.noiseKnown ? "the noise, " : "")
+                                                                                + "masking and the hearing threshold at " + juce::String (juce::roundToInt (p.pref ("speechDbA"))) + " dBA speech: " + n2 (acs.stiCorrected, 2)
+                                                                           : juce::String()) });
+                kv.push_back ({ "%ALcons", std::isfinite (acs.alcons) ? n2 (acs.alcons, 1) + " % (" + acoustics::alconsRating (acs.alcons) + ")" : juce::String ("-") });
+                kv.push_back ({ "First reflection (ITDG)", std::isfinite (acs.itdgMs) ? n2 (acs.itdgMs, 1) + " ms after the direct sound" : juce::String ("-") });
+                kv.push_back ({ "Echo", acs.echo ? n2 (acs.echoMs, 0) + " ms after the direct sound, its path about " + dist (acs.echoExtraM) + " longer: audible (Dietsch / Kraak criterion)"
+                                                 : "none audible (speech EK " + n2 (a.echoSpeech, 2) + " of 1.0, music " + n2 (a.echoMusic, 2) + " of 1.8)" });
+                kv.push_back ({ "Flutter echo", std::isfinite (acs.flutterMs) ? "repeats every " + n2 (acs.flutterMs, 0) + " ms (parallel surfaces about " + dist (acs.flutterSpacingM) + " apart)"
+                                                                            : juce::String ("none found") });
+                if (acs.ringingThird >= 0)
+                    kv.push_back ({ "Ringing third octave", ui::freqLabel (acoustics::thirds()[(size_t) acs.ringingThird]) + " Hz, " + n2 (acs.ringingRatio, 1) + " times its neighbours" });
+                if (acs.volume > 0.0)
+                {
+                    kv.push_back ({ "Room volume", feet ? n2 (acs.volume * 35.3147, 0) + " cu ft" : n2 (acs.volume, 0) + " m3" });
+                    kv.push_back ({ "Schroeder frequency", n2 (acs.schroederHz, 0) + " Hz (below it, single room modes rule)" });
+                    juce::StringArray dc;
+                    for (const auto& d : acs.criticalDistance) dc.add (d.name + " " + dist (d.metres) + " (Q " + n2 (d.q, 0) + ")");
+                    if (! dc.isEmpty()) kv.push_back ({ "Critical distance", dc.joinIntoString (",  ") });
+                }
+                else kv.push_back ({ "Room volume", "not given (the Schroeder frequency and the critical distance need it)" });
+                if (std::isfinite (acs.coverage2k))
+                {
+                    const auto pm = juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"));
+                    kv.push_back ({ "Coverage", pm + n2 (acs.coverage2k / 2.0, 1) + " dB at 2 kHz, " + pm + n2 (acs.coverage4k / 2.0, 1) + " dB at 4 kHz across "
+                                                    + juce::String (acs.coveragePoints) + " points (a common spec is " + pm + "3 dB)" });
+                }
+                L.sub ("More measures");
+                L.keyValues (kv);
+                std::vector<juce::StringArray> sp;
+                for (const auto& r : acs.spread)
+                    if (r.s.n > 0)
+                        sp.push_back ({ r.what, n2 (r.s.mean, r.decimals) + " " + r.unit, r.s.n > 1 ? n2 (r.s.sd, r.decimals) : juce::String ("-"),
+                                        n2 (r.s.lo, r.decimals) + " - " + n2 (r.s.hi, r.decimals), juce::String (r.s.n) });
+                if (! sp.empty())
+                {
+                    L.sub ("Across the points");
+                    L.table ({ 1.6f, 1.0f, 1.0f, 1.4f, 0.6f }, { "Measure", "Average", "Std. dev.", "Range", "Points" }, sp, 8.0f);
+                }
+            }
 
             std::vector<juce::StringArray> prow;
             if (room.acousticsFromSweeps())
@@ -400,8 +464,8 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                 L.para (why, 10.0f);
             }
             L.para (juce::String (room.acousticsFromSweeps() ? "From sweeps through the system" : "Estimated from the Room EQ pink noise")
-                        + " at the listening points (ISO 3382-1 decay, IEC 60268-16 indirect STI without noise corrections). A full acoustic survey "
-                        "uses an omnidirectional source.", 8.0f, dim);
+                        + " at the listening points (ISO 3382-1 and -2 decay and spread, IEC 60268-16 indirect STI with the noise, masking and threshold corrections, "
+                        "Dietsch / Kraak echo criterion). A full acoustic survey uses an omnidirectional source.", 8.0f, dim);
         }
     }
 
@@ -432,7 +496,14 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             if (room.count (false) > 0) rkv.push_back ({ "As found", dev (false) });
             if (room.count (true) > 0) rkv.push_back ({ "As left (latest check)", dev (true) });
             rkv.push_back ({ "Status", room.tuned ? "Marked as tuned " + room.tunedOn : juce::String ("Not marked as tuned") });
+            rkv.push_back ({ "Room acoustics allowance", ! room.allow.wanted ? juce::String ("off (the average fitted as measured)")
+                                                         : room.allow.on ? juce::String ("on") : juce::String ("on, but room acoustics were not measured (no effect)") });
             L.keyValues (rkv);
+            if (room.allow.on && ! room.allow.notes.isEmpty())
+            {
+                L.sub ("Allowing for the room acoustics");
+                for (const auto& n : room.allow.notes) L.para (n, 9.0f);
+            }
 
             ui::RoomGraph graph (p);
             const auto img = snapshotLight (graph, 820, 420, [lo, hi, &room] (ui::RoomGraph& gr)
@@ -467,7 +538,7 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                 }
                 L.sub ("Suggested EQ");
                 L.table ({ 0.6f, 1.4f, 1.4f, 1.0f }, { "Band", "Frequency", "Gain", "Q" }, eqRows);
-                L.para ("Limits: " + juce::String (room.maxBands) + " bands, cuts to " + juce::String (juce::roundToInt (room.maxCutDb)) + " dB, "
+                L.para ("Limits: " + juce::String (room.maxBands) + " bands, cuts to " + juce::String (juce::roundToInt (p.pref ("eqMaxCut"))) + " dB, "
                         + (room.maxBoostDb > 0.0 ? "boosts to " + juce::String (juce::roundToInt (room.maxBoostDb)) + " dB (wide dips only)." : juce::String ("no boosts."))
                         + (room.baseEq.empty() ? juce::String() : " Added to the " + juce::String ((int) room.baseEq.size()) + " bands already on the speaker when measured."),
                         8.0f, dim);
@@ -557,6 +628,14 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             else checks.push_back ({ "Room noise floor", "not measured" });
             L.sub ("This session's checks");
             L.keyValues (checks);
+        }
+        {
+            const auto own = p.venuePrefs.describe();
+            if (! own.isEmpty())
+            {
+                L.sub ("This venue's own tuning values (instead of the defaults)");
+                for (const auto& t : own) L.para (t, 9.0f);
+            }
         }
     }
 

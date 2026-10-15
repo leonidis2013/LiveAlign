@@ -102,6 +102,22 @@ struct SpeakerSource
 
     xo::Processing proc;           // suggested settings for the speaker processor
     double trimDb = 0.0;           // level trim from Level balance, on top of proc.gainDb (kept for a linked speaker too)
+    double directivityQ = 0.0;     // directivity factor for the critical distance (0 = typical for its role)
+
+    // A typical directivity factor (Q) for the role: a sub radiates nearly all round, a long-throw top narrowly.
+    static double typicalQ (int role)
+    {
+        switch ((SpeakerRole) role)
+        {
+            case SpeakerRole::Sub: return 1.5;
+            case SpeakerRole::Fill: return 5.0;
+            case SpeakerRole::Delay: return 8.0;
+            case SpeakerRole::Main: return 10.0;
+            case SpeakerRole::Other:
+            default: return 5.0;
+        }
+    }
+    double qFactor() const { return directivityQ > 0.0 ? directivityQ : typicalQ (role); }
     juce::String sheetEntered;     // the processor sheet line as it was when ticked "entered" (a change unticks it)
 
     // As found: the first measurement of this speaker, with the processing it had then (for the before / after view).
@@ -583,6 +599,7 @@ struct SpeakerSystem
             c->setAttribute ("arrivalMs", s.arrivalMs);
             c->setAttribute ("nearField", s.nearField);
             if (s.trimDb != 0.0) c->setAttribute ("trimDb", s.trimDb);
+            if (s.directivityQ > 0.0) c->setAttribute ("directivityQ", s.directivityQ);
             if (s.sheetEntered.isNotEmpty()) c->setAttribute ("sheetEntered", s.sheetEntered);
             if (s.asFound.freq.size() > 2)
             {
@@ -667,6 +684,7 @@ struct SpeakerSystem
             s.arrivalMs = c->getDoubleAttribute ("arrivalMs");
             s.nearField = c->getBoolAttribute ("nearField");
             s.trimDb = juce::jlimit (-24.0, 24.0, c->getDoubleAttribute ("trimDb"));
+            s.directivityQ = juce::jlimit (0.0, 50.0, c->getDoubleAttribute ("directivityQ"));
             s.sheetEntered = c->getStringAttribute ("sheetEntered");
             if (const auto* af = c->getChildByName ("AsFound"))
             {

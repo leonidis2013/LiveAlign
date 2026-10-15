@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// A small PDF writer for LiveAlign's reports: US Letter pages (portrait or landscape) with text in the standard
+// A small PDF writer for LiveAlign's reports: US Letter or A4 pages (portrait or landscape) with text in the standard
 // Helvetica and Courier fonts, lines, rectangles and JPEG pictures. Coordinates are in points from the top-left corner
 // of the page. Drawing goes to the newest page unless an earlier one is picked (for contents and "page x of y").
 #include <vector>
@@ -13,7 +13,9 @@ namespace la::pdf
 class Document
 {
 public:
-    static constexpr float kPageW = 612.0f, kPageH = 792.0f;   // US Letter
+    // US Letter, or A4 (Settings, Reports and files): set before a document is made.
+    static bool& useA4() { static bool a4 = false; return a4; }
+    const float kPageW = useA4() ? 595.28f : 612.0f, kPageH = useA4() ? 841.89f : 792.0f;
     enum FontId { Regular = 0, Bold = 1, Mono = 2, Italic = 3 };
 
     void newPage (bool landscape = false)

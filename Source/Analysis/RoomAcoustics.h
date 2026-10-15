@@ -4,9 +4,13 @@
 #pragma once
 // Room acoustics from an impulse response (ISO 3382-1 style): per octave band the early decay time (EDT), reverberation
 // time from the -5 to -25 dB (T20) and -5 to -35 dB (T30) part of the decay, clarity C50 (speech) and C80 (music),
-// definition D50, and a speech transmission index (STI, IEC 60268-16 indirect method, no masking or noise
-// corrections). The decay is found by backward (Schroeder) integration with the noise floor taken off.
-// Also the noise criteria: NC (tangency to the NC curves) and NR (ISO R1996) from octave band noise levels.
+// definition D50, centre time Ts, and a speech transmission index (STI, IEC 60268-16 indirect method; the corrections
+// for noise, auditory masking and the hearing threshold are applied separately, from the measured noise and a speech
+// level). The decay is found by backward (Schroeder) integration with the noise floor taken off. Also the 63 Hz band,
+// reverberation time in 1/3 octaves (100 Hz - 5 kHz), the energy-time curve with the initial time delay gap, echoes
+// (Dietsch and Kraak's echo criterion, speech and music) and flutter echo; bass and treble ratios, %ALcons, the
+// Schroeder frequency and the critical distance; the noise criteria NC (tangency to the NC curves) and NR (ISO R1996)
+// from octave band noise levels; and the spread of any measure across the listening points.
 // Plain C++, unit tested.
 #include <algorithm>
 #include <array>
@@ -19,11 +23,23 @@ namespace la::acoustics
 constexpr int kBands = 7;
 inline const std::array<double, kBands>& octaves() { static const std::array<double, kBands> f { 125, 250, 500, 1000, 2000, 4000, 8000 }; return f; }
 
+constexpr int kModFreqs = 14;   // the STI modulation frequencies, 0.63 - 12.5 Hz
+constexpr int kThirds = 18;     // 1/3-octave bands for the reverberation time, 100 Hz - 5 kHz (ISO 3382-2)
+inline const std::array<double, kThirds>& thirds()
+{
+    static const std::array<double, kThirds> f { 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000 };
+    return f;
+}
+
+template <size_t N> std::array<double, N> nans() { std::array<double, N> a; a.fill (NAN); return a; }
+
 struct Band
 {
     double edt = NAN, t20 = NAN, t30 = NAN, c50 = NAN, c80 = NAN, d50 = NAN, mti = NAN;
     double t15 = NAN;       // -5 to -20 dB, when the decay is too short for T20 (a short measurement or a noisy room)
     double rangeDb = NAN;   // decay range above the noise
+    double ts = NAN;        // centre time (ms): the "centre of gravity" of the energy, lower is clearer
+    std::array<double, kModFreqs> m {};   // modulation transfer at each modulation frequency (for the corrected STI); 0 = not known
     // Reverberation time to quote: T30 when the decay range allows, else T20.
     double rt() const { return std::isfinite (t30) ? t30 : std::isfinite (t20) ? t20 : t15; }
 };
@@ -31,8 +47,19 @@ struct Band
 struct Result
 {
     std::array<Band, kBands> band {};
+    Band b63;                                  // the 63 Hz octave (subs and room modes); unreliable when its decay range is short
+    std::array<double, kThirds> rt3 = nans<kThirds>();   // reverberation time per 1/3 octave (NaN = not clear)
     double sti = NAN;
     bool valid = false;
+    // reflections, from the broadband energy-time curve
+    double itdgMs = NAN;                       // initial time delay gap: direct sound to the first strong reflection
+    double echoSpeech = NAN, echoMusic = NAN;  // Dietsch / Kraak echo criterion EK (audible to half the listeners at 1.0 / 1.8)
+    double echoMs = NAN, echoDb = NAN;         // when the strongest late reflection arrives, and its level against the direct sound
+    double flutterMs = NAN;                    // repeat period of a flutter echo (NaN = none found)
+    double flutterStrength = NAN;              // 0..1, how regular the repeats are
+    std::vector<float> etc;                    // energy-time curve, dB against the direct sound, 0.5 ms steps from 5 ms before it
+
+    bool echoAudible() const { return (std::isfinite (echoSpeech) && echoSpeech >= 1.0) || (std::isfinite (echoMusic) && echoMusic >= 1.8); }
 
     // Average of 500 Hz and 1 kHz (the usual single numbers).
     double mid (double Band::* m) const
@@ -169,16 +196,26 @@ inline void clarity (const std::vector<double>& h, int start, double fs, double 
     d = early + late > 0.0 ? early / (early + late) : NAN;
 }
 
-// Modulation transfer index for one band: modulation reduction at 14 frequencies (0.63 - 12.5 Hz).
-inline double mti (const std::vector<double>& h, int start, double fs)
+inline const double* modFreqs() { static const double fm[kModFreqs] = { 0.63, 0.8, 1.0, 1.25, 1.6, 2.0, 2.5, 3.15, 4.0, 5.0, 6.3, 8.0, 10.0, 12.5 }; return fm; }
+
+// The transmission index of one modulation transfer value (IEC 60268-16: effective SNR clipped to +/-15 dB).
+inline double transmissionIndex (double m)
 {
-    static const double fm[14] = { 0.63, 0.8, 1.0, 1.25, 1.6, 2.0, 2.5, 3.15, 4.0, 5.0, 6.3, 8.0, 10.0, 12.5 };
+    m = std::clamp (m, 1e-6, 0.9999);
+    const double snr = std::clamp (10.0 * std::log10 (m / (1.0 - m)), -15.0, 15.0);
+    return (snr + 15.0) / 30.0;
+}
+
+// Modulation transfer index for one band: modulation reduction at 14 frequencies (0.63 - 12.5 Hz). `mOut` gets each m.
+inline double mti (const std::vector<double>& h, int start, double fs, std::array<double, kModFreqs>* mOut = nullptr)
+{
     double total = 0.0;
     for (int i = start; i < (int) h.size(); ++i) total += h[(size_t) i] * h[(size_t) i];
     if (total <= 0.0) return NAN;
     double ti = 0.0;
-    for (double F : fm)
+    for (int k = 0; k < kModFreqs; ++k)
     {
+        const double F = modFreqs()[k];
         std::complex<double> acc (0.0, 0.0);
         for (int i = start; i < (int) h.size(); ++i)
         {
@@ -186,10 +223,184 @@ inline double mti (const std::vector<double>& h, int start, double fs)
             acc += h[(size_t) i] * h[(size_t) i] * std::polar (1.0, -2.0 * kPi * F * t);
         }
         const double m = std::min (0.9999, std::abs (acc) / total);
-        const double snr = std::clamp (10.0 * std::log10 (m / (1.0 - m)), -15.0, 15.0);
-        ti += (snr + 15.0) / 30.0;
+        if (mOut != nullptr) (*mOut)[(size_t) k] = m;
+        ti += transmissionIndex (m);
     }
-    return ti / 14.0;
+    return ti / (double) kModFreqs;
+}
+
+// Band-pass of any relative width (RBJ, 0 dB at the centre), run twice.
+inline std::vector<double> bandOf (const std::vector<double>& h, double fs, double fc, double Q)
+{
+    auto x = h;
+    Biquad q;
+    const double w = 2.0 * kPi * fc / fs;
+    const double al = std::sin (w) / (2.0 * Q), c = std::cos (w), a0 = 1.0 + al;
+    q.b0 = al / a0; q.b1 = 0.0; q.b2 = -al / a0; q.a1 = -2.0 * c / a0; q.a2 = (1.0 - al) / a0;
+    q.run (x);
+    q.run (x);
+    return x;
+}
+
+// Centre time Ts (ms): sum of t * energy over the energy, from the direct sound until the decay reaches the noise.
+inline double centreTime (const std::vector<double>& h, int start, double fs)
+{
+    const int n = (int) h.size();
+    const int m = n - start;
+    if (m < 16) return NAN;
+    double noise = 0.0;
+    const int tail = std::max (1, m / 10);
+    for (int i = n - tail; i < n; ++i) noise += h[(size_t) i] * h[(size_t) i];
+    noise /= tail;
+    const int win = std::max (1, (int) (0.01 * fs));
+    int cut = n;
+    for (int i = start; i + win <= n; i += win)
+    {
+        double s = 0.0;
+        for (int k = i; k < i + win; ++k) s += h[(size_t) k] * h[(size_t) k];
+        if (i > start + win * 3 && s / win < noise * 2.0) { cut = i; break; }
+    }
+    double num = 0.0, den = 0.0;
+    for (int i = start; i < cut; ++i)
+    {
+        const double e = std::max (0.0, h[(size_t) i] * h[(size_t) i] - noise);
+        num += e * (i - start) / fs;
+        den += e;
+    }
+    return den > 0.0 ? 1000.0 * num / den : NAN;
+}
+
+// One band's decay measures (EDT, T15 / T20 / T30 by the range there is, clarity, centre time, STI modulation).
+inline void bandMeasures (const std::vector<double>& x, int start, double fs, Band& o, bool withMti)
+{
+    const auto edc = decayCurve (x, start, fs, o.rangeDb);
+    if (edc.empty()) return;
+    o.edt = decayTime (edc, fs, -0.0001, -10.0);
+    if (o.rangeDb >= 25.0) o.t15 = decayTime (edc, fs, -5.0, -20.0);
+    if (o.rangeDb >= 35.0) o.t20 = decayTime (edc, fs, -5.0, -25.0);
+    if (o.rangeDb >= 45.0) o.t30 = decayTime (edc, fs, -5.0, -35.0);
+    clarity (x, start, fs, 50.0, o.c50, o.d50);
+    double d80 = 0.0;
+    clarity (x, start, fs, 80.0, o.c80, d80);
+    o.ts = centreTime (x, start, fs);
+    if (withMti) o.mti = mti (x, start, fs, &o.m);
+}
+
+// Dietsch / Kraak echo criterion: the steepest rise of the running centre time tS(tau) over a window `dtMs`, with the
+// response raised to the power `n` (2/3 for speech, 1 for music). Returns EK and where it happens (ms after the direct sound).
+inline double echoCriterion (const std::vector<double>& h, int start, double fs, double n, double dtMs, double& atMs)
+{
+    atMs = NAN;
+    const int len = (int) h.size() - start;
+    const int maxI = std::min (len, (int) (0.6 * fs));
+    if (maxI < (int) (0.05 * fs)) return NAN;
+    // tS at each sample, by running sums
+    std::vector<double> ts ((size_t) maxI, 0.0);
+    double num = 0.0, den = 0.0;
+    for (int i = 0; i < maxI; ++i)
+    {
+        const double p = std::pow (std::abs (h[(size_t) (start + i)]), n);
+        num += p * i / fs;
+        den += p;
+        ts[(size_t) i] = den > 0.0 ? num / den : 0.0;
+    }
+    const int d = std::max (1, (int) (dtMs * 0.001 * fs));
+    const int from = std::max (d, (int) (0.04 * fs));   // an earlier reflection fuses with the direct sound (the precedence effect)
+    double best = 0.0;
+    for (int i = from; i < maxI; ++i)
+    {
+        const double ek = (ts[(size_t) i] - ts[(size_t) (i - d)]) / (dtMs * 0.001);
+        if (ek > best) { best = ek; atMs = 1000.0 * (i - d * 0.5) / fs; }
+    }
+    return best;
+}
+
+// The energy-time curve (dB against the direct sound) in 0.5 ms steps, from 5 ms before the direct sound to 400 ms after.
+inline std::vector<float> energyTime (const std::vector<double>& h, int start, int peak, double fs)
+{
+    const int step = std::max (1, (int) std::lround (0.0005 * fs));
+    const int from = std::max (0, start - (int) (0.005 * fs));
+    const int to = std::min ((int) h.size(), start + (int) (0.4 * fs));
+    double pk = 0.0;
+    for (int i = std::max (0, peak - step); i < std::min ((int) h.size(), peak + step); ++i) pk = std::max (pk, h[(size_t) i] * h[(size_t) i]);
+    std::vector<float> out;
+    if (pk <= 0.0) return out;
+    for (int i = from; i + step <= to; i += step)
+    {
+        double e = 0.0;
+        for (int k = i; k < i + step; ++k) e = std::max (e, h[(size_t) k] * h[(size_t) k]);
+        out.push_back ((float) std::max (-100.0, 10.0 * std::log10 (std::max (1e-30, e / pk))));
+    }
+    return out;
+}
+
+// The first strong reflection after the direct sound (within 20 dB of it), from the energy-time curve. ms or NaN.
+inline double initialGap (const std::vector<float>& etc)
+{
+    // the direct sound is at 5 ms (10 steps); skip its own width (1.5 ms)
+    const int d0 = 10;
+    int i = d0;
+    while (i + 1 < (int) etc.size() && i < d0 + 3) ++i;
+    for (int k = std::max (i, d0 + 3); k + 1 < (int) etc.size() && k < d0 + 200; ++k)
+        if (etc[(size_t) k] > -20.0f && etc[(size_t) k] >= etc[(size_t) k - 1] && etc[(size_t) k] >= etc[(size_t) k + 1]) return (k - d0) * 0.5;
+    return NAN;
+}
+
+// Flutter echo: a regular repeat in the decay (between two parallel surfaces). The energy in 1 ms steps from 20 ms on,
+// its straight-line decay taken off, and the autocorrelation of what is left: a strong peak at a lag of 4 - 100 ms that
+// repeats at twice the lag. Returns the period (ms) or NaN, with how regular it is.
+inline double flutter (const std::vector<double>& h, int start, double fs, double& strength)
+{
+    strength = 0.0;
+    const int step = std::max (1, (int) (0.001 * fs));
+    std::vector<double> env;
+    for (int i = start + (int) (0.02 * fs); i + step <= (int) h.size() && (int) env.size() < 700; i += step)
+    {
+        double e = 0.0;
+        for (int k = i; k < i + step; ++k) e += h[(size_t) k] * h[(size_t) k];
+        env.push_back (10.0 * std::log10 (e / step + 1e-30));
+    }
+    // to where the decay is still 20 dB above its end
+    const int n0 = (int) env.size();
+    if (n0 < 120) return NAN;
+    double tailLvl = 0.0;
+    for (int i = n0 - n0 / 10; i < n0; ++i) tailLvl += env[(size_t) i];
+    tailLvl /= std::max (1, n0 / 10);
+    int n = n0;
+    for (int i = 10; i < n0; ++i)
+    {
+        double a = 0.0;
+        for (int k = i - 10; k < i; ++k) a += env[(size_t) k];
+        if (a / 10.0 < tailLvl + 15.0) { n = i; break; }
+    }
+    if (n < 80) return NAN;
+    env.resize ((size_t) n);
+    // take off the straight-line decay
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (int i = 0; i < n; ++i) { sx += i; sy += env[(size_t) i]; sxx += (double) i * i; sxy += i * env[(size_t) i]; }
+    const double b = (n * sxy - sx * sy) / (n * sxx - sx * sx), a = (sy - b * sx) / n;
+    std::vector<double> r ((size_t) n);
+    double var = 0.0;
+    for (int i = 0; i < n; ++i) { r[(size_t) i] = env[(size_t) i] - (a + b * i); var += r[(size_t) i] * r[(size_t) i]; }
+    if (var <= 0.0) return NAN;
+    auto acf = [&] (int lag)
+    {
+        double s = 0.0;
+        for (int i = 0; i + lag < n; ++i) s += r[(size_t) i] * r[(size_t) i + lag];
+        return s / var * (double) n / (double) (n - lag);
+    };
+    double best = 0.0;
+    int bestLag = -1;
+    for (int lag = 4; lag <= std::min (100, n / 3); ++lag)
+    {
+        const double c = acf (lag);
+        if (c > best && c >= acf (lag - 1) && c >= acf (lag + 1)) { best = c; bestLag = lag; }
+    }
+    if (bestLag < 0) return NAN;
+    const double second = 2 * bestLag < n / 2 ? acf (2 * bestLag) : 0.0;
+    strength = std::clamp (0.5 * (best + std::max (0.0, second)), 0.0, 1.0);
+    if (best < 0.35 || second < 0.2) return NAN;
+    return bestLag * (double) step / fs * 1000.0;
 }
 } // namespace detail
 
@@ -212,18 +423,47 @@ inline Result analyse (const std::vector<float>& ir, double fs)
     {
         const double fc = octaves()[(size_t) b];
         if (fc * 1.42 >= fs * 0.5) continue;
-        const auto x = detail::octaveBand (h, fs, fc);
-        auto& o = r.band[(size_t) b];
+        detail::bandMeasures (detail::octaveBand (h, fs, fc), start, fs, r.band[(size_t) b], true);
+    }
+    detail::bandMeasures (detail::octaveBand (h, fs, 63.0), start, fs, r.b63, false);
+    // reverberation in 1/3 octaves
+    const double q3 = 1.0 / (std::pow (2.0, 1.0 / 6.0) - std::pow (2.0, -1.0 / 6.0));
+    for (int b = 0; b < kThirds; ++b)
+    {
+        r.rt3[(size_t) b] = NAN;
+        const double fc = thirds()[(size_t) b];
+        if (fc * 1.2 >= fs * 0.5) continue;
+        Band o;
+        const auto x = detail::bandOf (h, fs, fc, q3);
         const auto edc = detail::decayCurve (x, start, fs, o.rangeDb);
         if (edc.empty()) continue;
-        o.edt = detail::decayTime (edc, fs, -0.0001, -10.0);
-        if (o.rangeDb >= 25.0) o.t15 = detail::decayTime (edc, fs, -5.0, -20.0);
-        if (o.rangeDb >= 35.0) o.t20 = detail::decayTime (edc, fs, -5.0, -25.0);
         if (o.rangeDb >= 45.0) o.t30 = detail::decayTime (edc, fs, -5.0, -35.0);
-        detail::clarity (x, start, fs, 50.0, o.c50, o.d50);
-        double d80 = 0.0;
-        detail::clarity (x, start, fs, 80.0, o.c80, d80);
-        o.mti = detail::mti (x, start, fs);
+        if (o.rangeDb >= 35.0) o.t20 = detail::decayTime (edc, fs, -5.0, -25.0);
+        if (o.rangeDb >= 25.0) o.t15 = detail::decayTime (edc, fs, -5.0, -20.0);
+        r.rt3[(size_t) b] = o.rt();
+    }
+    // reflections: the energy-time curve, the gap to the first reflection, echoes (speech from the 1 kHz octave, music
+    // broadband) and flutter
+    r.etc = detail::energyTime (h, start, peak, fs);
+    r.itdgMs = detail::initialGap (r.etc);
+    {
+        double atS = NAN, atM = NAN;
+        const auto x1k = detail::octaveBand (h, fs, 1000.0);
+        r.echoSpeech = detail::echoCriterion (x1k, start, fs, 2.0 / 3.0, 9.0, atS);
+        r.echoMusic = detail::echoCriterion (h, start, fs, 1.0, 14.0, atM);
+        const bool speechWorse = std::isfinite (r.echoSpeech) && (! std::isfinite (r.echoMusic) || r.echoSpeech / 1.0 >= r.echoMusic / 1.8);
+        r.echoMs = speechWorse ? atS : atM;
+        if (std::isfinite (r.echoMs))
+        {
+            // its level: the loudest point within 5 ms of it, against the direct sound
+            const int c = (int) std::lround (r.echoMs * 2.0) + 10;
+            float mx = -100.0f;
+            for (int k = std::max (0, c - 10); k < std::min ((int) r.etc.size(), c + 10); ++k) mx = std::max (mx, r.etc[(size_t) k]);
+            r.echoDb = r.etc.empty() ? NAN : (double) mx;
+        }
+        double st = 0.0;
+        r.flutterMs = detail::flutter (h, start, fs, st);
+        r.flutterStrength = st;
     }
     // STI from the band transmission indices (male speech weights, IEC 60268-16 ed. 4)
     static const double alpha[kBands] = { 0.085, 0.127, 0.230, 0.233, 0.309, 0.224, 0.173 };
@@ -246,6 +486,94 @@ inline const char* stiRating (double sti)
 {
     if (! std::isfinite (sti)) return "-";
     return sti >= 0.75 ? "excellent" : sti >= 0.6 ? "good" : sti >= 0.45 ? "fair" : sti >= 0.3 ? "poor" : "bad";
+}
+
+// %ALcons (articulation loss of consonants) from STI (Farrel Becker's fit).
+inline double alcons (double sti) { return std::isfinite (sti) ? 170.5405 * std::exp (-5.419 * sti) : NAN; }
+inline const char* alconsRating (double a)
+{
+    if (! std::isfinite (a)) return "-";
+    return a <= 3.0 ? "ideal" : a <= 7.0 ? "good" : a <= 11.0 ? "fair" : a <= 15.0 ? "poor" : "unacceptable";
+}
+
+// Bass ratio (warmth): RT at 125 + 250 Hz over 500 Hz + 1 kHz. Treble ratio (brilliance): 2 + 4 kHz over the same.
+inline double bassRatio (const Result& r)
+{
+    const double a = r.band[0].rt(), b = r.band[1].rt(), m = r.band[2].rt() + r.band[3].rt();
+    return std::isfinite (a) && std::isfinite (b) && std::isfinite (m) && m > 0.0 ? (a + b) / m : NAN;
+}
+inline double trebleRatio (const Result& r)
+{
+    const double a = r.band[4].rt(), b = r.band[5].rt(), m = r.band[2].rt() + r.band[3].rt();
+    return std::isfinite (a) && std::isfinite (b) && std::isfinite (m) && m > 0.0 ? (a + b) / m : NAN;
+}
+
+// Schroeder frequency (Hz): below it single room modes rule, above it the reverberant field. Critical distance (m):
+// where the direct sound of a speaker with directivity factor Q equals the reverberant sound. Volume in cubic metres.
+inline double schroederHz (double rt, double volumeM3) { return rt > 0.0 && volumeM3 > 0.0 ? 2000.0 * std::sqrt (rt / volumeM3) : NAN; }
+inline double criticalDistanceM (double q, double volumeM3, double rt) { return rt > 0.0 && volumeM3 > 0.0 && q > 0.0 ? 0.057 * std::sqrt (q * volumeM3 / rt) : NAN; }
+
+// STI with the corrections of IEC 60268-16 (ed. 4 / 5): background noise, auditory masking from the band below, and
+// the hearing threshold, for male speech at `speechDbA` (A-weighted, at the listener). `noise`: octave levels 125 Hz -
+// 8 kHz in dB SPL (NaN = not known, then only masking and the threshold are applied). NaN without the modulation data.
+inline double stiCorrected (const Result& r, double speechDbA, const std::array<double, kBands>& noise)
+{
+    static const double speech[kBands] = { 2.9, 2.9, -0.8, -6.8, -12.8, -18.8, -24.8 };   // male speech, re the A-weighted level
+    static const double threshold[kBands] = { 46.0, 27.0, 12.0, 6.5, 7.5, 8.0, 12.0 };    // absolute reception threshold
+    static const double alpha[kBands] = { 0.085, 0.127, 0.230, 0.233, 0.309, 0.224, 0.173 };
+    static const double beta[kBands - 1] = { 0.085, 0.078, 0.065, 0.011, 0.047, 0.095 };
+    if (! std::isfinite (speechDbA)) return NAN;
+    std::array<double, kBands> L {}, mtiC {};
+    for (int k = 0; k < kBands; ++k) L[(size_t) k] = speechDbA + speech[k];
+    for (int k = 0; k < kBands; ++k)
+    {
+        const auto& o = r.band[(size_t) k];
+        bool have = false;
+        for (double v : o.m) have = have || v > 0.0;
+        if (! have) return NAN;
+        const double I = std::pow (10.0, L[(size_t) k] / 10.0);
+        const double In = std::isfinite (noise[(size_t) k]) ? std::pow (10.0, noise[(size_t) k] / 10.0) : 0.0;
+        const double Irt = std::pow (10.0, threshold[k] / 10.0);
+        double Iam = 0.0;
+        if (k > 0)
+        {
+            const double Lb = L[(size_t) k - 1];
+            const double amdB = Lb < 63.0 ? 0.5 * Lb - 65.0 : Lb < 67.0 ? 1.8 * Lb - 146.9 : Lb < 100.0 ? 0.5 * Lb - 59.8 : -10.0;
+            Iam = std::pow (10.0, Lb / 10.0) * std::pow (10.0, amdB / 10.0);
+        }
+        const double f = I / (I + In + Irt + Iam);
+        double ti = 0.0;
+        for (double m : o.m) ti += detail::transmissionIndex (m * f);
+        mtiC[(size_t) k] = ti / (double) kModFreqs;
+    }
+    double sti = 0.0;
+    for (int b = 0; b < kBands; ++b) sti += alpha[b] * mtiC[(size_t) b];
+    for (int b = 0; b < kBands - 1; ++b) sti -= beta[b] * std::sqrt (mtiC[(size_t) b] * mtiC[(size_t) b + 1]);
+    return std::clamp (sti, 0.0, 1.0);
+}
+
+// How a measure varies across the listening points.
+struct Spread
+{
+    double mean = NAN, sd = NAN, lo = NAN, hi = NAN;
+    int n = 0;
+};
+inline Spread spreadOf (const std::vector<double>& v)
+{
+    Spread s;
+    double sum = 0.0, sum2 = 0.0;
+    for (double x : v)
+    {
+        if (! std::isfinite (x)) continue;
+        sum += x; sum2 += x * x;
+        s.lo = s.n == 0 ? x : std::min (s.lo, x);
+        s.hi = s.n == 0 ? x : std::max (s.hi, x);
+        ++s.n;
+    }
+    if (s.n == 0) return s;
+    s.mean = sum / s.n;
+    s.sd = s.n > 1 ? std::sqrt (std::max (0.0, (sum2 - s.n * s.mean * s.mean) / (s.n - 1))) : 0.0;
+    return s;
 }
 
 // ---- noise ratings from octave band levels 63 Hz - 8 kHz (dB SPL; NaN = not measured) ----

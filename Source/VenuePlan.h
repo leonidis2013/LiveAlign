@@ -61,6 +61,10 @@ struct VenuePlan
     PlanSymbol monitorMic;   // the monitoring mic (the monitoring layer of the plan)
     std::vector<PlanItem> items;
     bool edited = false;   // changed by hand since it was created
+    // The room's size (metres; 0 = not given), for the Schroeder frequency and the critical distance. A typed volume
+    // wins over length x width x height (a room that is not a box).
+    double lengthM = 0.0, widthM = 0.0, heightM = 0.0, volumeM3 = 0.0;
+    double volume() const { return volumeM3 > 0.0 ? volumeM3 : lengthM > 0.0 && widthM > 0.0 && heightM > 0.0 ? lengthM * widthM * heightM : 0.0; }
 
     // A new venue's plan: the stage at the top, seating below, FOH at the back.
     static VenuePlan defaults()
@@ -202,6 +206,10 @@ struct VenuePlan
     {
         auto* e = parent.createNewChildElement ("VenuePlan");
         e->setAttribute ("edited", edited);
+        if (lengthM > 0.0) e->setAttribute ("lengthM", lengthM);
+        if (widthM > 0.0) e->setAttribute ("widthM", widthM);
+        if (heightM > 0.0) e->setAttribute ("heightM", heightM);
+        if (volumeM3 > 0.0) e->setAttribute ("volumeM3", volumeM3);
         for (int i = 0; i < kMaxSpeakers; ++i)
             if (speakers[(size_t) i].placed)
             {
@@ -236,6 +244,10 @@ struct VenuePlan
         if (e == nullptr) { *this = defaults(); return; }
         *this = {};
         edited = e->getBoolAttribute ("edited", true);
+        lengthM = juce::jlimit (0.0, 500.0, e->getDoubleAttribute ("lengthM"));
+        widthM = juce::jlimit (0.0, 500.0, e->getDoubleAttribute ("widthM"));
+        heightM = juce::jlimit (0.0, 100.0, e->getDoubleAttribute ("heightM"));
+        volumeM3 = juce::jlimit (0.0, 1.0e6, e->getDoubleAttribute ("volumeM3"));
         for (const auto* c : e->getChildWithTagNameIterator ("Speaker"))
         {
             const int i = c->getIntAttribute ("index", -1);

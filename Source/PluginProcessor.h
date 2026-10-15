@@ -20,6 +20,7 @@
 #include "TuningExtras.h"
 #include "LevelBalance.h"
 #include "UpdateChecker.h"
+#include "Prefs.h"
 #include "Analysis/Generator.h"
 
 // LiveAlign runs as a standalone app (system setup and tuning: drives the PA with the generator and measures through
@@ -152,6 +153,14 @@ public:
     la::VenuePlan plan;                 // sketch of the setup (venue)           // sources, responses and crossover (venue)
     la::SessionChecks checks;           // the open session's checks
     la::RoomTuning room;                // the open session's room tuning
+    la::VenuePrefs venuePrefs;          // this venue's overrides of the tuning preferences
+    double pref (const char* key) const { return venuePrefs.value (key); }
+    void applyAppPrefs();
+    la::LevelBalance::Aims levelAims() const { return { pref ("lrTol"), pref ("fillHi"), pref ("fillLo"), pref ("subTol"), pref ("trimCap") }; }
+    // The close-up distance for Speaker response, as "12 in (30 cm)", and its short form.
+    juce::String closeUpText() const { const double cm = pref ("closeUpCm"); return juce::String (juce::roundToInt (cm / 2.54)) + " in (" + juce::String (juce::roundToInt (cm)) + " cm)"; }
+    juce::String closeUpShort() const { const double cm = pref ("closeUpCm"); return settings.distanceUnit.load() == 1 ? juce::String (juce::roundToInt (cm)) + " cm" : juce::String (juce::roundToInt (cm / 2.54)) + " in"; }
+    bool startLevelApplied = false;
     la::FeedbackTest feedback;          // the open session's feedback test
     la::AsFound asFound;                // the open session's processor settings before anything was changed
     la::LevelBalance level;             // the open session's level balance

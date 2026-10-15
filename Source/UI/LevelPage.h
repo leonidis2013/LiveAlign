@@ -72,7 +72,7 @@ public:
     int tasksCount() const { return lv.points.size() * (int) proc.system.sources.size(); }
     std::vector<LevelTrim> trims (bool recheck) const
     {
-        auto t = lv.suggest (proc.system, proc.room.target, recheck);
+        auto t = lv.suggest (proc.system, proc.room.target, recheck, proc.levelAims());
         for (auto& c : LevelBalance::cabinetNotes (proc.system)) t.push_back (c);
         return t;
     }
@@ -481,8 +481,9 @@ private:
         g.setColour (p.textFaint);
         g.setFont (font (11.0f));
         g.drawFittedText ("Each speaker's level through its own range at each point, measured alone with its processing in place (dB against the "
-                          "reference). Left and right should match at the centre; a fill should be about level with the mains (0 to -3 dB) at "
-                          "the seats it covers; the sub sits against the tops as the Room EQ target's low end asks.",
+                          "reference). Left and right should match at the centre (within " + juce::String (proc.pref ("lrTol"), 1) + " dB); a fill should be "
+                          + juce::String (proc.pref ("fillHi"), 1) + " to " + juce::String (proc.pref ("fillLo"), 1) + " dB against the mains at "
+                          "the seats it covers; the sub sits against the tops as the Room EQ target's low end asks. The aims are in Settings, Tuning defaults.",
                           r.removeFromTop (60), juce::Justification::topLeft, 4);
     }
 

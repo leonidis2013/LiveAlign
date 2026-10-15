@@ -9,6 +9,7 @@
 #include <vector>
 #include <juce_core/juce_core.h>
 #include "MicCalibration.h"
+#include "Prefs.h"
 
 namespace la
 {
@@ -81,9 +82,13 @@ struct SplLog
 {
     struct Point { double t; float la, lc, laMax; };   // t: seconds since 1970; LAeq, LCeq over the interval; max LAF
     std::vector<Point> points;
-    double limitLaeq = 0.0;        // LAeq limit over `limitMinutes` (0 = none)
+    double limitLaeq = 0.0;        // the limit over `limitMinutes` (0 = none), A or C weighted (`limitC`)
     int limitMinutes = 15;
-    static constexpr double kInterval = 5.0;
+    bool limitC = false;           // the limit is an LCeq (bass included) rather than an LAeq
+    double interval = 5.0;         // seconds per logged point
+
+    juce::String limitName() const { return limitC ? "LCeq" : "LAeq"; }
+    juce::String limitUnit() const { return limitC ? "dBC" : "dBA"; }
 
     // A reading (A and C slow, A fast, dB) taken about once a second.
     void add (double t, float laS, float lcS, float laF)
@@ -94,7 +99,7 @@ struct SplLog
         ec += std::pow (10.0, lcS / 10.0);
         mx = std::max (mx, laF);
         ++pending;
-        if (t - pendingStart >= kInterval - 0.5)
+        if (t - pendingStart >= interval - 0.5)
         {
             points.push_back ({ pendingStart, (float) (10.0 * std::log10 (ea / pending)), (float) (10.0 * std::log10 (ec / pending)), mx });
             pending = 0; ea = ec = 0.0; mx = -200.0f;
@@ -103,7 +108,7 @@ struct SplLog
 
     bool empty() const { return points.empty(); }
     double start() const { return points.empty() ? 0.0 : points.front().t; }
-    double end() const { return points.empty() ? 0.0 : points.back().t + kInterval; }
+    double end() const { return points.empty() ? 0.0 : points.back().t + interval; }
 
     // LAeq or LCeq over [from, to) (whole log by default).
     double leq (bool cWeighted, double from = 0.0, double to = 1e300) const
@@ -116,17 +121,18 @@ struct SplLog
     }
     double maxLaf() const { float m = -200.0f; for (const auto& p : points) m = std::max (m, p.laMax); return points.empty() ? NAN : m; }
 
-    // Rolling LAeq over the limit window, at each point.
+    // Rolling Leq (A, or C for a C-weighted limit) over the limit window, at each point.
     std::vector<double> rollingLaeq() const
     {
+        const bool c = limitC;
         std::vector<double> out;
         const double w = limitMinutes * 60.0;
         size_t j = 0;
         double e = 0.0;
         for (size_t i = 0; i < points.size(); ++i)
         {
-            e += std::pow (10.0, points[i].la / 10.0);
-            while (points[i].t - points[j].t >= w) { e -= std::pow (10.0, points[j].la / 10.0); ++j; }
+            e += std::pow (10.0, (c ? points[i].lc : points[i].la) / 10.0);
+            while (points[i].t - points[j].t >= w) { e -= std::pow (10.0, (c ? points[j].lc : points[j].la) / 10.0); ++j; }
             out.push_back (10.0 * std::log10 (std::max (1e-30, e) / (double) (i - j + 1)));
         }
         return out;
@@ -138,7 +144,7 @@ struct SplLog
         if (limitLaeq <= 0.0) return 0.0;
         int n = 0;
         for (double v : rollingLaeq()) n += v > limitLaeq ? 1 : 0;
-        return n * kInterval / 60.0;
+        return n * interval / 60.0;
     }
 
     void clear() { points.clear(); pending = 0; ea = ec = 0.0; mx = -200.0f; }
@@ -148,6 +154,8 @@ struct SplLog
         auto* e = parent.createNewChildElement ("SplLog");
         e->setAttribute ("limitLaeq", limitLaeq);
         e->setAttribute ("limitMinutes", limitMinutes);
+        e->setAttribute ("limitC", limitC);
+        e->setAttribute ("interval", interval);
         juce::String text;
         for (const auto& p : points)
             text << juce::String ((juce::int64) p.t) << ' ' << juce::String (p.la, 1) << ' ' << juce::String (p.lc, 1) << ' ' << juce::String (p.laMax, 1) << '\n';
@@ -157,12 +165,18 @@ struct SplLog
     void load (const juce::XmlElement* parent)
     {
         clear();
-        limitLaeq = 0.0;
-        limitMinutes = 15;
+        // a new session starts with this computer's defaults
+        const auto& ap = AppPrefs::get();
+        limitLaeq = ap.value ("eventLimit");
+        limitMinutes = (int) ap.value ("eventMinutes");
+        limitC = ap.value ("eventLimitC") > 0.5;
+        interval = ap.value ("logSec");
         const auto* e = parent != nullptr ? parent->getChildByName ("SplLog") : nullptr;
         if (e == nullptr) return;
         limitLaeq = e->getDoubleAttribute ("limitLaeq");
         limitMinutes = juce::jlimit (1, 120, e->getIntAttribute ("limitMinutes", 15));
+        limitC = e->getBoolAttribute ("limitC", false);
+        interval = juce::jlimit (1.0, 60.0, e->getDoubleAttribute ("interval", 5.0));
         juce::StringArray lines;
         lines.addLines (e->getAllSubText());
         for (const auto& l : lines)

@@ -22,7 +22,17 @@ LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
     resetVenue();
     traces.importLegacyFolder();
     if (wrapperType != wrapperType_Standalone) setMonitorMode (true);   // the VST3 only monitors
+    applyAppPrefs();
+    settings.genLevelDb = (float) la::AppPrefs::get().value ("genStartDb");
     savedProjectText = createProjectXml()->toString();
+}
+
+// This computer's preferences that live in the audio settings (the generator's ceiling and fade-in).
+void LiveAlignProcessor::applyAppPrefs()
+{
+    const auto& ap = la::AppPrefs::get();
+    settings.genMaxDb = (float) ap.value ("genMaxDb");
+    settings.genFadeMs = (float) ap.value ("genFadeMs");
 }
 
 LiveAlignProcessor::~LiveAlignProcessor() = default;
@@ -55,7 +65,8 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const bool standalone = isStandalone();
 
     gen.setType ((la::GenType) settings.genType.load());
-    gen.setLevelDb (settings.genLevelDb.load());
+    gen.setLevelDb (juce::jmin (settings.genLevelDb.load(), settings.genMaxDb.load()));
+    gen.setFadeInSeconds (settings.genFadeMs.load() * 0.001);
     gen.setFrequency (settings.genFreq.load());
     gen.setSweepSeconds (settings.genSweepSec.load());
     gen.setOn (settings.genOn.load());
@@ -732,7 +743,7 @@ void LiveAlignProcessor::resetVenue()
     monitorMic = {};
     feedback = {};
     asFound = {};
-    splLog.clear();
+    splLog.load (nullptr);
     venueName = "Untitled venue";
     venueNotes.clear();
     projectFile = juce::File();
@@ -746,11 +757,12 @@ void LiveAlignProcessor::resetVenue()
     speakerAim = la::Cal0;
     level = {};
     recheck = {};
+    venuePrefs = {};
     speakers = {};
     system = la::SpeakerSystem::defaults();
     plan = la::VenuePlan::defaults();
     checks = {};
-    room = {};
+    room.load (nullptr);   // a new venue: this computer's Room EQ defaults
     traces.clear();
     sessions.clear();
     la::SessionInfo s;
@@ -808,6 +820,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     speakers.save (*x);
     system.save (*x);
     plan.save (*x);
+    venuePrefs.save (*x);
 
     auto* list = x->createNewChildElement ("Sessions");
     list->setAttribute ("current", current);
@@ -859,6 +872,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     speakers.load (x);
     system.load (x);
     plan.load (x);
+    venuePrefs.load (x);
     monitorMic.load (x);
     // mics linked to the locker pick up their latest calibration from it
     for (int m = 0; m < la::kMaxMics; ++m)
@@ -886,6 +900,8 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
         current = juce::jlimit (0, (int) sessions.size() - 1, list->getIntAttribute ("current", 0));
         loadSessionBody (sessions[(size_t) current].body.get());
         sessions[(size_t) current].body.reset();
+        // venues from before 0.18 kept the deepest cut with Room EQ: it is a venue preference now
+        if (! venuePrefs.has ("eqMaxCut") && std::abs (room.maxCutDb - 12.0) > 0.01) venuePrefs.set ("eqMaxCut", room.maxCutDb);
     }
     else
     {
@@ -1063,6 +1079,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
             savedProjectText = createProjectXml()->toString();
         }
     }
+    if (! startLevelApplied) { settings.genLevelDb = (float) la::AppPrefs::get().value ("genStartDb"); startLevelApplied = true; }
 }
 
 juce::AudioProcessorEditor* LiveAlignProcessor::createEditor()

@@ -38,6 +38,8 @@ class Detector
 public:
     explicit Detector (Options o = {}) : opt (o) {}
     void reset() { tracks.clear(); }
+    void setOptions (const Options& o) { opt = o; }
+    const Options& options() const { return opt; }
 
     // One spectrum frame. Returns the rings confirmed by this frame (each ring is reported once).
     std::vector<Ring> push (const std::vector<double>& f, const std::vector<float>& db)

@@ -59,6 +59,12 @@ public:
     {
         onButton.setToggleState (settings.genOn.load(), juce::dontSendNotification);
         typeBox.setSelectedItemIndex (settings.genType.load(), juce::dontSendNotification);
+        {
+            // the ceiling from Settings, Generator and safety
+            const double ceiling = juce::jlimit (-40.0, 0.0, (double) settings.genMaxDb.load());
+            if (std::abs (levelSlider.getMaximum() - ceiling) > 0.01) levelSlider.setRange (-60.0, ceiling, 0.5);
+            if (settings.genLevelDb.load() > ceiling) settings.genLevelDb = (float) ceiling;
+        }
         if (! levelSlider.isMouseButtonDown()) levelSlider.setValue (settings.genLevelDb.load(), juce::dontSendNotification);
         if (! freqSlider.isMouseButtonDown()) freqSlider.setValue (settings.genFreq.load(), juce::dontSendNotification);
         static const float secs[] = { 1.0f, 2.0f, 3.0f, 5.0f, 10.0f };

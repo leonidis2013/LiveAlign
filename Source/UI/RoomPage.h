@@ -10,6 +10,7 @@
 #include "NavRail.h"
 #include "GuidedMeasure.h"
 #include "../PluginProcessor.h"
+#include "../AcousticsSummary.h"
 
 namespace la::ui
 {
@@ -81,6 +82,70 @@ public:
             g.setColour (p.bg.withAlpha (0.55f));
             g.fillRect (juce::Rectangle<float>::leftTopRightBottom (plot.getX(), plot.getY(), ax.x (eqLo), plot.getBottom()));
             g.fillRect (juce::Rectangle<float>::leftTopRightBottom (ax.x (eqHi), plot.getY(), plot.getRight(), plot.getBottom()));
+        }
+
+        // what the room acoustics allowance does, where it does it
+        if (room.allow.on && (hasBefore || hasAfter))
+        {
+            const auto& al = room.allow;
+            g.setFont (font (10.0f, true));
+            for (const auto& rr : al.noisy)
+            {
+                const auto band = juce::Rectangle<float>::leftTopRightBottom (ax.x (rr.first), plot.getY(), ax.x (rr.second), plot.getBottom());
+                g.setColour (p.textFaint.withAlpha (0.12f));
+                g.fillRect (band);
+                g.setColour (p.textFaint);
+                g.drawText ("noise", band.withHeight (14.0f).translated (0.0f, plot.getHeight() - 16.0f), juce::Justification::centred);
+            }
+            for (const auto& rr : al.windowed)
+            {
+                const auto band = juce::Rectangle<float>::leftTopRightBottom (ax.x (rr.first), plot.getY(), ax.x (rr.second), plot.getBottom());
+                g.setColour (p.accent.withAlpha (0.06f));
+                g.fillRect (band);
+                g.setColour (p.accent.withAlpha (0.8f));
+                g.drawText ("direct sound", band.withHeight (14.0f).translated (0.0f, 2.0f), juce::Justification::centred);
+            }
+            {
+                const float x = ax.x (al.schroederHz);
+                juce::Path l;
+                l.startNewSubPath (x, plot.getY());
+                l.lineTo (x, plot.getBottom());
+                juce::Path d;
+                const float dashes[] = { 3.0f, 4.0f };
+                juce::PathStrokeType (1.2f).createDashedStroke (d, l, dashes, 2);
+                g.setColour (p.warn.withAlpha (0.8f));
+                g.fillPath (d);
+                g.drawText ((al.schroederAssumed ? "~" : "") + juce::String (juce::roundToInt (al.schroederHz)) + " Hz: modes below",
+                            juce::Rectangle<float> (x + 4.0f, plot.getBottom() - 30.0f, 130.0f, 13.0f), juce::Justification::centredLeft);
+            }
+            int nth = 0;
+            for (const auto& c : al.modeCuts)
+            {
+                const float x = ax.x (c.freq);
+                const float ly = plot.getY() + 30.0f + 13.0f * (float) (nth++ % 2);
+                juce::Path tri;
+                tri.addTriangle (x - 5.0f, plot.getY() + 2.0f, x + 5.0f, plot.getY() + 2.0f, x, plot.getY() + 10.0f);
+                g.setColour (p.accent);
+                g.fillPath (tri);
+                g.drawText ("mode Q" + juce::String (c.q, 1), juce::Rectangle<float> (x - 40.0f, ly, 80.0f, 13.0f), juce::Justification::centred);
+            }
+            const auto& ref2 = hasBefore ? before : after;
+            const auto sm2 = eq::smooth (grid, ref2, 1.0 / 12.0);
+            for (const auto& n : al.nulls)
+            {
+                size_t k = 0;
+                while (k + 1 < grid.size() && grid[k] < n.freq) ++k;
+                if (! std::isfinite (sm2[k])) continue;
+                const float x = ax.x (n.freq), y = yDb (sm2[k]);
+                g.setColour (p.warn);
+                g.drawEllipse (x - 4.0f, y - 4.0f, 8.0f, 8.0f, 1.4f);
+                g.drawText ("null: move, don't boost", juce::Rectangle<float> (x - 70.0f, y + 6.0f, 140.0f, 13.0f), juce::Justification::centred);
+            }
+            if (al.noHighBoost)
+            {
+                g.setColour (p.warn);
+                g.drawText ("no boosts above 2 kHz", juce::Rectangle<float> (ax.x (2000.0) + 4.0f, plot.getY() + 30.0f, 140.0f, 13.0f), juce::Justification::centredLeft);
+            }
         }
 
         juce::Graphics::ScopedSaveState save (g);
@@ -243,7 +308,18 @@ public:
         applyButton.onClick = [this] { applyEq(); };
         applyButton.setTooltip ("Once you have put these bands in your processor: LiveAlign notes them as the EQ in the processor (for the "
                                 "settings sheet and the report) and the next step is to measure again to check");
-        for (auto* c : std::initializer_list<juce::Component*> { &targetBox, &speakerBox, &bandsBox, &boostBox, &suggestButton, &applyButton })
+        allowToggle.setButtonText ("Allow for the room acoustics");
+        allowToggle.onClick = [this]
+        {
+            // the venue's own value; the same as the default in Settings means no override
+            const bool on = allowToggle.getToggleState();
+            if ((AppPrefs::get().value ("roomAllow") > 0.5) == on) proc.venuePrefs.reset ("roomAllow");
+            else proc.venuePrefs.set ("roomAllow", on ? 1.0 : 0.0);
+            room.suggested.clear();
+            refresh();
+            changed();
+        };
+        for (auto* c : std::initializer_list<juce::Component*> { &targetBox, &speakerBox, &bandsBox, &boostBox, &allowToggle, &suggestButton, &applyButton })
             addAndMakeVisible (*c);
 
         // ---- 3 check ----
@@ -278,7 +354,13 @@ public:
     void refresh()
     {
         proc.syncPositionsWithPlan();
-        room.updateSystem (proc.system);
+        updateRoomAllowance (proc);
+        allowToggle.setToggleState (room.allow.wanted, juce::dontSendNotification);
+        allowToggle.setTooltip (room.allow.wanted && ! room.allow.on ? juce::String ("Needs Room acoustics measured first: until then it has no effect.")
+                                : (room.allow.on ? room.allow.notes.joinIntoString ("\n") + "\n\n" : juce::String())
+                                  + "Uses the room acoustics: the Schroeder frequency, the room modes and how long they ring, long reverb, the noise and the clarity. "
+                                  "Off: Room EQ fits the average as measured. The default is in Settings, Tuning defaults"
+                                  + juce::String (proc.venuePrefs.has ("roomAllow") ? " (this venue has its own)." : "."));
 
         const int outs = juce::jmax (1, proc.numOutputs());
         outputBox.clear (juce::dontSendNotification);
@@ -349,7 +431,7 @@ public:
         double lo, hi, rms, mx;
         eqRange (lo, hi);
         room.deviation (room.average (room.checkRound > 0), lo, hi, rms, mx);
-        return std::isfinite (rms) && rms <= 1.5;
+        return std::isfinite (rms) && rms <= proc.pref ("eqClose");
     }
 
     bool busy() const { return phase != Phase::Idle; }
@@ -578,9 +660,14 @@ public:
                 juce::String why;
                 if (room.acousticsVerdict (why) >= 2) t << "\nRoom acoustics: " << why;
             }
+            if (room.allow.wanted)
+            {
+                if (! room.allow.on) t << "\nAllow for the room acoustics: needs Room acoustics measured first.";
+                else t << "\nAllowing for the room: " << room.allow.summary();
+            }
             if (const int narrow = narrowBands(); narrow > 0)
                 t << "\n" << narrow << (narrow == 1 ? " band" : " bands") << " in the processor now " << (narrow == 1 ? "is" : "are")
-                  << " narrower than room EQ should be (Q above 4, or a boost above 2), from an earlier version: widen or remove "
+                  << " narrower than room EQ should be (a cut above Q " << juce::String (proc.pref ("eqCutQ"), 1) << ", or a boost above Q " << juce::String (proc.pref ("eqBoostQ"), 1) << "): widen or remove "
                   << (narrow == 1 ? "it" : "them") << " in the processor, then measure a check.";
             txt (rangeInfo, t, room.sysNote.isNotEmpty() ? p.accent : p.textDim);
             auto r = bandsArea;
@@ -643,7 +730,7 @@ public:
             {
                 room.deviation (room.average (true), lo, hi, ra, ma);
                 t << "\nCheck " << room.checkRound << ": " << juce::String (ra, 1) << " dB RMS (worst " << juce::String (ma, 1) << " dB)"
-                  << (ra <= 1.5 ? ": close enough, mark the room as tuned." : ": refine the EQ, or mark it as tuned if it sounds right.");
+                  << (ra <= proc.pref ("eqClose") ? ": close enough, mark the room as tuned." : ": refine the EQ, or mark it as tuned if it sounds right.");
             }
             if (t.isEmpty()) t = "Once the EQ is in your processor (I've entered this EQ), measure a check at the same positions.";
             txt (checkInfo, t, room.count (true) > 0 ? p.text : p.textDim);
@@ -712,6 +799,12 @@ public:
             put ("Target", targetBox);
             put ("EQ on", speakerBox);
             {
+                auto row = c.removeFromTop (24);
+                row.removeFromLeft (64);
+                allowToggle.setBounds (row);
+                c.removeFromTop (4);
+            }
+            {
                 auto row = c.removeFromTop (26);
                 labels.push_back ({ "Limits", row.removeFromLeft (64) });
                 bandsBox.setBounds (row.removeFromLeft (row.getWidth() * 42 / 100));
@@ -721,8 +814,9 @@ public:
             }
             {
                 juce::String why;
-                const int lines = 1 + (room.sysNote.isNotEmpty() ? 1 : 0) + (room.acousticsVerdict (why) >= 2 ? 2 : 0) + (narrowBands() > 0 ? 2 : 0);
-                rangeInfo = c.removeFromTop (lines * 16 + 2);
+                const int lines = 1 + (room.sysNote.isNotEmpty() ? 1 : 0) + (room.acousticsVerdict (why) >= 2 ? 2 : 0) + (narrowBands() > 0 ? 2 : 0)
+                                  + (room.allow.wanted ? 2 : 0);
+                rangeInfo = c.removeFromTop (juce::jmin (lines * 16 + 2, juce::jmax (48, c.getHeight() - 160)));
             }
             c.removeFromTop (4);
             suggestButton.setBounds (c.removeFromTop (30));
@@ -822,7 +916,8 @@ private:
     int narrowBands() const
     {
         int n = 0;
-        for (const auto& b : room.baseEq) n += (b.gainDb < 0.0 && b.q > 4.05) || (b.gainDb > 0.0 && b.q > 2.05) ? 1 : 0;
+        const double cutQ = proc.pref ("eqCutQ"), boostQ = proc.pref ("eqBoostQ");
+        for (const auto& b : room.baseEq) n += (b.gainDb < 0.0 && b.q > cutQ + 0.05) || (b.gainDb > 0.0 && b.q > boostQ + 0.05) ? 1 : 0;
         return n;
     }
 
@@ -831,24 +926,44 @@ private:
         room.updateSystem (proc.system);
         const bool fromCheck = room.checkRound > 0 && room.count (true) > 0;
         if (room.count (false) == 0) { status = "Measure the positions as found first."; repaint(); return; }
+        updateRoomAllowance (proc);
+        const auto& al = room.allow;
         eq::Options o;
         eqRange (o.fLo, o.fHi);
-        o.maxBands = room.maxBands;
+        // the room modes most seats share are cut first (with their own width); the rest is fitted
+        std::vector<eq::Band> modeBands;
+        if (al.on)
+            for (const auto& c : al.modeCuts)
+                if (c.freq >= o.fLo && (int) modeBands.size() < room.maxBands - 1)
+                    modeBands.push_back ({ c.freq, al.capCuts ? std::max (c.gainDb, -al.cutCap) : c.gainDb, c.q });
+        o.maxBands = juce::jmax (1, room.maxBands - (int) modeBands.size());
         o.maxBoostDb = room.maxBoostDb;
-        o.maxCutDb = room.maxCutDb;
+        o.maxCutDb = al.on && al.capCuts ? std::min (proc.pref ("eqMaxCut"), al.cutCap) : proc.pref ("eqMaxCut");
         // room EQ is broad: gentle bands only (a narrow one chases a reflection at one seat), fitted to a 1/3 octave average
         o.minQ = 0.7;
-        o.maxQ = 4.0;
-        o.maxBoostQ = 2.0;
+        o.maxQ = proc.pref ("eqCutQ");
+        o.maxBoostQ = proc.pref ("eqBoostQ");
         o.narrowQ = 3.0;
         o.smoothOct = 1.0 / 3.0;
         // fit what is left: from the latest check (the EQ entered so far is already in that measurement)
         const auto f = RoomTuning::grid();
-        const auto r = eq::fit (f, room.average (fromCheck), room.targetCurve(), o);
-        room.suggested = r.bands;
+        const auto tgt = room.targetCurve();
+        const auto input = al.on ? room.fitInput (fromCheck, tgt, modeBands) : room.average (fromCheck);
+        const auto r = eq::fit (f, input, tgt, o);
+        room.suggested = modeBands;
+        room.suggested.insert (room.suggested.end(), r.bands.begin(), r.bands.end());
+        std::sort (room.suggested.begin(), room.suggested.end(), [] (const eq::Band& a, const eq::Band& b) { return a.freq < b.freq; });
         room.offsetDb = r.offsetDb;
-        room.rmsBefore = r.rmsBefore;
-        room.rmsAfter = r.rmsAfter;
+        {
+            // before and after against the target, from the measurement itself
+            double lo, hi, mx;
+            eqRange (lo, hi);
+            const auto avg = room.average (fromCheck);
+            room.deviation (avg, lo, hi, room.rmsBefore, mx);
+            auto pred = avg;
+            for (size_t i = 0; i < f.size(); ++i) if (std::isfinite (pred[i])) pred[i] += eq::totalDb (room.suggested, f[i]);
+            room.deviation (pred, lo, hi, room.rmsAfter, mx);
+        }
         const int positions = room.count (fromCheck);
         if (room.suggested.empty())
             status = fromCheck ? juce::String ("Within 1 dB of the target: nothing to refine. Mark the room as tuned.")
@@ -856,7 +971,8 @@ private:
         else
         {
             status = juce::String (fromCheck ? "Refinement: " : "") + juce::String ((int) room.suggested.size()) + (room.suggested.size() == 1 ? " band: " : " bands: ")
-                     + juce::String (r.rmsBefore, 1) + " dB RMS from the target now, " + juce::String (r.rmsAfter, 1) + " dB predicted. Enter "
+                     + juce::String (room.rmsBefore, 1) + " dB RMS from the target now, " + juce::String (room.rmsAfter, 1) + " dB predicted"
+                     + (al.on ? juce::String (" (allowing for the room acoustics)") : juce::String()) + ". Enter "
                      + (fromCheck ? "the changes" : "them") + " in your processor on " + room.eqGroupName (proc.system) + ", then press I've entered this EQ.";
             if (positions == 1) status << " Only one position is measured: this EQ is provisional (it may be fixing that one seat); measure more positions.";
         }
@@ -1056,7 +1172,11 @@ private:
                 rm.tf.extra.push_back (i < r.tfCoh.size() ? r.tfCoh[i] : 0.0);
             }
             if (rm.tf.freq.size() < 16) continue;
-            if (r.ir.size() > 1024) rm.ac = acoustics::analyse (r.ir, rate());
+            if (r.ir.size() > 1024)
+            {
+                rm.ac = acoustics::analyse (r.ir, rate());
+                rm.fdw = windowedDelta (r.ir, rate(), RoomTuning::grid());
+            }
             // a new measurement at a position replaces the old one of the same round
             room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(),
                                              [&rm] (const RoomMeasurement& x) { return x.position == rm.position && x.after == rm.after; }),
@@ -1095,6 +1215,7 @@ private:
     juce::TextButton addPositionButton;
     juce::ComboBox outputBox, targetBox, speakerBox, bandsBox, boostBox;
     juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "I've entered this EQ" };
+    juce::ToggleButton allowToggle;
     juce::TextButton tunedButton { "Mark the room as tuned" };
 
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> labels;

@@ -299,7 +299,7 @@ public:
     {
         const auto rolling = l.rollingLaeq();
         const double now = rolling.empty() ? NAN : rolling.back();
-        if (l.points.size() == shownPoints && std::abs (l.limitLaeq - shownLimit) < 0.01) return;
+        if (l.points.size() == shownPoints && std::abs (l.limitLaeq - shownLimit) < 0.01 && name == l.limitName()) return;
         shownPoints = l.points.size();
         shownLimit = l.limitLaeq;
         leq = l.leq (false);
@@ -307,6 +307,9 @@ public:
         limit = l.limitLaeq;
         minutes = l.limitMinutes;
         over = l.minutesOver();
+        name = l.limitName();
+        unit = l.limitUnit();
+        interval = l.interval;
         since = l.empty() ? juce::String() : juce::Time ((juce::int64) (l.start() * 1000.0)).formatted ("%H:%M");
         repaint();
     }
@@ -321,7 +324,7 @@ public:
         {
             g.setColour (p.textDim);
             g.setFont (font (11.5f));
-            g.drawFittedText ("The sound level is logged every 5 seconds for the monitoring report.", c.toNearestInt(), juce::Justification::topLeft, 2);
+            g.drawFittedText ("The sound level is logged every " + juce::String (juce::roundToInt (interval)) + " seconds for the monitoring report.", c.toNearestInt(), juce::Justification::topLeft, 2);
             return;
         }
         auto line = c.removeFromTop (20.0f);
@@ -347,16 +350,17 @@ public:
         c.removeFromTop (5.0f);
         g.setColour (limit > 0.0 && roll > limit ? p.bad : p.textDim);
         g.setFont (font (11.0f));
-        g.drawText (limit > 0.0 ? juce::String (minutes) + " min LAeq " + juce::String (roll, 1) + " of " + juce::String (juce::roundToInt (limit)) + " dBA"
+        g.drawText (limit > 0.0 ? juce::String (minutes) + " min " + name + " " + juce::String (roll, 1) + " of " + juce::String (juce::roundToInt (limit)) + " " + unit
                                       + (over > 0.0 ? ", over for " + juce::String (juce::roundToInt (over)) + " min" : juce::String())
-                                : juce::String (minutes) + " min LAeq " + juce::String (roll, 1) + " (no limit set)",
+                                : juce::String (minutes) + " min " + name + " " + juce::String (roll, 1) + " (no limit set)",
                     c.removeFromTop (16.0f), juce::Justification::centredLeft, true);
     }
 
 private:
     size_t shownPoints = (size_t) -1;
-    double shownLimit = -1.0, leq = NAN, roll = NAN, limit = 0.0, over = 0.0;
+    double shownLimit = -1.0, leq = NAN, roll = NAN, limit = 0.0, over = 0.0, interval = 5.0;
     int minutes = 15;
+    juce::String name { "LAeq" }, unit { "dBA" };
     juce::String since;
 };
 

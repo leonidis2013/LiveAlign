@@ -191,6 +191,27 @@ inline float cover (Layout& L, const juce::String& kind, const juce::String& tit
     doc.text (Layout::kMargin, 92.0f, kind, 13.0f, pdf::Document::Bold, juce::Colours::white.withAlpha (0.92f));
     doc.text (Layout::kMargin, 128.0f, title, 28.0f, pdf::Document::Bold, juce::Colours::white);
     doc.text (Layout::kMargin, 156.0f, subtitle, 12.0f, pdf::Document::Regular, juce::Colours::white);
+    // your logo, top right of the band (Settings, Reports and files), on a white tile so any logo reads
+    const juce::File logoFile (UserPrefs::get ("reportLogo"));
+    if (logoFile.existsAsFile())
+    {
+        const auto logo = juce::ImageFileFormat::loadFrom (logoFile);
+        if (logo.isValid() && logo.getWidth() > 0 && logo.getHeight() > 0)
+        {
+            const float maxW = 150.0f, maxH = 80.0f;
+            const float sc = std::min (maxW / (float) logo.getWidth(), maxH / (float) logo.getHeight());
+            const float w = (float) logo.getWidth() * sc, h = (float) logo.getHeight() * sc;
+            const float x = doc.pageW() - Layout::kMargin - w, y = 52.0f;
+            juce::Image flat (juce::Image::RGB, logo.getWidth(), logo.getHeight(), true);
+            {
+                juce::Graphics g (flat);
+                g.fillAll (juce::Colours::white);
+                g.drawImageAt (logo, 0, 0);
+            }
+            doc.rect (x - 8.0f, y - 8.0f, w + 16.0f, h + 16.0f, juce::Colours::white);
+            doc.image (flat, x, y, w, h);
+        }
+    }
     return 232.0f;
 }
 

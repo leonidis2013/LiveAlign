@@ -105,7 +105,7 @@ public:
             {
                 sp.mic = micFor (t);
                 sp.speaker = t.kind == 2 ? -1 : t.spk;
-                sp.how = t.kind == 0 ? "12 in (30 cm) from the cone, " + aimHowText (proc, sp.mic, SpeakerAim)
+                sp.how = t.kind == 0 ? proc.closeUpText() + " from the cone, " + aimHowText (proc, sp.mic, SpeakerAim)
                                      : "seated ear height, " + aimHowText (proc, sp.mic, RoomAim);
             }
             out.push_back (sp);
@@ -215,8 +215,9 @@ private:
             const auto rel = polarity::relative (r.tf, e, minCoh, subRole ? 6.0 : 0.5);
             if (rel.verdict == polarity::Inverted) add (2, tag + ": the polarity has flipped since it was tuned. Check its wiring and the processor's polarity.");
             else if (rel.verdict == polarity::Unsure) add (1, tag + ": the polarity could not be confirmed against when it was tuned. Measure it again with the mic close to the cone.");
-            if (std::isfinite (d) && std::abs (d) > 2.0) add (std::abs (d) > 4.0 ? 2 : 1, tag + ": " + f1 (d) + " dB against when it was tuned. Check its amp, gain and level settings.");
-            if (rel.verdict != polarity::Inverted && rel.verdict != polarity::Unsure && (! std::isfinite (d) || std::abs (d) <= 2.0))
+            const double tolClose = proc.pref ("recheckClose");
+            if (std::isfinite (d) && std::abs (d) > tolClose) add (std::abs (d) > 2.0 * tolClose ? 2 : 1, tag + ": " + f1 (d) + " dB against when it was tuned. Check its amp, gain and level settings.");
+            if (rel.verdict != polarity::Inverted && rel.verdict != polarity::Unsure && (! std::isfinite (d) || std::abs (d) <= tolClose))
                 add (0, tag + ": as tuned (" + (std::isfinite (d) ? f1 (d) + " dB" : juce::String ("level not clear")) + ", polarity as before).");
         }
         else if (t.kind == 1)
@@ -235,10 +236,12 @@ private:
                 const double expArrival = was->arrivalMs - was->delayAtMs + s.proc.delayMs;
                 const double dt = r.arrivalMs - expArrival;
                 bool fine = true;
-                if (std::isfinite (d) && std::abs (d) > 1.5) { add (std::abs (d) > 3.0 ? 2 : 1, tag + ": level " + f1 (d) + " dB against the level balance."); fine = false; }
+                const double tolFoh = proc.pref ("recheckFoh");
+                if (std::isfinite (d) && std::abs (d) > tolFoh) { add (std::abs (d) > 2.0 * tolFoh ? 2 : 1, tag + ": level " + f1 (d) + " dB against the level balance."); fine = false; }
                 // a sub's arrival is only known roughly (its low frequencies smear the peak), so it gets more room
                 const bool isSub = s.role == (int) SpeakerRole::Sub;
-                const double tol = isSub ? 1.5 : 0.5, bad = isSub ? 5.0 : 2.0;
+                const double tDelay = proc.pref ("recheckDelay");
+                const double tol = isSub ? 3.0 * tDelay : tDelay, bad = isSub ? 10.0 * tDelay : 4.0 * tDelay;
                 if (was->hasArrival && r.hasArrival && std::abs (dt) > tol)
                 {
                     const bool missing = dt < 0.0 && s.proc.delayMs > 0.5 && std::abs (std::abs (dt) - s.proc.delayMs) < juce::jmax (0.3, tol * 0.5);
@@ -277,10 +280,11 @@ private:
                 double ss = 0.0, mx = 0.0;
                 for (double v : diff) { ss += (v - off) * (v - off); mx = std::max (mx, std::abs (v - off)); }
                 const double rms = diff.empty() ? NAN : std::sqrt (ss / (double) diff.size());
-                if (std::isfinite (rms) && rms > 2.0) add (rms > 3.5 ? 2 : 1, tag + ": the tonal balance has moved " + juce::String (rms, 1) + " dB RMS (worst "
+                const double tolTonal = proc.pref ("recheckTonal");
+                if (std::isfinite (rms) && rms > tolTonal) add (rms > 1.75 * tolTonal ? 2 : 1, tag + ": the tonal balance has moved " + juce::String (rms, 1) + " dB RMS (worst "
                                                                                     + juce::String (mx, 1) + " dB) since Room EQ. Check the EQ in the processor.");
                 if (std::abs (off) > 2.0) add (1, tag + ": " + f1 (off) + " dB louder than at Room EQ (the same generator level). Check the master and amp levels.");
-                if ((! std::isfinite (rms) || rms <= 2.0) && std::abs (off) <= 2.0) add (0, tag + ": as left (" + (std::isfinite (rms) ? juce::String (rms, 1) : juce::String ("-")) + " dB RMS).");
+                if ((! std::isfinite (rms) || rms <= tolTonal) && std::abs (off) <= 2.0) add (0, tag + ": as left (" + (std::isfinite (rms) ? juce::String (rms, 1) : juce::String ("-")) + " dB RMS).");
             }
         }
         done.push_back (t.id());

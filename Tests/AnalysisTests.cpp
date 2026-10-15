@@ -635,6 +635,71 @@ static void testRoomAcoustics()
     check (noiseCriterion (quiet) < 20.0, "Noise: a quiet room is below NC 20", noiseCriterion (quiet), 18);
     const std::array<double, kNoiseBands> flat40 { 40, 40, 40, 40, 40, 40, 40, 40 };
     near (noiseRating (flat40), 45.7, 0.3, "Noise: NR of a flat 40 dB spectrum (set by 8 kHz)");
+
+    // the 0.18 measures on the 1 s room
+    check (r.band[3].ts > 50.0 && r.band[3].ts < 85.0, "Acoustics: centre time Ts at 1 kHz (about 72 ms for 1 s)", r.band[3].ts, 72.0);
+    check (d.band[3].ts < r.band[3].ts, "Acoustics: a drier room has a shorter Ts", d.band[3].ts, r.band[3].ts);
+    near (r.b63.rt(), rt, 0.3, "Acoustics: RT in the 63 Hz band");
+    near (r.rt3[10], rt, 0.15, "Acoustics: RT in the 1 kHz third octave");
+    near (r.rt3[0], rt, 0.25, "Acoustics: RT in the 100 Hz third octave");
+    near (bassRatio (r), 1.0, 0.2, "Acoustics: bass ratio of an even room");
+    near (trebleRatio (r), 1.0, 0.2, "Acoustics: treble ratio of an even room");
+    check (r.echoSpeech < 1.0 && r.echoMusic < 1.8, "Acoustics: no echo in a diffuse decay", r.echoSpeech, 0.0);
+    check (! std::isfinite (r.flutterMs), "Acoustics: no flutter in a diffuse decay", r.flutterMs, NAN);
+    near (alcons (0.6), 6.6, 0.2, "Acoustics: %ALcons for STI 0.60");
+    near (schroederHz (1.0, 1000.0), 63.2, 0.2, "Acoustics: Schroeder frequency, 1 s in 1000 m3");
+    near (criticalDistanceM (10.0, 1000.0, 1.0), 5.7, 0.05, "Acoustics: critical distance, Q 10, 1000 m3, 1 s");
+    {
+        const std::array<double, kBands> none { NAN, NAN, NAN, NAN, NAN, NAN, NAN };
+        const double c70 = stiCorrected (d, 70.0, none);
+        check (std::isfinite (c70) && c70 <= d.sti + 1e-9 && c70 > d.sti - 0.06, "STI: masking and threshold at 70 dBA cost little", c70, d.sti);
+        const std::array<double, kBands> loud { 60, 60, 60, 60, 60, 60, 60 };
+        const double cn = stiCorrected (d, 70.0, loud);
+        check (cn < c70 - 0.1, "STI: noise 60 dB under 70 dBA speech lowers it", cn, c70);
+        const std::array<double, kBands> quietN { 20, 15, 10, 5, 5, 5, 5 };
+        check (std::abs (stiCorrected (d, 70.0, quietN) - c70) < 0.02, "STI: a quiet room changes nothing", stiCorrected (d, 70.0, quietN), c70);
+    }
+    {
+        const auto sp = spreadOf ({ 1.0, 1.2, NAN, 0.8 });
+        check (sp.n == 3 && std::abs (sp.mean - 1.0) < 1e-9 && std::abs (sp.lo - 0.8) < 1e-9 && std::abs (sp.hi - 1.2) < 1e-9 && std::abs (sp.sd - 0.2) < 1e-9,
+               "Acoustics: spread across points", sp.sd, 0.2);
+    }
+
+    // a first reflection 12 ms after the direct sound, then a diffuse tail from 30 ms
+    {
+        std::vector<float> e (ir.size(), 0.0f);
+        e[(size_t) at] = 4.0f;
+        e[(size_t) at + 576] = 2.0f;   // 12 ms, -6 dB
+        for (size_t i = (size_t) at + 1440; i < e.size(); ++i) e[i] = (float) (0.3 * nd (rng) * std::exp (-6.9078 * (double) (i - (size_t) at) / fs / 0.6));
+        for (auto& v : e) v += (float) (nd (rng) * 1e-5);
+        const auto g = analyse (e, fs);
+        near (g.itdgMs, 12.0, 1.0, "Acoustics: initial time delay gap");
+        check (g.etc.size() > 700, "Acoustics: energy-time curve", (double) g.etc.size(), 810);
+    }
+    // a strong late reflection at 150 ms (a back wall): an echo. Near the speaker: direct sound well above the reverb.
+    {
+        auto pulse = [&] (std::vector<float>& v, size_t i0, double amp)
+        {
+            for (int k = 0; k < 48; ++k) v[i0 + (size_t) k] += (float) (amp * std::sin (2.0 * 3.14159265358979 * 1000.0 * k / fs) * 0.5 * (1.0 - std::cos (2.0 * 3.14159265358979 * k / 48.0)));
+        };
+        std::vector<float> base (ir.size(), 0.0f);
+        for (size_t i = (size_t) at + 96; i < base.size(); ++i) base[i] = (float) (0.04 * nd (rng) * std::exp (-6.9078 * (double) (i - (size_t) at) / fs / 0.5));
+        pulse (base, (size_t) at, 4.0);
+        auto e = base;
+        pulse (e, (size_t) at + 7200, 3.0);
+        const auto g = analyse (e, fs), b = analyse (base, fs);
+        check (g.echoAudible(), "Acoustics: a strong reflection at 150 ms is an echo", g.echoSpeech, 1.0);
+        near (g.echoMs, 150.0, 8.0, "Acoustics: when the echo arrives");
+        check (std::isfinite (g.echoDb) && g.echoDb > -8.0, "Acoustics: the echo's level", g.echoDb, -2.5);
+        check (! b.echoAudible() && b.echoSpeech < g.echoSpeech, "Acoustics: no reflection, no echo", b.echoSpeech, g.echoSpeech);
+    }
+    // flutter: repeats every 20 ms (two parallel walls about 3.4 m apart)
+    {
+        auto e = dry;
+        for (int k = 1; k < 40; ++k) e[(size_t) at + (size_t) (k * 960)] += (float) (2.0 * std::exp (-6.9078 * k * 0.02 / 0.8));
+        const auto g = analyse (e, fs);
+        near (g.flutterMs, 20.0, 1.5, "Acoustics: flutter echo period");
+    }
 }
 
 // Feedback ring-out: a steady narrow peak is a ring; a short one is not.
