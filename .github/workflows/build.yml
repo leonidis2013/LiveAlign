@@ -128,9 +128,10 @@ jobs:
         id: locate
         shell: bash
         run: |
-          # the VST3 is a bundle folder on both platforms (the Windows DLL inside it has the same name)
-          VST3=$(find build -maxdepth 6 -type d -name "LiveAlign.vst3" | head -n 1)
-          echo "::notice::vst3 candidates: $(find build -maxdepth 8 -name 'LiveAlign.vst3' -printf '%p (%s bytes, %y) ' 2>/dev/null || find build -maxdepth 8 -name 'LiveAlign.vst3' | tr '\n' ' ')"
+          # the VST3 is a bundle folder on both platforms; the Visual Studio generator also makes empty Debug / MinSizeRel /
+          # RelWithDebInfo bundle folders, so pick the one whose Contents holds the built plug-in
+          VST3=$(find build -maxdepth 6 -type d -name "LiveAlign.vst3" | while read -r d; do
+                   [[ -n "$(find "$d/Contents" -type f \( -name "LiveAlign.vst3" -o -name "LiveAlign" \) 2>/dev/null)" ]] && echo "$d"; done | head -n 1)
           echo "::notice::vst3 picked: $VST3 ($(du -sk "$VST3" 2>/dev/null | cut -f1) KB)"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             APP=$(find build -maxdepth 6 -name "LiveAlign.app" | head -n 1)
