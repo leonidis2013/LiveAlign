@@ -130,8 +130,8 @@ jobs:
         run: |
           # the VST3 is a bundle folder on both platforms; the Visual Studio generator also makes empty Debug / MinSizeRel /
           # RelWithDebInfo bundle folders, so pick the one whose Contents holds the built plug-in
-          VST3=$(find build -maxdepth 6 -type d -name "LiveAlign.vst3" | while read -r d; do
-                   [[ -n "$(find "$d/Contents" -type f \( -name "LiveAlign.vst3" -o -name "LiveAlign" \) 2>/dev/null)" ]] && echo "$d"; done | head -n 1)
+          BIN=$(find build -maxdepth 9 -type f -path "*LiveAlign.vst3/Contents/*" \( -name "LiveAlign.vst3" -o -name "LiveAlign" \) | head -n 1)
+          VST3="${BIN%%.vst3/Contents/*}.vst3"
           echo "::notice::vst3 picked: $VST3 ($(du -sk "$VST3" 2>/dev/null | cut -f1) KB)"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             APP=$(find build -maxdepth 6 -name "LiveAlign.app" | head -n 1)
