@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build ccache xvfb libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
-            libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev fonts-dejavu-core
+            libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libxss-dev libxkbcommon-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev fonts-dejavu-core
 
       # JUCE and the compiled objects are kept between runs: an unchanged file is not compiled again
       - uses: actions/cache@v4
