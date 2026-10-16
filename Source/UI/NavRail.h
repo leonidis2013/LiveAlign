@@ -17,16 +17,34 @@ enum class Page
     Response, Crossover, Level, Align, Acoustics, Room, Feedback,            // tuning, in order
     MonitorMic, Monitor,                                                     // monitoring
     Sheet, TuningReport, MonitorReport,                                      // reports
-    Locker, Settings
+    Locker, Settings,
+    Venue,                                                                   // setup: the venue's details (a tab of Venue)
+    Coverage, Headroom, Listening                                            // tuning (see kTuningOrder)
 };
-constexpr int kNumPages = 18;
+constexpr int kNumPages = 22;
 // The navigation pane, top to bottom. Negative entries are section headings. The mic locker is opened from its
 // own button at the bottom. The pane is the one way between the steps: each shows its state, and the next step to do
 // is marked.
-constexpr int kNavOrder[] = { 0, -1, 1, 2, 3, -2, 4, 5, 6, 7, 8, 9, 10, -3, 11, 12, -4, 13, 14, 15 };
+constexpr int kNavOrder[] = { 0, -1, 18, 1, -2, 4, 5, 6, 19, 7, 8, 9, 20, 21, 10, -3, 11, 12, -4, 13, 14, 15 };
+// The tuning steps in order: speaker response, crossover, level, aim and coverage, time alignment, room acoustics,
+// Room EQ, gain and headroom, the listening check, the feedback test.
+constexpr int kTuningOrder[] = { 4, 5, 6, 19, 7, 8, 9, 20, 21, 10 };
+// Setup is two entries with tabs: Venue (Details, Speakers, Plan and points) and Mics (this venue's mics, the locker).
+inline int navEntryOf (int page)
+{
+    if (page == (int) Page::Speakers || page == (int) Page::Plan) return (int) Page::Venue;
+    if (page == (int) Page::Locker) return (int) Page::Mics;
+    return page;
+}
+inline bool isVenueTab (int page) { return navEntryOf (page) == (int) Page::Venue; }
+inline bool isMicsTab (int page) { return navEntryOf (page) == (int) Page::Mics; }
 inline const char* navHeading (int h) { static const char* n[] = { "SETUP", "TUNING", "MONITORING", "REPORTS" }; return n[juce::jlimit (0, 3, -h - 1)]; }
-inline bool isTuningStep (int page) { return page >= (int) Page::Response && page <= (int) Page::Feedback; }
-inline int tuningStepNumber (int page) { return page - (int) Page::Response + 1; }
+inline int tuningStepNumber (int page)
+{
+    for (int i = 0; i < (int) (sizeof (kTuningOrder) / sizeof (kTuningOrder[0])); ++i) if (kTuningOrder[i] == page) return i + 1;
+    return 0;
+}
+inline bool isTuningStep (int page) { return tuningStepNumber (page) > 0; }
 
 enum class StepStatus { Ready, InProgress, Attention, NotStarted, Later, None };
 
@@ -34,7 +52,8 @@ inline const char* pageName (int i)
 {
     static const char* names[] = { "Home", "Mics", "Speakers", "Venue plan", "Speaker response", "Crossover", "Level balance", "Time alignment",
                                    "Room acoustics", "Room EQ", "Feedback test", "Monitor mic", "Live monitoring", "Processor sheet",
-                                   "Tuning report", "Monitoring report", "Mic locker", "Settings" };
+                                   "Tuning report", "Monitoring report", "Mic locker", "Settings", "Venue",
+                                   "Aim and coverage", "Gain and headroom", "Listening check" };
     return names[juce::jlimit (0, kNumPages - 1, i)];
 }
 
@@ -63,6 +82,11 @@ inline juce::Path pageIcon (int page)
             p.addEllipse (8.0f, 11.0f, 8.0f, 8.0f);
             p.addEllipse (10.5f, 5.0f, 3.0f, 3.0f);
             break;
+        case Page::Venue:   // a hall with a pitched roof
+            p.startNewSubPath (3.0f, 10.0f); p.lineTo (12.0f, 3.5f); p.lineTo (21.0f, 10.0f);
+            p.addRectangle (5.0f, 10.0f, 14.0f, 10.5f);
+            p.startNewSubPath (10.5f, 20.5f); p.lineTo (10.5f, 15.0f); p.lineTo (13.5f, 15.0f); p.lineTo (13.5f, 20.5f);
+            break;
         case Page::Plan:   // room outline with a speaker and a mic
             p.addRoundedRectangle (3.0f, 3.5f, 18.0f, 17.0f, 2.0f);
             p.addRectangle (7.0f, 6.5f, 4.0f, 3.0f);
@@ -90,6 +114,26 @@ inline juce::Path pageIcon (int page)
             p.addRoundedRectangle (3.5f, 13.0f, 5.0f, 3.5f, 1.2f);
             p.addRoundedRectangle (9.5f, 6.0f, 5.0f, 3.5f, 1.2f);
             p.addRoundedRectangle (15.5f, 10.0f, 5.0f, 3.5f, 1.2f);
+            break;
+        case Page::Coverage:   // a speaker's coverage fan
+            p.addRoundedRectangle (2.5f, 9.0f, 5.0f, 6.0f, 1.0f);
+            p.startNewSubPath (7.5f, 10.5f); p.lineTo (20.5f, 4.0f);
+            p.startNewSubPath (7.5f, 13.5f); p.lineTo (20.5f, 20.0f);
+            p.startNewSubPath (20.5f, 4.0f); p.quadraticTo (23.0f, 12.0f, 20.5f, 20.0f);
+            break;
+        case Page::Headroom:   // a meter with a ceiling
+            p.startNewSubPath (3.0f, 5.0f); p.lineTo (21.0f, 5.0f);
+            p.addRectangle (5.0f, 11.0f, 3.5f, 9.5f);
+            p.addRectangle (10.25f, 8.5f, 3.5f, 12.0f);
+            p.addRectangle (15.5f, 13.5f, 3.5f, 7.0f);
+            break;
+        case Page::Listening:   // headphones
+            p.startNewSubPath (4.5f, 15.0f); p.lineTo (4.5f, 12.0f);
+            p.quadraticTo (4.5f, 4.0f, 12.0f, 4.0f);
+            p.quadraticTo (19.5f, 4.0f, 19.5f, 12.0f);
+            p.lineTo (19.5f, 15.0f);
+            p.addRoundedRectangle (3.0f, 13.0f, 4.5f, 7.5f, 1.5f);
+            p.addRoundedRectangle (16.5f, 13.0f, 4.5f, 7.5f, 1.5f);
             break;
         case Page::Feedback:   // a narrow ringing peak
             p.startNewSubPath (2.5f, 19.0f); p.lineTo (9.0f, 18.0f); p.lineTo (11.0f, 4.0f); p.lineTo (13.0f, 18.0f); p.lineTo (21.5f, 19.0f);
@@ -209,7 +253,12 @@ public:
         addChildComponent (updateButton);
     }
 
-    void setCurrent (int page) { if (page != current) { current = page; scrollToShow (page); repaint(); } }
+    // Where an entry is (for the tour): in this component's coordinates.
+    juce::Rectangle<int> entryBounds (int page) const { return itemBounds (navEntryOf (page)); }
+    juce::Rectangle<int> venueArea() const { return venueBounds(); }
+    juce::Rectangle<int> settingsArea() const { return settingsButton.getBounds(); }
+
+    void setCurrent (int page) { page = navEntryOf (page); if (page != current) { current = page; scrollToShow (page); repaint(); } }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; repaint(); } }
     void setLockerAvailable (bool a) { lockerButton.setVisible (a); resized(); }
     void setSettingsActive (bool a)
@@ -243,6 +292,7 @@ public:
     // The step to do next: marked in the list ("NEXT" and an accent edge), with what to do there as its tooltip.
     void setNext (int page, const juce::String& what)
     {
+        page = page >= 0 ? navEntryOf (page) : page;
         if (page == nextPage && what == nextWhat) return;
         nextPage = page;
         nextWhat = what;
@@ -417,7 +467,7 @@ public:
 
 private:
     struct Entry { StepStatus status = StepStatus::None; juce::String text; float fraction = 0.0f; };
-    static constexpr int kTop = 52, kItemH = 38, kItemGap = 2, kHeadingH = 24, kVenueH = 72;
+    static constexpr int kTop = 52, kItemH = 34, kItemGap = 2, kHeadingH = 22, kVenueH = 72;
 
     static bool inNav (int page) { for (int k : kNavOrder) if (k == page) return true; return false; }
 
@@ -483,7 +533,7 @@ private:
     }
 
     Entry entries[kNumPages];
-    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false, false };
+    bool visible[kNumPages] { true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false, false, true, true, true, true };
     int nextPage = -1;
     juce::String nextWhat;
 

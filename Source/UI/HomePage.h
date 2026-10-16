@@ -9,6 +9,8 @@
 #include <functional>
 #include "NavRail.h"
 #include "../PluginProcessor.h"
+#include "../VenueLibrary.h"
+#include "VenuePage.h"
 
 namespace la::ui
 {
@@ -20,34 +22,28 @@ struct StepInfo
     float fraction = 0.0f;
 };
 
-class HomePage : public juce::Component, private juce::Timer
+class HomePage : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
 {
 public:
     std::function<void()> onNewVenueFromThis;
     std::function<void()> onNewVenue, onOpenVenue, onSave, onSaveAs, onNewSession, onChanged, onReport;
     std::function<void (int)> onGoTo, onRenameSession, onDeleteSession;
+    // the venue list: open, rename, duplicate or delete a venue file
+    std::function<void (const juce::File&)> onOpenFile, onDeleteFile;
+    std::function<void (const VenueEntry&)> onRenameFile, onDuplicateFile;
     std::function<void()> onRecheck;
 
     explicit HomePage (LiveAlignProcessor& p) : proc (p)
     {
-        nameEditor.setTextToShowWhenEmpty ("Venue name", pal().textFaint);
-        nameEditor.onTextChange = [this] { proc.venueName = nameEditor.getText().trim().isEmpty() ? juce::String ("Untitled venue") : nameEditor.getText().trim(); changed(); };
-        notesEditor.setMultiLine (true, true);
-        notesEditor.setReturnKeyStartsNewLine (true);
-        notesEditor.setTextToShowWhenEmpty ("Notes: room, system, contacts, anything worth remembering", pal().textFaint);
-        notesEditor.onTextChange = [this] { proc.venueNotes = notesEditor.getText(); changed(); };
-        for (auto* e : { &nameEditor, &notesEditor })
-        {
-            e->setFont (font (13.0f));
-            addAndMakeVisible (*e);
-        }
-        nameEditor.setFont (font (16.0f, true));
-
+        searchEditor.setTextToShowWhenEmpty ("Search venues", pal().textFaint);
+        searchEditor.setFont (font (13.0f));
+        searchEditor.onTextChange = [this] { venueScroll = 0; filterVenues(); repaint (venueCard); };
+        addAndMakeVisible (searchEditor);
         setupButton (newVenueButton, [this]
         {
             juce::PopupMenu m;
             m.addItem (1, "Blank venue");
-            m.addItem (2, "Based on this one  (same mics, speakers, positions and plan)");
+            m.addItem (2, "Based on this one  (the same speakers, points and plan)");
             juce::Component::SafePointer<HomePage> safe (this);
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&newVenueButton), [safe] (int r)
             {
@@ -56,7 +52,7 @@ public:
                 if (r == 2 && safe->onNewVenueFromThis) safe->onNewVenueFromThis();
             });
         }, "Start a new venue file: blank, or based on this one (for a touring rig or a similar room)");
-        setupButton (openButton, [this] { if (onOpenVenue) onOpenVenue(); }, "Open a venue file");
+        setupButton (openButton, [this] { if (onOpenVenue) onOpenVenue(); }, "Open a venue file from anywhere (it joins the list)");
         setupButton (saveButton, [this] { if (onSave) onSave(); }, "Save the venue and all its sessions (Cmd/Ctrl+S)");
         setupButton (saveAsButton, [this] { if (onSaveAs) onSaveAs(); }, "Save under a new name");
 
@@ -113,8 +109,7 @@ public:
     // Reloads the editors after a venue is opened or created.
     void refresh()
     {
-        nameEditor.setText (proc.venueName == "Untitled venue" ? juce::String() : proc.venueName, juce::dontSendNotification);
-        notesEditor.setText (proc.venueNotes, juce::dontSendNotification);
+        rescanVenues();
         selected = proc.currentSession();
         updateButtons();
         repaint();
@@ -123,7 +118,8 @@ public:
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
-        drawPanel (g, venueCard.toFloat(), "Venue");
+        drawPanel (g, venueCard.toFloat(), "Venues");
+        drawVenueList (g);
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
         drawPanel (g, stepsCard.toFloat(), "Where this venue stands");
         // the next thing to do, and what needs attention
@@ -147,16 +143,14 @@ public:
                 int issues = 0;
                 for (const auto& l : proc.recheck.lines) issues += l.level > 0 ? 1 : 0;
                 if (issues > 0) att.add ("Quick re-check: " + juce::String (issues) + (issues == 1 ? " thing has" : " things have") + " changed (below)");
+                bool worth = false;
+                const auto drift = VenueDetailsPage::driftText (proc, worth);
+                if (worth && proc.room.tuned) att.add (drift.upToFirstOccurrenceOf (":", false, false).upToFirstOccurrenceOf (".", false, false) + ": run a quick re-check");
             }
             g.setColour (att.isEmpty() ? p.textFaint : p.warn);
             g.setFont (font (11.5f, ! att.isEmpty()));
             g.drawText (att.isEmpty() ? juce::String ("Nothing needs attention.") : "Needs attention: " + att.joinIntoString ("   "), attentionLine, juce::Justification::centredLeft, true);
         }
-        // venue file line
-        g.setColour (p.textFaint);
-        g.setFont (font (11.0f));
-        g.drawText (proc.projectFile != juce::File() ? proc.projectFile.getFullPathName() : juce::String ("Not saved yet"),
-                    venueFileLine, juce::Justification::centredLeft, true);
 
         // sessions list
         g.setColour (p.textDim);
@@ -226,7 +220,7 @@ public:
             g.strokePath (icon, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
             drawStatusBadge (g, juce::Rectangle<float> (16.0f, 16.0f).withCentre ({ (float) r.getRight() - 18.0f, (float) r.getCentreY() }), st.status, st.fraction);
 
-            auto text = r.withTrimmedLeft (48).withTrimmedRight (i == (int) Page::Speakers ? 180 : 36);
+            auto text = r.withTrimmedLeft (48).withTrimmedRight (i == (int) Page::Venue ? 180 : 36);
             juce::String name = pageName (i);
             if (isTuningStep (i)) name = juce::String (tuningStepNumber (i)) + "  " + name;
             g.setColour (p.text);
@@ -254,22 +248,22 @@ public:
         auto left = r.removeFromLeft (juce::jmin (520, r.getWidth() * 44 / 100));
         r.removeFromLeft (10);
 
-        venueCard = left.removeFromTop (250);
+        venueCard = left.removeFromTop (juce::jmax (250, left.getHeight() * 56 / 100));
         left.removeFromTop (10);
         sessionsCard = left;
         stepsCard = r;
 
-        // venue card
+        // venues card: search, the list, then the buttons
         auto v = venueCard.reduced (16).withTrimmedTop (26);
-        nameEditor.setBounds (v.removeFromTop (34));
-        v.removeFromTop (8);
+        searchEditor.setBounds (v.removeFromTop (28));
+        v.removeFromTop (6);
         venueFileLine = v.removeFromBottom (18);
-        v.removeFromBottom (6);
+        v.removeFromBottom (4);
         auto buttons = v.removeFromBottom (30);
         const int bw = (buttons.getWidth() - 18) / 4;
         for (auto* b : { &newVenueButton, &openButton, &saveButton, &saveAsButton }) { b->setBounds (buttons.removeFromLeft (bw)); buttons.removeFromLeft (6); }
         v.removeFromBottom (8);
-        notesEditor.setBounds (v);
+        venueListArea = v;
 
         // sessions card
         auto s = sessionsCard.reduced (16).withTrimmedTop (26);
@@ -299,7 +293,7 @@ public:
         changeLine = st.removeFromBottom (22);
         rows.clear();
         headings.clear();
-        const int rowH = 46, gap = 5, headH = 22;
+        const int rowH = 40, gap = 4, headH = 22;
         auto colA = st.removeFromLeft ((st.getWidth() - 12) / 2);
         st.removeFromLeft (12);
         auto colB = st;
@@ -313,8 +307,9 @@ public:
             }
             return col;
         };
-        auto restA = column (colA, { -1, (int) Page::Mics, (int) Page::Speakers, (int) Page::Plan, -3, (int) Page::MonitorMic, (int) Page::Monitor });
-        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Crossover, (int) Page::Level, (int) Page::Align, (int) Page::Acoustics, (int) Page::Room, (int) Page::Feedback });
+        auto restA = column (colA, { -1, (int) Page::Venue, (int) Page::Mics, -3, (int) Page::MonitorMic, (int) Page::Monitor });
+        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Crossover, (int) Page::Level, (int) Page::Coverage, (int) Page::Align, (int) Page::Acoustics,
+                                     (int) Page::Room, (int) Page::Headroom, (int) Page::Listening, (int) Page::Feedback });
         auto bottom = colA.getBottom() > colB.getBottom() ? restA : restB;
         juce::ignoreUnused (bottom);
         // reports along the bottom of both columns
@@ -331,21 +326,47 @@ public:
         reports.removeFromTop (gap + 6);
         summaryArea = reports;
         for (const auto& row : rows)
-            if (row.first == (int) Page::Speakers)
+            if (row.first == (int) Page::Venue)
                 speakerChangedButton.setBounds (row.second.withTrimmedRight (40).removeFromRight (130).withSizeKeepingCentre (130, 26));
     }
 
     void mouseMove (const juce::MouseEvent& e) override
     {
+        {
+            const int hv = venueListArea.contains (e.getPosition()) ? venueRowAt (e.getPosition()) : -1;
+            if (hv != hoverVenue) { hoverVenue = hv; repaint (venueCard); }
+            if (hv >= 0)
+            {
+                const auto& v = shownVenues[(size_t) hv];
+                setMouseCursor (juce::MouseCursor::PointingHandCursor);
+                setTooltip (v.file.getFullPathName() + (v.file == proc.projectFile ? "  (open)" : "\nClick to open; ... or right-click for more"));
+                return;
+            }
+            setTooltip ({});
+        }
         int h = -1;
         for (const auto& row : rows) if (row.second.contains (e.getPosition()) && ! speakerChangedButton.getBounds().contains (e.getPosition())) h = row.first;
         if (h != hoverStep) { hoverStep = h; setMouseCursor (h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); repaint (stepsCard); }
     }
 
-    void mouseExit (const juce::MouseEvent&) override { if (hoverStep >= 0) { hoverStep = -1; repaint (stepsCard); } }
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        if (hoverStep >= 0) { hoverStep = -1; repaint (stepsCard); }
+        if (hoverVenue >= 0) { hoverVenue = -1; repaint (venueCard); }
+    }
 
     void mouseUp (const juce::MouseEvent& e) override
     {
+        if (venueListArea.contains (e.getPosition()))
+        {
+            const int i = venueRowAt (e.getPosition());
+            if (i < 0) return;
+            const auto& v = shownVenues[(size_t) i];
+            const bool menu = e.mods.isPopupMenu() || venueMenuButton (i).contains (e.getPosition());
+            if (menu) { showVenueMenu (v); return; }
+            if (v.file != proc.projectFile && onOpenFile) onOpenFile (v.file);
+            return;
+        }
         for (const auto& row : rows)
             if (row.second.contains (e.getPosition())) { if (onGoTo) onGoTo (row.first); return; }
         for (int i = 0; i < visibleRows(); ++i)
@@ -360,13 +381,146 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override { mouseUp (e); }
 
-    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
+        if (venueListArea.contains (e.getPosition()))
+        {
+            venueScroll = juce::jlimit (0, juce::jmax (0, (int) shownVenues.size() - venueRows()), venueScroll - (w.deltaY > 0 ? 1 : (w.deltaY < 0 ? -1 : 0)));
+            repaint (venueCard);
+            return;
+        }
         scroll = juce::jlimit (0, juce::jmax (0, (int) proc.getSessions().size() - visibleRows()), scroll - (w.deltaY > 0 ? 1 : (w.deltaY < 0 ? -1 : 0)));
         repaint();
     }
 
+    // Reads the venue folder and the recent venues again (after a save, a rename, a delete ...).
+    void rescanVenues()
+    {
+        juce::Component::SafePointer<HomePage> safe (this);
+        const int ticket = ++scanTicket;
+        juce::Thread::launch ([safe, ticket]
+        {
+            auto list = venues::scan();
+            juce::MessageManager::callAsync ([safe, ticket, list = std::move (list)]() mutable
+            {
+                if (safe == nullptr || ticket != safe->scanTicket) return;
+                safe->allVenues = std::move (list);
+                safe->filterVenues();
+                safe->repaint (safe->venueCard);
+            });
+        });
+    }
+
 private:
+    void filterVenues()
+    {
+        shownVenues.clear();
+        const auto q = searchEditor.getText().trim();
+        // the open venue first when it has not been saved yet (it is in no folder)
+        if (proc.projectFile == juce::File() && (q.isEmpty() || proc.venueName.containsIgnoreCase (q)))
+        {
+            VenueEntry e;
+            e.name = proc.venueName;
+            e.sessions = (int) proc.getSessions().size();
+            e.tuned = proc.room.tuned ? 1 : 0;
+            shownVenues.push_back (e);
+        }
+        for (const auto& v : allVenues)
+            if (q.isEmpty() || v.name.containsIgnoreCase (q) || v.file.getFileName().containsIgnoreCase (q)) shownVenues.push_back (v);
+        venueScroll = juce::jlimit (0, juce::jmax (0, (int) shownVenues.size() - venueRows()), venueScroll);
+    }
+
+    static constexpr int kVenueRowH = 40;
+    int venueRows() const { return juce::jmax (1, venueListArea.getHeight() / kVenueRowH); }
+    juce::Rectangle<int> venueRowBounds (int i) const { return venueListArea.withHeight (kVenueRowH - 4).translated (0, (i - venueScroll) * kVenueRowH); }
+    juce::Rectangle<int> venueMenuButton (int i) const { return venueRowBounds (i).removeFromRight (34).reduced (4, 6); }
+    int venueRowAt (juce::Point<int> pt) const
+    {
+        for (int i = venueScroll; i < (int) shownVenues.size() && i < venueScroll + venueRows(); ++i)
+            if (venueRowBounds (i).contains (pt)) return i;
+        return -1;
+    }
+
+    void drawVenueList (juce::Graphics& g)
+    {
+        const auto& p = pal();
+        if (shownVenues.empty())
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (12.0f));
+            g.drawFittedText (searchEditor.getText().trim().isNotEmpty() ? juce::String ("No venue matches.")
+                                                                          : "No venues yet. Saved venues go to " + venues::folder().getFullPathName() + ".",
+                              venueListArea.withHeight (40), juce::Justification::topLeft, 2);
+        }
+        for (int i = venueScroll; i < (int) shownVenues.size() && i < venueScroll + venueRows(); ++i)
+        {
+            const auto& v = shownVenues[(size_t) i];
+            auto r = venueRowBounds (i);
+            const bool open = v.file == proc.projectFile, over = i == hoverVenue;
+            if (open || over)
+            {
+                g.setColour (open ? p.accent.withAlpha (0.12f) : p.panelRaised);
+                g.fillRoundedRectangle (r.toFloat(), 6.0f);
+            }
+            g.setColour (open ? p.accent : p.border);
+            g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 6.0f, open ? 1.4f : 1.0f);
+            auto dot = r.removeFromLeft (24).toFloat().withSizeKeepingCentre (9.0f, 9.0f);
+            g.setColour (open ? p.accent : v.tuned == 1 ? p.good : p.border);
+            g.fillEllipse (dot);
+            // the "..." menu
+            auto mb = r.removeFromRight (34);
+            g.setColour (over ? p.text : p.textFaint);
+            g.setFont (font (16.0f, true));
+            g.drawText (juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xa6")), mb, juce::Justification::centred);
+            auto top = r.removeFromTop (r.getHeight() / 2 + 1);
+            g.setColour (p.text);
+            g.setFont (font (13.0f, true));
+            g.drawText (v.name + (open ? (unsavedNow ? "   (open, unsaved changes)" : "   (open)") : juce::String()), top.withTrimmedTop (2), juce::Justification::bottomLeft, true);
+            juce::StringArray bits;
+            bits.add (v.file == juce::File() ? juce::String ("not saved yet") : "saved " + venues::when (v.saved));
+            if (v.lastUsed.toMilliseconds() > 0) bits.add ("used " + venues::when (v.lastUsed));
+            if (v.sessions >= 0) bits.add (juce::String (v.sessions) + (v.sessions == 1 ? " session" : " sessions"));
+            if (v.tuned >= 0) bits.add (v.tuned == 1 ? "tuned" : "not tuned yet");
+            if (v.file != juce::File() && ! v.inFolder) bits.add ("in " + v.file.getParentDirectory().getFileName());
+            g.setColour (p.textDim);
+            g.setFont (font (11.0f));
+            g.drawText (bits.joinIntoString ("  \xc2\xb7  "), r, juce::Justification::topLeft, true);
+        }
+        if ((int) shownVenues.size() > venueRows())
+        {
+            g.setColour (p.textFaint);
+            g.setFont (font (10.5f));
+            g.drawText (juce::String (venueScroll + 1) + "-" + juce::String (juce::jmin ((int) shownVenues.size(), venueScroll + venueRows())) + " of "
+                            + juce::String ((int) shownVenues.size()) + "  (scroll for more)",
+                        venueFileLine, juce::Justification::centredRight);
+        }
+        g.setColour (p.textFaint);
+        g.setFont (font (11.0f));
+        g.drawText ("Folder: " + venues::folder().getFullPathName(), venueFileLine, juce::Justification::centredLeft, true);
+    }
+
+    void showVenueMenu (const VenueEntry& v)
+    {
+        juce::PopupMenu m;
+        const bool open = v.file == proc.projectFile, saved = v.file != juce::File();
+        m.addItem (1, "Open", ! open && saved);
+        m.addItem (2, "Rename...", saved);
+        m.addItem (3, "Duplicate...", saved);
+        m.addItem (4, "Show in folder", saved);
+        m.addSeparator();
+        m.addItem (5, "Delete (to the trash)...", saved);
+        juce::Component::SafePointer<HomePage> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [safe, v] (int r)
+        {
+            if (safe == nullptr) return;
+            if (r == 1 && safe->onOpenFile) safe->onOpenFile (v.file);
+            if (r == 2 && safe->onRenameFile) safe->onRenameFile (v);
+            if (r == 3 && safe->onDuplicateFile) safe->onDuplicateFile (v);
+            if (r == 4) v.file.revealToUser();
+            if (r == 5 && safe->onDeleteFile) safe->onDeleteFile (v.file);
+        });
+    }
+
     // The open session at a glance: every mic's state, the loopback and the delays.
     void drawSessionSummary (juce::Graphics& g)
     {
@@ -509,13 +663,26 @@ private:
         return 0;
     }
 
-    void timerCallback() override { updateButtons(); repaint (sessionsCard); repaint (summaryArea); }
+    void timerCallback() override
+    {
+        updateButtons();
+        repaint (sessionsCard);
+        repaint (summaryArea);
+        const bool u = proc.projectChanged();
+        if (u != unsavedNow) { unsavedNow = u; repaint (venueCard); }
+        // the folder may change behind our back (a venue copied in): look again now and then
+        if (isShowing() && ++scanTick % 40 == 0) rescanVenues();
+    }
 
     int visibleRows() const { return juce::jmax (1, listArea.getHeight() / 34); }
     juce::Rectangle<int> rowBounds (int i) const { return listArea.withHeight (30).translated (0, i * 34); }
 
     LiveAlignProcessor& proc;
-    juce::TextEditor nameEditor, notesEditor;
+    juce::TextEditor searchEditor;
+    std::vector<VenueEntry> allVenues, shownVenues;
+    juce::Rectangle<int> venueListArea;
+    int venueScroll = 0, hoverVenue = -1, scanTicket = 0, scanTick = 0;
+    bool unsavedNow = false;
     juce::TextButton newVenueButton { "New venue..." }, openButton { "Open..." }, saveButton { "Save" }, saveAsButton { "Save as..." },
         newSessionButton { "New session" }, openSessionButton { "Open" }, compareButton { "Compare" }, renameButton { "Rename" },
         deleteButton { "Delete" }, speakerChangedButton { "Mark as changed" }, goButton, recheckButton { "Quick re-check..." };

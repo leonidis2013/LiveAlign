@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include "Clock.h"
 // The analysis thread: takes the mics, the reference and the generator signal from the audio thread through a
 // lock-free FIFO and runs, for every mic, the transfer function, the RTA and the sound level meter, plus the delay
 // finder, loopback check and noise floor measurement, away from the audio thread.
@@ -129,6 +130,7 @@ public:
     // Samples handed to the analysis, and samples it has analysed (they differ while it catches up).
     juce::uint64 samplesWritten() const { return written.load(); }
     juce::uint64 samplesAnalysed() const { return analysed.load(); }
+    int samplesWaiting() const { return fifo.getNumReady(); }   // handed over, not analysed yet
     // Times audio had to be dropped because the analysis fell behind (a measurement spanning one is not continuous).
     juce::uint32 overflowCount() const { return overflows.load(); }
 
@@ -448,7 +450,7 @@ private:
 
     void publishIfDue()
     {
-        const auto now = juce::Time::getMillisecondCounter();
+        const auto now = la::clock::ms32();
         if (dirty && now - lastPublish >= 40)
         {
             publish();

@@ -5,6 +5,7 @@
 // saves screenshots of every page, and round-trips a venue file with two sessions. Build with -DLA_BUILD_PREVIEW=ON.
 #include <array>
 #include <random>
+#include <typeinfo>
 #include "../Source/PluginProcessor.h"
 #include "../Source/PluginEditor.h"
 #include "../Source/AcousticsSummary.h"
@@ -84,6 +85,19 @@ struct Reverb
     }
 };
 
+// Pass / fail checks: the run exits non-zero when one fails (CI stops the release). --stop-after=<shot> ends the run
+// after that screenshot (a quicker run of the early steps).
+int gChecks = 0, gFailures = 0, gOverflows = 0;
+juce::String gStopAfter;
+bool gStrictOverflow = false;
+juce::StringArray gOverflowSeen;
+void check (bool ok, const juce::String& what)
+{
+    ++gChecks;
+    if (! ok) ++gFailures;
+    std::printf ("CHECK %s: %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8());
+}
+
 class Driver : public juce::Timer
 {
 public:
@@ -100,7 +114,8 @@ public:
         lineSub.assign (48000, 0.0f);
         lineFill.assign (48000, 0.0f);
         for (size_t m = 0; m < 3; ++m) reverbs[m].init (fs, 1.1 + 0.15 * (double) m, (int) m);
-        startTimer (20);
+        la::clock::setSimulated (0.0);
+        startTimer (5);
     }
 
     void feed (int samples)
@@ -109,12 +124,16 @@ public:
         juce::MidiBuffer midi;
         std::normal_distribution<double> nd (0.0, 0.1);
         const size_t L = lineTop.size();
+        // the generator's level against its default (-20 dBFS), and the amps limiting above -15 dBFS (for Gain and headroom)
+        const double genDb = proc.settings.genOn.load() ? (double) juce::jmin (proc.settings.genLevelDb.load(), proc.settings.genMaxDb.load()) : -20.0;
+        const double genGain = std::pow (10.0, (genDb + 20.0) / 20.0);
+        const double ampGain = genDb > -15.0 ? std::pow (10.0, -(genDb + 15.0) * 0.7 / 20.0) : 1.0;
         for (int done = 0; done < samples; done += 512)
         {
             buf.clear();
             for (int i = 0; i < 512; ++i)
             {
-                const float ref = (float) nd (rng);
+                const float ref = (float) (nd (rng) * genGain);
                 // while a speaker is measured, only the speaker on the generator's output plays; "all outputs" plays them all
                 const int out = proc.settings.genOn.load() ? proc.settings.genOutput.load() : (consoleOut >= 0 ? consoleOut : 0);
                 if (out != lastOut) { std::printf ("  sim: output %d at tick %d\n", out, ticks); lastOut = out; }
@@ -124,9 +143,9 @@ public:
                 if (out == 2 && simRightInverted) t = -t;   // Main R wired the wrong way round
                 if (out == 0 || out == 3) { sb = ref; for (auto& f : sub) sb = f (sb); for (auto& f : subSystem) sb = f (sb); sb *= 2.0 * subGain; }
                 if (out == 4) { fl = ref; for (auto& f : fillChain) fl = f (fl); fl *= 0.5; }
-                lineTop[wp % L] = (float) t;
-                lineSub[wp % L] = (float) sb;
-                lineFill[wp % L] = (float) fl;
+                lineTop[wp % L] = (float) (t * ampGain);
+                lineSub[wp % L] = (float) (sb * ampGain);
+                lineFill[wp % L] = (float) (fl * ampGain);
                 const int inputs[] = { 0, 2, 3 };
                 const double ring = ringHz > 0.0 ? 0.08 * std::sin (2.0 * la::kPi * ringHz * (double) wp / fs) : 0.0;
                 for (size_t m = 0; m < paths.size(); ++m)
@@ -150,8 +169,14 @@ public:
 
     void timerCallback() override
     {
+        if (stopNow) { finish(); return; }
         ++ticks;
         feed (960);
+        // the app's clock follows the audio fed, and the analysis catches up before the next step: the run does not
+        // depend on how fast the computer is
+        simMs += 960.0 / fs * 1000.0;
+        la::clock::setSimulated (simMs);
+        for (int waited = 0; waited < 5000 && proc.analyzer.samplesWaiting() > 1920; ++waited) juce::Thread::sleep (1);
         if (ticks == 60) proc.settings.requestFindDelay = true;
         if (ticks == 140)
         {
@@ -182,7 +207,9 @@ public:
         if (ticks == 218) shot ("monitor-three");
         if (ticks == 219) { proc.settings.paneCount = 1; editor->showPage ((int) P::Speakers); }
         if (ticks == 225) shot ("speakers-system");
-        if (ticks == 226) { proc.settings.theme = 1; editor->showPage ((int) P::Home); }
+        if (ticks == 226) { proc.plan.lengthM = 32.0; proc.plan.widthM = 20.0; proc.plan.heightM = 9.0; proc.setConditions (24.0f, 35.0f); proc.noteTunedConditions(); proc.setConditions (31.0f, 30.0f); editor->showPage ((int) P::Venue); }
+        if (ticks == 232) shot ("venue-details");
+        if (ticks == 233) { proc.settings.theme = 1; editor->showPage ((int) P::Home); }
         if (ticks == 240) shot ("home-light");
         if (ticks == 241) editor->showPage ((int) P::Monitor);
         if (ticks == 256) shot ("monitor-light");
@@ -243,6 +270,7 @@ public:
                 {
                     const auto& s = proc.system.sources[0];
                     std::printf ("status: %s (%d ticks, behind %.1f s)\n", page.statusText().toRawUTF8(), ticks - stageTick, behind());
+                    check (s.hasResponse() && s.nearField, "speaker response: Main L measured close up");
                     std::printf ("measure Main: near=%d reliable=%.2f response=%d points=%d arrival=%.3f delayUsed=%.3f\n", (int) s.nearField,
                                  la::xo::usableReliability (s.response, 0.4), (int) s.hasResponse(), (int) s.response.freq.size(), s.arrivalMs, s.delayUsedMs);
                     page.measure (2);
@@ -317,6 +345,7 @@ public:
                 if (stageTick + 5 < ticks && (! page.busy() || timeout))
                 {
                     const auto& r = proc.system.lastResult;
+                    check (r.valid && r.filter.freq > 60.0 && r.filter.freq < 250.0, "crossover: found between 60 and 250 Hz");
                     std::printf ("crossover: valid=%d %s %d dB/oct at %.1f Hz, low delay %.2f ms, invert %d, gain %.1f dB, eff %.2f, pairNear=%d alignNeeded=%d\n",
                                  (int) r.valid, la::xo::typeName (r.filter.type), r.filter.slope, r.filter.freq, r.delayLowMs, (int) r.invertLow, r.gainLowDb,
                                  r.efficiency, (int) proc.system.pairNearField(), (int) page.alignmentRequired());
@@ -379,14 +408,43 @@ public:
                         {
                             for (const auto& t : lp.trims (true)) std::printf ("level check: %s\n", t.why.toRawUTF8());
                             std::printf ("level done=%d\n", (int) lp.done());
+                            check (lp.readingsCount (false) >= lp.tasksCount() && lp.tasksCount() > 0, "level balance: every speaker measured at every point");
                             shot ("level-checked");
-                            editor->showPage ((int) P::Align);
-                            page.refreshChoices();
-                            page.newAlignment();
-                            page.measureAlignment (0);
-                            next (5);
+                            editor->showPage ((int) P::Coverage);
+                            next (62);
                         }
                     }
+                }
+                break;
+            }
+            case 62:   // aim and coverage, from the level readings; Main L re-aimed and measured again
+                if (after (6))
+                {
+                    auto& cp = editor->coveragePageForPreview();
+                    for (const auto& r : cp.rows())
+                        std::printf ("coverage: %s on-axis %s worst %.1f at %s ok=%d %s\n", proc.system.nameOf (r.spk).toRawUTF8(), r.onAxis.toRawUTF8(), r.worstDb,
+                                     r.worstPoint.toRawUTF8(), (int) r.ok, r.advice.toRawUTF8());
+                    check (! cp.rows().empty(), "aim and coverage: rows from the level readings");
+                    shot ("coverage");
+                    cp.reaimNow (0);
+                    next (63);
+                }
+                break;
+            case 63:
+            {
+                auto& cp = editor->coveragePageForPreview();
+                if (stageTick + 5 < ticks && (! cp.reaimBusy() || timeout))
+                {
+                    if (cp.reaimLeft() && ticks - stageTick < 20000) { cp.guidedStart(); stageTick = ticks; break; }
+                    std::printf ("coverage re-aimed: before=%d points, %s\n", (int) proc.coverage.before[0].size(), cp.guidedStatus().toRawUTF8());
+                    check (! proc.coverage.before[0].empty() && ! cp.reaimLeft(), "aim and coverage: re-aimed and measured again");
+                    cp.refresh();
+                    shot ("coverage-reaimed");
+                    editor->showPage ((int) P::Align);
+                    page.refreshChoices();
+                    page.newAlignment();
+                    page.measureAlignment (0);
+                    next (5);
                 }
                 break;
             }
@@ -548,11 +606,67 @@ public:
                     proc.room.deviation (proc.room.average (false), lo, hi, rb, mb);
                     proc.room.deviation (proc.room.average (true), lo, hi, ra, ma);
                     std::printf ("room after: count=%d rms before %.2f after %.2f\n", proc.room.count (true), rb, ra);
+                    check (proc.room.count (true) > 0 && ra < rb, "room EQ: closer to the target after the EQ");
+                    check (std::isfinite (la::seatVariance (proc.room, false)), "room EQ: seat-to-seat variance");
                     rp.suggestNow();
                     std::printf ("room refine: %s (%d bands entered, hint '%s')\n", rp.statusText().toRawUTF8(), (int) proc.room.baseEq.size(), rp.nextHint().toRawUTF8());
+                    rp.refresh();
+                    shot ("room-listen");
+                    // gain and headroom: the whole system in steps, then each speaker
+                    editor->showPage ((int) P::Headroom);
+                    editor->headroomPageForPreview().runNow (0);
+                    next (70);
+                }
+                break;
+            case 70:
+            case 71:
+            {
+                auto& hp = editor->headroomPageForPreview();
+                if (stageTick + 10 < ticks && (! hp.running() || ticks - stageTick > 6000))
+                {
+                    for (const auto& run : proc.headroom.runs)
+                    {
+                        std::printf ("headroom %s: steps=%d compressedAt=%d clean %.1f reached=%d ceiling=%d\n", run.name.toRawUTF8(), (int) run.steps.size(), run.compressedAt,
+                                     run.cleanMax(), (int) run.reached, (int) run.ceiling);
+                        for (const auto& st : run.steps) std::printf ("   %.0f dBFS -> %.1f (coh %.2f)\n", st.genDb, st.splDb, st.coherence);
+                    }
+                    if (stage == 70)
+                    {
+                        const auto* whole = proc.headroom.find (0);
+                        check (whole != nullptr && whole->steps.size() >= 3 && (whole->compressedAt >= 0 || whole->reached || whole->ceiling),
+                               "gain and headroom: the whole system run to an end");
+                        check (whole != nullptr && whole->compressedAt >= 0, "gain and headroom: the simulated limiter is found");
+                        shot ("headroom");
+                        proc.system.sources[0].ampGain = "+32 dB";
+                        proc.system.sources[0].limiter = "+14 dBu";
+                        proc.system.sources[2].ampGain = "+35 dB";
+                        hp.refresh();
+                        hp.runNow (1);
+                        next (71);
+                        break;
+                    }
+                    check (proc.headroom.runs.size() >= 3, "gain and headroom: each speaker run");
+                    shot ("headroom-each");
+                    // the listening check: two points heard, one with a note
+                    proc.listening.music = "Reference playlist (Steely Dan, Norah Jones, a spoken-word track)";
+                    proc.listening.points["FOH"] = { 1, "Clear, even", true };
+                    proc.listening.points["Centre"] = { 2, "Boomy, speech unclear", true };
+                    editor->showPage ((int) P::Listening);
+                    next (72);
+                }
+                break;
+            }
+            case 72:
+                if (after (6))
+                {
+                    shot ("listening");
+                    auto& l = proc.listening;
+                    l.done = true;
+                    l.doneOn = LiveAlignProcessor::today();
                     proc.room.tuned = true;
                     proc.room.tunedOn = LiveAlignProcessor::today();
-                    rp.refresh();
+                    editor->showPage ((int) P::Room);
+                    editor->roomPageForPreview().refresh();
                     next (13);
                 }
                 break;
@@ -564,6 +678,9 @@ public:
                 {
                     ringHz = 0.0;
                     for (const auto& r : proc.feedback.rings) std::printf ("feedback ring: %.1f Hz above %.1f dB cut %.0f dB Q %.0f\n", r.ring.freq, r.ring.prominenceDb, r.ring.cutDb, r.ring.q);
+                    bool r1 = false, r2 = false;
+                    for (const auto& r : proc.feedback.rings) { r1 = r1 || std::abs (r.ring.freq - 1250.0) < 60.0; r2 = r2 || std::abs (r.ring.freq - 3150.0) < 150.0; }
+                    check (r1 && r2, "feedback test: both rings found");
                     next (14);
                 }
                 break;
@@ -594,6 +711,8 @@ public:
                 if (after (3))
                 {
                     const auto a = proc.room.acousticsAverage();
+                    check (a.rtMid() > 0.8 && a.rtMid() < 1.8, "room acoustics: the simulated reverberation time (about 1.2 s)");
+                    check (a.sti > 0.4 && a.sti < 0.8, "room acoustics: STI");
                     std::printf ("acoustics: positions=%d RT %.2f s EDT %.2f C80 %.1f C50 %.1f STI %.2f (%s) modes=%d\n", proc.room.acousticsCount(), a.rtMid(),
                                  a.mid (&la::acoustics::Band::edt), a.mid (&la::acoustics::Band::c80), a.mid (&la::acoustics::Band::c50), a.sti, la::acoustics::stiRating (a.sti),
                                  (int) proc.room.modes().size());
@@ -657,6 +776,24 @@ public:
                     proc.system.sources[0].sheetEntered = la::sheet::signature (proc.system, 0);
                     editor->showPage ((int) P::Sheet);
                     shot ("sheet");
+                    std::printf ("history: %d changes\n", (int) proc.history.entries.size());
+                    check (! proc.history.entries.empty(), "history: changes were logged");
+                    {
+                        // undo: a trim changed by hand comes back
+                        const double was = proc.system.sources[0].trimDb;
+                        for (int k = 0; k < 4; ++k) editor->undoTickForPreview();
+                        proc.system.sources[0].trimDb = was + 3.0;
+                        for (int k = 0; k < 4; ++k) editor->undoTickForPreview();
+                        editor->undo();
+                        check (std::abs (proc.system.sources[0].trimDb - was) < 1e-9, "undo: a trim comes back");
+                        editor->redo();
+                        check (std::abs (proc.system.sources[0].trimDb - (was + 3.0)) < 1e-9, "redo: and goes again");
+                        editor->undo();
+                    }
+                    for (const auto& h : proc.history.entries) std::printf ("  %s | %s | %s | %s: %s\n", h.when.toRawUTF8(), h.output.toRawUTF8(), h.what.toRawUTF8(), h.step.toRawUTF8(), h.why.toRawUTF8());
+                    editor->sheetPageForPreview().setHistoryShown (true);
+                    shot ("sheet-history");
+                    editor->sheetPageForPreview().setHistoryShown (false);
                     editor->sheetPageForPreview().writePdf (dir.getChildFile ("sheet.pdf"));
                     std::printf ("sheet: %d bytes, csv:\n%s", (int) dir.getChildFile ("sheet.pdf").getSize(), la::sheet::csv (proc.system).toRawUTF8());
                     editor->showPage ((int) P::TuningReport);
@@ -668,6 +805,12 @@ public:
                     editor->exportReportTo (false, dir.getChildFile ("report.pdf"));
                     editor->exportReportTo (true, dir.getChildFile ("monitoring-report.pdf"));
                     std::printf ("reports: tuning %d bytes, monitoring %d bytes\n", (int) dir.getChildFile ("report.pdf").getSize(), (int) dir.getChildFile ("monitoring-report.pdf").getSize());
+                    check (dir.getChildFile ("report.pdf").getSize() > 50000 && dir.getChildFile ("monitoring-report.pdf").getSize() > 20000, "reports: written");
+                    {
+                        juce::StringArray ids;
+                        for (const auto& sec : la::report::tuningSections()) ids.add (sec.id);
+                        check (ids.contains ("coverage") && ids.contains ("headroom") && ids.contains ("listening"), "reports: the new chapters are in the tuning report");
+                    }
                     la::LockerMic m;
                     m.id = "preview";
                     m.model = "UMIK-1";
@@ -715,6 +858,9 @@ public:
                 if (after (10))
                 {
                     shot ("home-recheck");
+                    editor->showTour (4);
+                    shot ("tour");
+                    editor->closeTour();
                     // Settings: the tuning defaults with one value kept for this venue
                     proc.venuePrefs.set ("eqClose", 2.0);
                     editor->showPage ((int) P::Settings);
@@ -746,6 +892,9 @@ public:
                 const auto before = proc.system.sources[2].response.freq.size();
                 proc.newProject();
                 proc.openProject (f);
+                check (proc.system.sources.size() == 4 && proc.system.sources[2].response.freq.size() == before, "venue: the speakers survive a save and open");
+                check (! proc.history.entries.empty() && proc.listening.done && ! proc.headroom.runs.empty(), "venue: history, listening and headroom survive a save and open");
+                check (proc.monitorPoints.contains ("FOH"), "venue: the monitoring points survive");
                 std::printf ("venue speakers: sources=%d subPoints=%d (was %d) lp=%d@%.1f alignments=%d checked=%d nearField=%d placement=%d\n", (int) proc.system.sources.size(),
                              (int) proc.system.sources[2].response.freq.size(), (int) before, proc.system.sources[2].proc.lp.slope, proc.system.sources[2].proc.lp.freq,
                              (int) proc.system.alignments.size(), proc.system.alignments.empty() ? -1 : (int) proc.system.alignments[0].checked(),
@@ -762,9 +911,7 @@ public:
                 sessionRoundTrip();
                 crossoverPairCheck();
                 templateAndRecovery();
-                stage = 99;
-                editor.reset();
-                juce::MessageManager::getInstance()->stopDispatchLoop();
+                finish();
                 break;
             }
             default: break;
@@ -807,6 +954,8 @@ public:
         proc.system.sources[0].response.db = { 0, 0, 0 };
         proc.positions.addIfNotAlreadyThere ("Mix riser");
         proc.newVenueFrom ("Tour B");
+        check (proc.venueName == "Tour B" && proc.system.sources[0].response.freq.empty() && proc.system.sources[0].proc.eq.empty() && proc.positions.contains ("Mix riser")
+               && proc.history.entries.empty(), "new venue from this one: keeps the set-up, starts the tuning fresh");
         std::printf ("template: name=%s sources=%d response=%d hp=%.0f eq=%d alignments=%d positions=%d sessions=%d changed=%d mic1=%s\n", proc.venueName.toRawUTF8(),
                      (int) proc.system.sources.size(), (int) proc.system.sources[0].response.freq.size(), proc.system.sources[0].proc.hp.freq,
                      (int) proc.system.sources[0].proc.eq.size(), (int) proc.system.alignments.size(), proc.positions.contains ("Mix riser") ? 1 : 0,
@@ -815,7 +964,10 @@ public:
         proc.autosave();
         const bool written = LiveAlignProcessor::recoveryFile().existsAsFile();
         proc.newProject();
+        check (proc.system.sources.empty() && proc.settings.micCount.load() == 1 && ! proc.settings.micSplCalibrated[0].load() && proc.mics.position[0].isEmpty()
+               && proc.venuePrefs.values.empty() && proc.monitorPoints.contains ("FOH"), "new venue: blank (no speakers, one mic, nothing attached)");
         const auto err = proc.restoreRecovery();
+        check (written && err.isEmpty() && proc.venueNotes == "Unsaved note", "recovery: unsaved work comes back");
         std::printf ("recovery: written=%d err='%s' name=%s notes=%s changed=%d\n", (int) written, err.toRawUTF8(), proc.venueName.toRawUTF8(),
                      proc.venueNotes.toRawUTF8(), (int) proc.projectChanged());
         proc.clearRecovery();
@@ -921,7 +1073,50 @@ public:
         f.deleteFile();
     }
 
-    void shot (const char* name) { save (editor->createComponentSnapshot (editor->getLocalBounds()), name); }
+    void shot (const char* name)
+    {
+        save (editor->createComponentSnapshot (editor->getLocalBounds()), name);
+        overflowCheck (*editor, name);
+        if (gStopAfter.isNotEmpty() && gStopAfter == name) stopNow = true;   // at the next tick: the step that took it carries on first
+    }
+
+    // Text that does not fit its button, label or box (it would be cut off or squeezed), on what is showing now.
+    void overflowCheck (juce::Component& c, const char* where)
+    {
+        if (! c.isShowing() || c.getWidth() <= 0) return;
+        juce::String text;
+        juce::Font f { juce::FontOptions {} };
+        int room = 0;
+        if (auto* b = dynamic_cast<juce::TextButton*> (&c)) { text = b->getButtonText(); f = c.getLookAndFeel().getTextButtonFont (*b, b->getHeight()); room = b->getWidth() - 8; }
+        else if (auto* l = dynamic_cast<juce::Label*> (&c)) { text = l->getText(); f = l->getFont(); room = l->getWidth() - l->getBorderSize().getLeftAndRight(); }
+        else if (auto* tb = dynamic_cast<juce::ToggleButton*> (&c)) { text = tb->getButtonText(); f = juce::Font (juce::FontOptions (juce::jmin (15.0f, (float) tb->getHeight() * 0.75f))); room = tb->getWidth() - 50; }
+        else if (auto* cb = dynamic_cast<juce::ComboBox*> (&c)) { text = cb->getText(); f = c.getLookAndFeel().getComboBoxFont (*cb); room = cb->getWidth() - 30; }
+        if (text.isNotEmpty() && ! text.containsChar ('\n'))
+        {
+            const int need = juce::GlyphArrangement::getStringWidthInt (f, text);
+            if (need > room + 2)
+            {
+                const auto key = juce::String (typeid (c).name()) + "|" + text;
+                if (! gOverflowSeen.contains (key))
+                {
+                    gOverflowSeen.add (key);
+                    ++gOverflows;
+                    std::printf ("OVERFLOW in %s: \"%s\" needs %d px, has %d\n", where, text.toRawUTF8(), need, room);
+                }
+            }
+        }
+        for (auto* ch : c.getChildren()) overflowCheck (*ch, where);
+    }
+
+    void finish()
+    {
+        std::printf ("RESULT: %d checks, %d failed, %d text overflows\n", gChecks, gFailures, gOverflows);
+        if (gStrictOverflow && gOverflows > 0) ++gFailures;
+        stage = 99;
+        stopTimer();
+        editor.reset();
+        juce::MessageManager::getInstance()->stopDispatchLoop();
+    }
 
     void save (const juce::Image& img, const char* name)
     {
@@ -943,7 +1138,8 @@ public:
     std::vector<Biquad> fillChain;
     std::vector<float> lineTop, lineSub, lineFill;
     std::array<Reverb, 3> reverbs;
-    double ringHz = 0.0, subGain = 1.0;
+    double ringHz = 0.0, subGain = 1.0, simMs = 0.0;
+    bool stopNow = false;
 
     // A processor filter as biquads: Butterworth of the slope's order, Linkwitz-Riley as two Butterworths of half.
     void addFilters (std::vector<Biquad>& chain, const la::xo::Filter& f, bool highPass)
@@ -976,6 +1172,12 @@ int laPreviewMain (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI init;
     const juce::File out (argc > 1 ? argv[1] : "/tmp");
+    for (int i = 2; i < argc; ++i)
+    {
+        const juce::String a (argv[i]);
+        if (a.startsWith ("--stop-after=")) gStopAfter = a.fromFirstOccurrenceOf ("=", false, false);
+        if (a == "--strict-overflow") gStrictOverflow = true;
+    }
     {
         // the application icon (macOS and Windows): the tile with the usual margin around it
         juce::Image icon (juce::Image::ARGB, 1024, 1024, true);
@@ -991,6 +1193,7 @@ int laPreviewMain (int argc, char** argv)
     proc->setBusesLayout (layout);
     proc->prepareToPlay (48000.0, 512);
     proc->setMonitorMode (false);   // made outside a host: not the VST3
+    proc->system = la::SpeakerSystem::defaults();   // a new venue has no speakers: the simulated system's three
     proc->settings.refSource = 3;   // input 2 is the loopback reference
     proc->settings.micCount = 3;
     proc->settings.micInput[0] = 0;
@@ -1005,5 +1208,5 @@ int laPreviewMain (int argc, char** argv)
         juce::MessageManager::getInstance()->runDispatchLoop();
     }
     proc.reset();
-    return 0;
+    return gFailures == 0 ? 0 : 1;
 }

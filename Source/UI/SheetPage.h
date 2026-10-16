@@ -19,6 +19,7 @@ class SheetPage : public juce::Component
 public:
     std::function<void()> onChanged;
     std::function<void (bool csv)> onExport;   // the editor owns the file chooser
+    std::function<void (int entry)> onRollBack;   // the editor rolls the processing back (an undo step)
 
     explicit SheetPage (LiveAlignProcessor& p) : proc (p)
     {
@@ -41,15 +42,33 @@ public:
         csvButton.setTooltip ("Save the settings as a CSV file (a spreadsheet)");
         pdfButton.setTooltip ("Save the sheet as a PDF to print and take to the processor");
         for (auto* b : { &copyButton, &csvButton, &pdfButton, &allButton }) addAndMakeVisible (*b);
+        historyButton.setTooltip ("Every change to the outputs' EQ, delay, trim and polarity: when, on which step and why. Roll back to before any of them.");
+        historyButton.onClick = [this] { showHistory = ! showHistory; selectedEntry = -1; refresh(); resized(); };
+        addAndMakeVisible (historyButton);
+        rollBackButton.setTooltip ("Put every output's processing back as it was before the selected change (Cmd/Ctrl+Z undoes it)");
+        rollBackButton.onClick = [this] { if (onRollBack && selectedEntry >= 0) onRollBack (selectedEntry); };
+        addChildComponent (rollBackButton);
     }
 
-    void refresh() { repaint(); allButton.setButtonText (sheet::enteredCount (proc.system) == (int) proc.system.sources.size() ? "Untick all" : "Tick all as entered"); }
+    void refresh()
+    {
+        repaint();
+        allButton.setButtonText (sheet::enteredCount (proc.system) == (int) proc.system.sources.size() ? "Untick all" : "Tick all as entered");
+        historyButton.setButtonText (showHistory ? "Back to the settings" : "History (" + juce::String ((int) proc.history.entries.size()) + ")");
+        rollBackButton.setVisible (showHistory);
+        rollBackButton.setEnabled (selectedEntry >= 0 && selectedEntry < (int) proc.history.entries.size() && proc.history.entries[(size_t) selectedEntry].before != nullptr);
+        rollBackButton.setButtonText ("Roll back to before this");
+        for (auto* b : { &allButton, &copyButton, &csvButton, &pdfButton }) b->setVisible (! showHistory);
+    }
+
+    void setHistoryShown (bool h) { showHistory = h; selectedEntry = h && ! proc.history.entries.empty() ? (int) proc.history.entries.size() - 1 : -1; refresh(); resized(); }
 
     bool allEntered() const { return ! proc.system.sources.empty() && sheet::enteredCount (proc.system) == (int) proc.system.sources.size(); }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
+        if (showHistory) { paintHistory (g); return; }
         drawPanel (g, card.toFloat(), "Settings to enter, output by output");
         const auto& sys = proc.system;
         auto r = table;
@@ -67,7 +86,7 @@ public:
         {
             const auto row = sheet::row (sys, i);
             const auto* was = wasOf (i);
-            const bool eqRow = row.eq != "none";
+            const bool eqRow = row.eq != "none" || row.amp.isNotEmpty() || row.limiter.isNotEmpty();
             auto rr = r.removeFromTop (eqRow ? 60 : 42);
             if (rr.getBottom() > table.getBottom()) break;
             rows.push_back (rr);
@@ -119,12 +138,26 @@ public:
             if (eqRow)
             {
                 auto eqLine = rr.withTrimmedLeft (w[0] + 8).withTrimmedRight (8);
-                g.setColour (p.textDim);
-                g.setFont (font (10.5f, true));
-                g.drawText ("EQ", eqLine.removeFromLeft (30), juce::Justification::centredLeft);
-                g.setColour (p.text);
-                g.setFont (font (11.5f));
-                g.drawText (row.eq, eqLine, juce::Justification::centredLeft, true);
+                if (row.amp.isNotEmpty() || row.limiter.isNotEmpty())
+                {
+                    // as set on the amp and the limiter (from Gain and headroom)
+                    auto ampArea = eqLine.removeFromRight (juce::jmin (320, eqLine.getWidth() / 3));
+                    g.setColour (p.textDim);
+                    g.setFont (font (11.0f));
+                    juce::StringArray bits;
+                    if (row.amp.isNotEmpty()) bits.add ("Amp " + row.amp);
+                    if (row.limiter.isNotEmpty()) bits.add ("Limiter " + row.limiter);
+                    g.drawText (bits.joinIntoString ("   "), ampArea, juce::Justification::centredRight, true);
+                }
+                if (row.eq != "none")
+                {
+                    g.setColour (p.textDim);
+                    g.setFont (font (10.5f, true));
+                    g.drawText ("EQ", eqLine.removeFromLeft (30), juce::Justification::centredLeft);
+                    g.setColour (p.text);
+                    g.setFont (font (11.5f));
+                    g.drawText (row.eq, eqLine, juce::Justification::centredLeft, true);
+                }
             }
             r.removeFromTop (6);
         }
@@ -158,7 +191,10 @@ public:
         bar.removeFromRight (8);
         copyButton.setBounds (bar.removeFromRight (130));
         bar.removeFromRight (16);
-        allButton.setBounds (bar.removeFromLeft (180));
+        if (! showHistory) { allButton.setBounds (bar.removeFromLeft (180)); bar.removeFromLeft (8); }
+        historyButton.setBounds (bar.removeFromLeft (170));
+        bar.removeFromLeft (8);
+        if (showHistory) rollBackButton.setBounds (bar.removeFromLeft (210));
         bar.removeFromLeft (14);
         statusLine = bar;
         footArea = c.removeFromBottom (48);
@@ -168,6 +204,12 @@ public:
 
     void mouseUp (const juce::MouseEvent& e) override
     {
+        if (showHistory)
+        {
+            for (const auto& [idx, rr] : historyRows)
+                if (rr.contains (e.getPosition())) { selectedEntry = idx; refresh(); return; }
+            return;
+        }
         for (int i = 0; i < (int) rows.size(); ++i)
             if (rows[(size_t) i].contains (e.getPosition()))
             {
@@ -205,12 +247,97 @@ public:
             L.sub (r.name + " EQ");
             L.para (r.eq, 9.5f);
         }
+        {
+            // the amps and limiters, as set
+            std::vector<juce::StringArray> amps;
+            for (int i = 0; i < (int) proc.system.sources.size(); ++i)
+            {
+                const auto r = sheet::row (proc.system, i);
+                if (r.amp.isNotEmpty() || r.limiter.isNotEmpty()) amps.push_back ({ r.name, r.output, r.amp, r.limiter });
+            }
+            if (! amps.empty())
+            {
+                L.sub ("Amps and limiters (as set)");
+                L.table ({ 140.0f, 80.0f, 140.0f, 140.0f }, { "Speaker", "Output", "Amp gain", "Limiter" }, amps, 8.0f);
+                L.y += 8.0f;
+            }
+        }
+        if (! proc.history.entries.empty())
+        {
+            L.sub ("Change history (newest first)");
+            std::vector<juce::StringArray> hist;
+            for (int i = (int) proc.history.entries.size(); --i >= 0 && hist.size() < 40;)
+            {
+                const auto& h = proc.history.entries[(size_t) i];
+                hist.push_back ({ h.when, h.output, h.what, h.step + ": " + h.why });
+            }
+            L.table ({ 70.0f, 70.0f, 230.0f, 130.0f }, { "When", "Output", "Change", "Step and why" }, hist, 7.0f);
+        }
         L.footers();
         if (! doc.write (f, "Processor sheet - " + proc.venueName, "LiveAlign")) return "Could not write " + f.getFullPathName();
         return {};
     }
 
 private:
+    // The change history, newest first: click one, then Roll back.
+    void paintHistory (juce::Graphics& g)
+    {
+        const auto& p = pal();
+        drawPanel (g, card.toFloat(), "Change history: every output, newest first");
+        historyRows.clear();
+        auto r = table;
+        const auto& h = proc.history.entries;
+        if (h.empty())
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (13.0f));
+            g.drawFittedText ("No changes yet. Every change to an output's EQ, delay, trim or polarity is listed here, with when, the step and why.",
+                              r, juce::Justification::centred, 3);
+            return;
+        }
+        const int cw[] = { 120, 150, 0, 260 };
+        {
+            auto hd = r.removeFromTop (22);
+            g.setColour (p.textDim);
+            g.setFont (font (10.5f, true));
+            g.drawText ("WHEN", hd.removeFromLeft (cw[0]), juce::Justification::centredLeft);
+            g.drawText ("OUTPUT", hd.removeFromLeft (cw[1]), juce::Justification::centredLeft);
+            g.drawText ("STEP AND WHY", hd.removeFromRight (cw[3]), juce::Justification::centredLeft);
+            g.drawText ("CHANGE", hd, juce::Justification::centredLeft);
+        }
+        r.removeFromTop (4);
+        for (int i = (int) h.size(); --i >= 0;)
+        {
+            auto row = r.removeFromTop (30);
+            if (row.getBottom() > table.getBottom()) break;
+            historyRows.push_back ({ i, row });
+            const auto& e = h[(size_t) i];
+            const bool sel = i == selectedEntry;
+            g.setColour (sel ? p.accent.withAlpha (0.18f) : p.panelRaised.withAlpha ((h.size() - (size_t) i) % 2 == 0 ? 0.25f : 0.55f));
+            g.fillRoundedRectangle (row.toFloat(), 5.0f);
+            if (sel) { g.setColour (p.accent); g.drawRoundedRectangle (row.toFloat().reduced (0.5f), 5.0f, 1.2f); }
+            row.reduce (8, 0);
+            g.setColour (p.textDim);
+            g.setFont (font (11.5f));
+            g.drawText (e.when, row.removeFromLeft (cw[0] - 8), juce::Justification::centredLeft, true);
+            g.setColour (p.text);
+            g.setFont (font (12.0f, true));
+            g.drawText (e.output, row.removeFromLeft (cw[1]), juce::Justification::centredLeft, true);
+            auto why = row.removeFromRight (cw[3]);
+            g.setColour (p.textDim);
+            g.setFont (font (11.5f));
+            g.drawText (e.step + ": " + e.why, why, juce::Justification::centredLeft, true);
+            g.setColour (e.why.startsWith ("Rolled") || e.why == "Undone" ? p.warn : p.text);
+            g.setFont (font (12.0f));
+            g.drawText (e.what, row.withTrimmedRight (8), juce::Justification::centredLeft, true);
+        }
+        g.setColour (p.textFaint);
+        g.setFont (font (11.0f));
+        g.drawFittedText ("Each change keeps the processing as it was before it: select one and Roll back to put every output back to then "
+                          "(the processor sheet changes, and the outputs untick until entered again). Undo (Cmd/Ctrl+Z) takes a roll back back.",
+                          footArea, juce::Justification::topLeft, 3);
+    }
+
     const AsFound::Speaker* wasOf (int i) const
     {
         if (! proc.asFound.taken() || i < 0 || i >= (int) proc.system.sources.size()) return nullptr;
@@ -228,6 +355,10 @@ private:
 
     LiveAlignProcessor& proc;
     juce::TextButton copyButton { "Copy as text" }, csvButton { "Export CSV..." }, pdfButton { "Export PDF..." }, allButton { "Tick all as entered" };
+    juce::TextButton historyButton, rollBackButton;
+    bool showHistory = false;
+    int selectedEntry = -1;
+    std::vector<std::pair<int, juce::Rectangle<int>>> historyRows;
     juce::Rectangle<int> card, table, footArea, statusLine;
     std::vector<juce::Rectangle<int>> rows;
     juce::String note;

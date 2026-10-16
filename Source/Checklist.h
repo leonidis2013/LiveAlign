@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include <cmath>
 // Venue and session data that is not an analysis setting. Message thread only.
 //
 // A venue file holds what stays with the room and the system (mics and their calibration, positions, the speaker
@@ -123,6 +124,11 @@ struct SessionChecks
 
     juce::String setup;   // interface and wiring when the checks were done (see setupFingerprint)
 
+    // The conditions in the room this session (NAN: not entered), and those when the delays and EQ were last set.
+    float tempC = NAN, humidity = NAN;
+    float tunedTempC = NAN, tunedHumidity = NAN;
+    juce::String tunedConditionsOn;
+
     void save (juce::XmlElement& parent) const
     {
         auto* e = parent.createNewChildElement ("Checks");
@@ -134,6 +140,12 @@ struct SessionChecks
         e->setAttribute ("noiseDone", noiseDone);
         e->setAttribute ("noiseMics", noiseMics);
         e->setAttribute ("setup", setup);
+        auto putF = [e] (const char* k, float v) { if (std::isfinite (v)) e->setAttribute (k, v); };
+        putF ("tempC", tempC);
+        putF ("humidity", humidity);
+        putF ("tunedTempC", tunedTempC);
+        putF ("tunedHumidity", tunedHumidity);
+        if (tunedConditionsOn.isNotEmpty()) e->setAttribute ("tunedConditionsOn", tunedConditionsOn);
         for (int m = 0; m < kMaxMics; ++m)
         {
             const juce::String k (m);
@@ -160,6 +172,12 @@ struct SessionChecks
             noiseDone = e->getBoolAttribute ("noiseDone");
             noiseMics = e->getIntAttribute ("noiseMics");
             setup = e->getStringAttribute ("setup");
+            auto getF = [e] (const char* k) { return e->hasAttribute (k) ? (float) e->getDoubleAttribute (k) : NAN; };
+            tempC = getF ("tempC");
+            humidity = getF ("humidity");
+            tunedTempC = getF ("tunedTempC");
+            tunedHumidity = getF ("tunedHumidity");
+            tunedConditionsOn = e->getStringAttribute ("tunedConditionsOn");
             for (int m = 0; m < kMaxMics; ++m)
             {
                 const juce::String k (m);

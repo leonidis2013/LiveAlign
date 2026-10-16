@@ -23,10 +23,13 @@ inline const std::vector<TuningSection>& tuningSections()
         { "plan", "Venue plan", "Where the speakers and tuning mics were (a landscape page)" },
         { "speakers", "Speakers", "The system, polarity, the crossover, time alignment, and the responses as found and as left" },
         { "level", "Level balance", "Each speaker's level at the listening points, the trims, and the check" },
+        { "coverage", "Aim and coverage", "Each speaker across the seats it covers, against the spec, before and after re-aiming" },
         { "acoustics", "Room acoustics", "Reverberation, clarity, intelligibility, room modes, coverage, noise, and what it means" },
-        { "room", "Room EQ", "The listening points against the target, as found and as left" },
+        { "room", "Room EQ", "The listening points against the target, as found and as left, and the seat-to-seat variance" },
+        { "headroom", "Gain and headroom", "The level at FOH against the generator, the headroom above the show level, the amps and limiters" },
+        { "listening", "Listening check", "The music played and the notes at each point" },
         { "feedback", "Feedback test", "The rings found and the cuts for them" },
-        { "sheet", "Processor sheet", "Every setting to enter, output by output, and which are entered" },
+        { "sheet", "Processor sheet", "Every setting to enter, output by output, which are entered, and the change history" },
         { "mics", "Measurement mics and checks", "Mics with serial numbers, calibration and this session's checks" },
         { "measurements", "Measurements", "The transfer functions and RTA traces captured in this session" } };
     return s;
@@ -104,6 +107,26 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             kv.push_back ({ "Room EQ", "As found " + juce::String (rb, 1) + " dB RMS from the target"
                                            + (std::isfinite (ra) ? ", as left " + juce::String (ra, 1) + " dB" : juce::String (", no check measured yet"))
                                            + " (" + juce::String (room.count (false)) + " positions)" });
+        }
+        {
+            const double v0 = seatVariance (room, false), v1 = seatVariance (room, true);
+            if (std::isfinite (v0)) kv.push_back ({ "Seat to seat", juce::String (v0, 1) + " dB as found" + (std::isfinite (v1) ? ", " + juce::String (v1, 1) + " dB as left" : juce::String()) });
+        }
+        if (const auto* hr = p.headroom.find (0))
+        {
+            int lv = 0;
+            kv.push_back ({ "Headroom", headroom::verdict (*hr, p.pref ("targetDbA"), p.pref ("headroomDb"), st.micSplCalibrated[0].load(), lv) });
+        }
+        if (p.listening.done || ! p.listening.points.empty())
+            kv.push_back ({ "Listening check", (p.listening.done ? "Done " + p.listening.doneOn + ": " : juce::String ("Started: "))
+                                                   + juce::String (p.listening.count (1)) + " points good, " + juce::String (p.listening.count (2)) + " with notes" });
+        {
+            const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+            juce::String c = juce::String (st.temperatureC.load(), 1) + deg + "C, " + juce::String (juce::roundToInt (st.humidity.load())) + " % humidity";
+            if (std::isfinite (p.checks.tunedTempC))
+                c << " (tuned at " << juce::String (p.checks.tunedTempC, 1) << deg << "C" << (std::isfinite (p.checks.tunedHumidity) ? ", " + juce::String (juce::roundToInt (p.checks.tunedHumidity)) + " %" : juce::String())
+                  << (p.checks.tunedConditionsOn.isNotEmpty() ? ", " + p.checks.tunedConditionsOn : juce::String()) << ")";
+            kv.push_back ({ "Conditions", c });
         }
         if (! p.feedback.rings.empty())
             kv.push_back ({ "Feedback test", juce::String ((int) p.feedback.rings.size()) + " rings on " + p.feedback.micName });
@@ -323,6 +346,38 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
     }
 
     // ---------- acoustics ----------
+    if (has ("coverage"))
+    {
+        const auto rows = coverage::analyse (sys, p.level.points, p.plan, p.pref ("coverageTol"), [&p] (int k, const juce::String& pt)
+        {
+            const auto* r = p.level.find (k, pt, false);
+            return r != nullptr ? r->band (coverage::kLo, coverage::kHi) : NAN;
+        });
+        if (! rows.empty())
+        {
+            L.chapter ("Aim and coverage");
+            const auto pm = juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"));
+            L.para ("Each speaker alone, at the points it covers (within 6 dB of the loudest top there), 1 - 4 kHz, against its own loudest point. "
+                    "The spec is " + pm + juce::String (p.pref ("coverageTol"), 1) + " dB." + (p.coverage.done ? " Accepted " + p.coverage.doneOn + "." : juce::String()), 9.5f);
+            std::vector<juce::StringArray> t;
+            for (const auto& r : rows)
+            {
+                juce::StringArray pts;
+                for (const auto& cp : r.points) pts.add (cp.point + " " + (cp.point == r.onAxis ? juce::String ("0") : juce::String (cp.db, 1)));
+                juce::String before = "-";
+                if (auto b = p.coverage.before.find (r.spk); b != p.coverage.before.end())
+                {
+                    double best = -1e9, worst = 1e9;
+                    for (const auto& [k, v] : b->second) { best = std::max (best, v); worst = std::min (worst, v); }
+                    before = juce::String (best - worst, 1) + " dB";
+                }
+                t.push_back ({ sys.nameOf (r.spk), pts.joinIntoString (",  "), juce::String (-r.worstDb, 1) + " dB", before, r.ok ? juce::String ("within spec") : juce::String ("out") });
+            }
+            L.table ({ 1.2f, 4.0f, 0.9f, 1.0f, 1.0f }, { "Speaker", "Points (dB)", "Spread", "Before", "Verdict" }, t, 8.0f);
+            for (const auto& r : rows) if (r.advice.isNotEmpty()) L.para (r.advice, 9.0f);
+        }
+    }
+
     if (has ("acoustics"))
     {
         L.chapter ("Room acoustics");
@@ -547,6 +602,53 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
     }
 
     // ---------- feedback ----------
+    if (has ("headroom") && ! p.headroom.runs.empty())
+    {
+        L.chapter ("Gain and headroom");
+        const double target = p.pref ("targetDbA"), wanted = p.pref ("headroomDb");
+        L.para ("Pink noise in steps through the system, read at FOH. Show level " + juce::String ((int) target) + " dBA, headroom wanted "
+                + juce::String ((int) wanted) + " dB.", 9.5f);
+        std::vector<juce::StringArray> t;
+        for (const auto& run : p.headroom.runs)
+        {
+            int lv = 0;
+            juce::String v = run.output == 0 ? headroom::verdict (run, target, wanted, st.micSplCalibrated[0].load(), lv)
+                                             : run.compressedAt >= 0 ? juce::String (run.distorted ? "Distorts" : "Compresses") + " at " + juce::String (juce::roundToInt (run.steps[(size_t) run.compressedAt].genDb)) + " dBFS drive"
+                                                                     : juce::String ("Clean at the show drive plus headroom");
+            juce::StringArray steps;
+            for (const auto& s2 : run.steps) if (std::isfinite (s2.splDb)) steps.add (juce::String (juce::roundToInt (s2.genDb)) + ">" + juce::String (s2.splDb, 1));
+            t.push_back ({ run.name, run.when, std::isfinite (run.cleanMax()) ? juce::String (run.cleanMax(), 1) : juce::String ("-"), v, steps.joinIntoString ("  ") });
+        }
+        L.table ({ 1.1f, 1.0f, 0.8f, 3.0f, 3.0f }, { "Run", "When", "Clean max", "Result", "Steps (dBFS > level)" }, t, 7.5f);
+        std::vector<juce::StringArray> amps;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            const auto& s2 = sys.sources[(size_t) i];
+            if (s2.ampGain.isNotEmpty() || s2.limiter.isNotEmpty()) amps.push_back ({ sys.nameOf (i), sheet::outputWords (s2), s2.ampGain, s2.limiter });
+        }
+        if (! amps.empty())
+        {
+            L.sub ("Amps and limiters (as set)");
+            L.table ({ 1.5f, 1.0f, 1.5f, 1.5f }, { "Speaker", "Output", "Amp gain", "Limiter" }, amps, 8.0f);
+        }
+    }
+
+    if (has ("listening") && (p.listening.done || ! p.listening.points.empty()))
+    {
+        L.chapter ("Listening check");
+        const auto& l = p.listening;
+        L.para ((l.music.isNotEmpty() ? "Music: " + l.music + ". " : juce::String()) + (l.done ? "Done " + l.doneOn + "." : juce::String ("Not finished.")), 9.5f);
+        std::vector<juce::StringArray> t;
+        for (const auto& pt : p.positions)
+        {
+            const auto it = l.points.find (pt);
+            if (it == l.points.end()) { t.push_back ({ pt, "-", "", "" }); continue; }
+            t.push_back ({ pt, it->second.verdict == 1 ? juce::String ("good") : it->second.verdict == 2 ? juce::String ("a problem") : juce::String ("-"),
+                           it->second.compared ? juce::String ("yes") : juce::String ("no"), it->second.notes });
+        }
+        L.table ({ 1.2f, 0.8f, 0.9f, 5.0f }, { "Point", "Verdict", "EQ compared", "Notes" }, t, 8.0f);
+    }
+
     if (has ("feedback"))
     {
         L.chapter ("Feedback test");
@@ -583,6 +685,17 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
             if (rw.eq == "none") continue;
             L.sub (rw.name + " EQ");
             L.para (rw.eq, 9.0f);
+        }
+        if (! p.history.entries.empty())
+        {
+            L.sub ("Change history (newest first)");
+            std::vector<juce::StringArray> hist;
+            for (int i = (int) p.history.entries.size(); --i >= 0 && hist.size() < 60;)
+            {
+                const auto& h = p.history.entries[(size_t) i];
+                hist.push_back ({ h.when, h.output, h.what, h.step + ": " + h.why });
+            }
+            L.table ({ 1.0f, 1.0f, 3.4f, 2.0f }, { "When", "Output", "Change", "Step and why" }, hist, 7.0f);
         }
     }
 

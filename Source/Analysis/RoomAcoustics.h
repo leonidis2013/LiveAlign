@@ -305,7 +305,7 @@ inline double echoCriterion (const std::vector<double>& h, int start, double fs,
         ts[(size_t) i] = den > 0.0 ? num / den : 0.0;
     }
     const int d = std::max (1, (int) (dtMs * 0.001 * fs));
-    const int from = std::max (d, (int) (0.04 * fs));   // an earlier reflection fuses with the direct sound (the precedence effect)
+    const int from = std::max (d, (int) (0.05 * fs));   // an earlier reflection fuses with the direct sound (the precedence effect)
     double best = 0.0;
     for (int i = from; i < maxI; ++i)
     {

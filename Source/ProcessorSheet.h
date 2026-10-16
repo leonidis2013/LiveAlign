@@ -58,6 +58,7 @@ struct Row
 {
     int spk = 0;
     juce::String name, output, hpf, lpf, delay, polarity, gain, eq;
+    juce::String amp, limiter;   // as set (for the record: not part of what is ticked as entered)
 };
 
 inline Row row (const SpeakerSystem& sys, int i)
@@ -74,6 +75,8 @@ inline Row row (const SpeakerSystem& sys, int i)
     r.polarity = s.proc.invert ? "INVERTED" : "normal";
     r.gain = gainWords (s);
     r.eq = eqWords (s.proc.eq);
+    r.amp = s.ampGain;
+    r.limiter = s.limiter;
     return r;
 }
 
@@ -87,6 +90,29 @@ inline juce::String signature (const SpeakerSystem& sys, int i)
 inline bool entered (const SpeakerSystem& sys, int i)
 {
     return i >= 0 && i < (int) sys.sources.size() && sys.sources[(size_t) i].sheetEntered == signature (sys, i);
+}
+
+// Has settings to enter (anything but a flat, untouched output).
+inline bool hasSettings (const SpeakerSystem& sys, int i)
+{
+    if (i < 0 || i >= (int) sys.sources.size()) return false;
+    const auto& s = sys.sources[(size_t) i];
+    return s.proc.hp.active() || s.proc.lp.active() || s.proc.delayMs > 0.005 || s.proc.invert || std::abs (s.totalGainDb()) > 0.04 || ! s.proc.eq.empty();
+}
+
+// The outputs whose settings changed and are not ticked as entered yet: what to enter before the next measurement.
+inline juce::StringArray pending (const SpeakerSystem& sys)
+{
+    juce::StringArray out;
+    for (int i = 0; i < (int) sys.sources.size(); ++i)
+        if (sys.master (i) == i && hasSettings (sys, i) && ! entered (sys, i)) out.add (sys.nameOf (i));
+    return out;
+}
+
+// Ticks every output as entered (the "They're entered" checkpoint).
+inline void tickAll (SpeakerSystem& sys)
+{
+    for (int i = 0; i < (int) sys.sources.size(); ++i) sys.sources[(size_t) i].sheetEntered = signature (sys, i);
 }
 
 inline int enteredCount (const SpeakerSystem& sys)
@@ -104,12 +130,13 @@ inline juce::String csvField (juce::String v)
 
 inline juce::String csv (const SpeakerSystem& sys)
 {
-    juce::String out = "Speaker,Output,High-pass,Low-pass,Delay,Polarity,Gain,EQ,Entered\n";
+    juce::String out = "Speaker,Output,High-pass,Low-pass,Delay,Polarity,Gain,EQ,Amp gain,Limiter,Entered\n";
     for (int i = 0; i < (int) sys.sources.size(); ++i)
     {
         const auto r = row (sys, i);
         out << csvField (r.name) << ',' << csvField (r.output) << ',' << csvField (r.hpf) << ',' << csvField (r.lpf) << ',' << csvField (r.delay) << ','
-            << csvField (r.polarity) << ',' << csvField (r.gain) << ',' << csvField (r.eq) << ',' << (entered (sys, i) ? "yes" : "no") << '\n';
+            << csvField (r.polarity) << ',' << csvField (r.gain) << ',' << csvField (r.eq) << ',' << csvField (r.amp) << ',' << csvField (r.limiter) << ','
+            << (entered (sys, i) ? "yes" : "no") << '\n';
     }
     return out;
 }
@@ -122,7 +149,10 @@ inline juce::String text (const SpeakerSystem& sys, const juce::String& venue, c
         const auto r = row (sys, i);
         out << r.name << "  (" << r.output << ")\n"
             << "  High-pass: " << r.hpf << "\n  Low-pass: " << r.lpf << "\n  Delay: " << r.delay << "\n  Polarity: " << r.polarity
-            << "\n  Gain: " << r.gain << "\n  EQ: " << r.eq << "\n\n";
+            << "\n  Gain: " << r.gain << "\n  EQ: " << r.eq;
+        if (r.amp.isNotEmpty()) out << "\n  Amp gain: " << r.amp;
+        if (r.limiter.isNotEmpty()) out << "\n  Limiter: " << r.limiter;
+        out << "\n\n";
     }
     return out;
 }

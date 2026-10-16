@@ -150,6 +150,7 @@ public:
         }
         return out;
     }
+    bool guidedNeedsProcessor() const override { return true; }
     juce::String guidedHowTo() const override
     {
         const auto ts = tasks();

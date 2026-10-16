@@ -61,6 +61,7 @@ struct Settings
     std::atomic<int> currentTab { 0 };       // page shown (la::ui::Page)
     std::atomic<int> theme { 0 };            // 0 dark, 1 light
     std::atomic<float> temperatureC { 20.0f };
+    std::atomic<float> humidity { 50.0f };   // relative humidity (%), for the air absorption
     std::atomic<int> distanceUnit { 0 };     // 0 feet, 1 metres
     std::atomic<int> temperatureUnit { 1 };  // 0 Celsius, 1 Fahrenheit
     std::atomic<int> irMode { 0 };           // 0 linear, 1 log (ETC)
@@ -129,6 +130,7 @@ struct Settings
         x.setAttribute ("view", view.load());
         x.setAttribute ("theme", theme.load());
         x.setAttribute ("temperatureC", temperatureC.load());
+        x.setAttribute ("humidity", humidity.load());
         x.setAttribute ("distanceUnit", distanceUnit.load());
         x.setAttribute ("irMode", irMode.load());
         x.setAttribute ("irRange", irRange.load());
@@ -143,6 +145,27 @@ struct Settings
         x.setAttribute ("temperatureUnit", temperatureUnit.load());
         x.setAttribute ("calibratorDb", calibratorDb.load());
         // The generator is never saved as "on": the app always starts silent.
+    }
+
+    // This computer's preferences kept in the settings (Settings: Measurement, Display, Units; the generator's state):
+    // a venue file does not change them.
+    static const juce::StringArray& userKeys()
+    {
+        static const juce::StringArray k { "fftSize", "averages", "smoothing", "coherenceBlank", "magRange", "rtaBands", "rtaSpeed", "rtaShowRef",
+                                           "rtaPeakHold", "view", "theme", "irMode", "irRange", "wfSeconds", "wfRange", "paneCount", "currentTab",
+                                           "paneLayout", "paneView2", "paneView3", "temperatureUnit", "distanceUnit", "calibratorDb",
+                                           "genType", "genLevelDb", "genFreq", "genSweepSec" };
+        return k;
+    }
+
+    // A venue's settings over this computer's preferences.
+    void loadVenue (const juce::XmlElement& venue)
+    {
+        juce::XmlElement merged ("Settings");
+        save (merged);
+        for (int i = 0; i < venue.getNumAttributes(); ++i)
+            if (! userKeys().contains (venue.getAttributeName (i))) merged.setAttribute (venue.getAttributeName (i), venue.getAttributeValue (i));
+        load (merged);
     }
 
     void load (const juce::XmlElement& x)
@@ -183,6 +206,7 @@ struct Settings
         view = i ("view", (int) View::Transfer, 0, 3);
         theme = i ("theme", 0, 0, 1);
         temperatureC = f ("temperatureC", 20.0f, -20.0f, 50.0f);
+        humidity = f ("humidity", 50.0f, 0.0f, 100.0f);
         distanceUnit = i ("distanceUnit", 0, 0, 1);
         irMode = i ("irMode", 0, 0, 1);
         irRange = i ("irRange", 1, 0, 2);

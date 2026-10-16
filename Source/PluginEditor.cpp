@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #include "PluginEditor.h"
+#include "Clock.h"
 #include "UI/CalibrationPanel.h"
 #include "StandaloneHooks.h"
 #include "Report/MonitoringReport.h"
@@ -14,23 +15,27 @@ const char* pageSubtitle (int page)
 {
     static const char* subs[] = {
         "The venue, its sessions, and where each step stands",
-        "The tuning mics: inputs, calibration, loopback and room noise",
-        "The speakers in the system: roles, channels, outputs and cabinets",
-        "The listening points, speakers and mics on a sketch of the room (not to scale)",
-        "Tuning step 1: measure each speaker close up; its polarity comes from the same capture",
-        "Tuning step 2: the crossover between the top and the sub",
-        "Tuning step 3: each speaker's level against the others, where the audience hears them",
-        "Tuning step 4: line the speakers up in time where they meet",
-        "Tuning step 5: what the room does, and whether EQ can help: reverberation, clarity, intelligibility",
-        "Tuning step 6: measure the listening points and EQ toward a target",
-        "Tuning step 7: ring out the stage mics",
+        "The tuning mics: inputs, where each one is, calibration, the reference, loopback and room noise",
+        "The speakers in the system: roles, channels, outputs, cabinets and how widely they cover",
+        "The measurement points for tuning and monitoring, the mic at each, and the speakers, on a sketch of the room",
+        "measure each speaker close up; its polarity comes from the same capture",
+        "the crossover between the top and the sub",
+        "each speaker's level against the others, where the audience hears them",
+        "line the speakers up in time where they meet",
+        "what the room does, and whether EQ can help: reverberation, clarity, intelligibility",
+        "measure the listening points and EQ toward a target",
+        "ring out the stage mics",
         "The mic for monitoring the event, kept apart from the tuning mics",
         "RTA, transfer function, impulse response, waterfall and sound level, with the monitor mic",
         "Every setting to enter in your processor, output by output",
         "A PDF of this session's tuning",
         "A PDF of the event: sound level against the limit, the monitor mic and the traces",
-        "The measurement mics you own: model, serial number, calibration files and sound level",
-        "Your preferences for every venue, and this venue's own tuning values" };
+        "Every measurement mic you own: model, serial number, calibration files and sound level",
+        "Your preferences for every venue, and this venue's own tuning values",
+        "The venue: its name and notes, the room, the conditions of the day and the targets",
+        "each speaker across the seats it covers: re-aim one that falls off before trimming or EQ",
+        "pink noise in steps up to the show level: the headroom above it, and the speaker that runs out first",
+        "music you know, at each point: how it sounds, with the EQ in and bypassed" };
     return subs[juce::jlimit (0, kNumPages - 1, page)];
 }
 } // namespace
@@ -50,7 +55,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     nav.onVenue = [this] { showPage ((int) Page::Home); };
     nav.onUpdate = [this] { showUpdate(); };
     processor.updates.onResult = [this] { refreshUpdate(); };
-    nav.setLockerAvailable (standalone);
+    nav.setLockerAvailable (false);   // the locker is a tab of Mics
     if (! standalone)
         for (int i = 0; i < kNumPages; ++i) nav.setPageVisible (i, i == (int) Page::Monitor || i == (int) Page::MonitorMic);   // the VST3 only monitors
 
@@ -71,6 +76,72 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         });
     };
     homePage->onOpenVenue = [this] { confirmDiscard ([this] { openProject(); }); };
+    homePage->onOpenFile = [this] (const juce::File& f)
+    {
+        confirmDiscard ([this, f]
+        {
+            const auto err = processor.openProject (f);
+            if (err.isNotEmpty()) { showMessage ("Could not open the venue", err); return; }
+            afterProjectLoaded();
+        });
+    };
+    homePage->onRenameFile = [this] (const la::VenueEntry& v)
+    {
+        askText ("Rename venue", "The venue's name and its file.", v.name, [this, v] (const juce::String& name)
+        {
+            const auto to = la::venues::freeFile (v.file.getParentDirectory(), name);
+            if (v.file == processor.projectFile)
+            {
+                processor.venueName = name;
+                const auto err = processor.saveProject (to);
+                if (err.isNotEmpty()) { showMessage ("Not renamed", err); return; }
+                if (to != v.file) v.file.deleteFile();
+            }
+            else
+            {
+                auto x = juce::XmlDocument::parse (v.file);
+                if (x == nullptr) { showMessage ("Not renamed", v.file.getFileName() + " could not be read."); return; }
+                if (auto* ve = x->getChildByName ("Venue")) ve->setAttribute ("name", name);
+                if (! x->writeTo (to)) { showMessage ("Not renamed", "Could not write " + to.getFullPathName()); return; }
+                if (to != v.file) v.file.deleteFile();
+            }
+            la::venues::renamed (v.file, to);
+            unsaved = processor.projectChanged();
+            updateStatuses();
+            homePage->rescanVenues();
+        });
+    };
+    homePage->onDuplicateFile = [this] (const la::VenueEntry& v)
+    {
+        askText ("Duplicate venue", "A copy of the venue with all its sessions, under a new name.", v.name + " (copy)", [this, v] (const juce::String& name)
+        {
+            auto x = juce::XmlDocument::parse (v.file);
+            if (x == nullptr) { showMessage ("Not copied", v.file.getFileName() + " could not be read."); return; }
+            if (auto* ve = x->getChildByName ("Venue")) ve->setAttribute ("name", name);
+            const auto to = la::venues::freeFile (v.file.getParentDirectory(), name);
+            if (! x->writeTo (to)) { showMessage ("Not copied", "Could not write " + to.getFullPathName()); return; }
+            homePage->rescanVenues();
+        });
+    };
+    homePage->onDeleteFile = [this] (const juce::File& f)
+    {
+        juce::Component::SafePointer<LiveAlignEditor> safe (this);
+        const bool open = f == processor.projectFile;
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::WarningIcon, "Delete venue",
+                                          "Move \"" + f.getFileNameWithoutExtension() + "\" to the trash, with all its sessions?"
+                                              + (open ? juce::String ("\n\nIt stays open here, unsaved, until you save it again or open another venue.") : juce::String()),
+                                          "Delete", "Cancel", this),
+                                      [safe, f, open] (int r)
+                                      {
+                                          if (safe == nullptr || r != 1) return;
+                                          if (! f.moveToTrash()) { safe->showMessage ("Not deleted", "Could not move " + f.getFullPathName() + " to the trash."); return; }
+                                          la::venues::forget (f);
+                                          if (open) safe->processor.projectFile = juce::File();
+                                          safe->unsaved = safe->processor.projectChanged() || open;
+                                          safe->updateStatuses();
+                                          safe->homePage->rescanVenues();
+                                      });
+    };
     homePage->onSave = [this] { saveProject (false); };
     homePage->onSaveAs = [this] { saveProject (true); };
     homePage->onReport = [this] { showPage ((int) Page::TuningReport); };
@@ -124,6 +195,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     roomPage->onChanged = [this] { generator.sync(); updateStatuses(); };
     roomPage->onGuided = [this] (GuidedSource& s) { openGuided (s); };
     roomPage->onOpenPlan = [this] { showPage ((int) Page::Plan); };
+    roomPage->onOpenVenue = [this] { showPage ((int) Page::Venue); };
     roomPage->askText = [this] (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)> done)
     {
         askText (title, {}, initial, std::move (done));
@@ -140,6 +212,48 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     };
     addChildComponent (*planPage);
 
+    coveragePage = std::make_unique<CoveragePage> (p);
+    coveragePage->onChanged = [this] { generator.sync(); levelPage->refresh(); updateStatuses(); };
+    coveragePage->onGuided = [this] (GuidedSource& s) { openGuided (s); };
+    coveragePage->onOpenLevel = [this] { showPage ((int) Page::Level); };
+    coveragePage->onOpenPlan = [this] { showPage ((int) Page::Plan); };
+    coveragePage->setSnapshot (snap);
+    addChildComponent (*coveragePage);
+    headroomPage = std::make_unique<HeadroomPage> (p);
+    headroomPage->onChanged = [this] { generator.sync(); updateStatuses(); };
+    headroomPage->onOpenVenue = [this] { showPage ((int) Page::Venue); };
+    headroomPage->setSnapshot (snap);
+    addChildComponent (*headroomPage);
+    listeningPage = std::make_unique<ListeningPage> (p);
+    listeningPage->onChanged = [this] { roomPage->refresh(); updateStatuses(); };
+    listeningPage->onRemeasure = [this] (const juce::String& point) { showPage ((int) Page::Room); roomPage->remeasurePoint (point); };
+    addChildComponent (*listeningPage);
+
+    undoButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\x86\xb6")));
+    redoButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\x86\xb7")));
+    undoButton.setTooltip ("Undo the last change: EQ, trims, delays, speakers, points, venue values (Cmd/Ctrl+Z)");
+    redoButton.setTooltip ("Redo (Cmd/Ctrl+Shift+Z)");
+    undoButton.onClick = [this] { undo(); };
+    redoButton.onClick = [this] { redo(); };
+    addChildComponent (undoButton);
+    addChildComponent (redoButton);
+    helpButton.setTooltip ("Help: how to do this step, what anything on the screen is, the glossary, the tour");
+    helpButton.onClick = [this] { showHelpMenu(); };
+    addAndMakeVisible (helpButton);
+
+    venuePage = std::make_unique<VenueDetailsPage> (p);
+    venuePage->onChanged = [this] { if (roomPage != nullptr) roomPage->refresh(); acousticsPage->refresh(); updateStatuses(); };
+    venuePage->onRecheck = [this] { if (homePage->onRecheck) homePage->onRecheck(); };
+    addChildComponent (*venuePage);
+    for (int i = 0; i < 3; ++i)
+    {
+        tabButtons[i].setRadioGroupId (8501);
+        tabButtons[i].setClickingTogglesState (true);
+        tabButtons[i].setConnectedEdges ((i > 0 ? juce::Button::ConnectedOnLeft : 0) | (i < 2 ? juce::Button::ConnectedOnRight : 0));
+        tabButtons[i].onClick = [this, i] { if (tabButtons[i].getToggleState()) showPage (tabPage (i)); };
+        addChildComponent (tabButtons[i]);
+    }
+
     lockerPage = std::make_unique<MicLockerPage> (p);
     lockerPage->onLoadCal = [this] (const juce::String& id, int angle) { loadLockerCal (id, angle); };
     lockerPage->onChanged = [this] { micPage->refreshChoices(); pickerMics = -1; refreshMicPicker(); };
@@ -149,6 +263,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     settingsPage->onLayoutChanged = [this] { layoutPanes(); };
     settingsPage->onPrefsChanged = [this] { applyPrefs(); };
     settingsPage->onVenueChanged = [this] { roomPage->refresh(); levelPage->refresh(); acousticsPage->refresh(); updateStatuses(); };
+    settingsPage->onShowTour = [this] { showTour (0); };
     addChildComponent (*settingsPage);
     addChildComponent (*roomPage);
 
@@ -159,6 +274,8 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     acousticsPage->onChanged = [this] { updateStatuses(); if (roomPage != nullptr) roomPage->refresh(); };
     acousticsPage->onGuided = [this] (GuidedSource& s) { openGuided (s); };
     acousticsPage->onOpenPlan = [this] { showPage ((int) Page::Plan); };
+    acousticsPage->onOpenVenue = [this] { showPage ((int) Page::Venue); };
+    acousticsPage->onEditSpeakers = [this] { showPage ((int) Page::Speakers); };
     addChildComponent (*acousticsPage);
     levelPage = std::make_unique<LevelPage> (p);
     levelPage->onChanged = [this] { generator.sync(); updateStatuses(); };
@@ -170,6 +287,16 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     sheetPage = std::make_unique<SheetPage> (p);
     sheetPage->onChanged = [this] { updateStatuses(); };
     sheetPage->onExport = [this] (bool csv) { exportSheet (csv); };
+    sheetPage->onRollBack = [this] (int i)
+    {
+        if (i < 0 || i >= (int) processor.history.entries.size()) return;
+        const auto& e = processor.history.entries[(size_t) i];
+        juce::Component::SafePointer<LiveAlignEditor> safe (this);
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Roll back",
+                                          "Put every output's processing back as it was before " + e.output + ": " + e.what + " (" + e.when + ")?\n\n"
+                                              "Undo (Cmd/Ctrl+Z) brings it back again.", "Roll back", "Cancel", this),
+                                      [safe, i] (int r) { if (safe != nullptr && r == 1) safe->rollBackTo (i); });
+    };
     addChildComponent (*sheetPage);
     recheck = std::make_unique<RecheckGuide> (p);
     recheck->setSnapshot (snap);
@@ -193,7 +320,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         addChildComponent (*panes[i]);
     }
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch })
+                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel })
         addChildComponent (*c);
 
     micPicker.setTooltip ("Which mic the graphs and sound level show, or the average of all mics");
@@ -250,6 +377,12 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
             juce::Component::SafePointer<LiveAlignEditor> safe (this);
             juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->offerRecovery(); });
         }
+    }
+    // the first time LiveAlign runs: the tour
+    if (processor.isStandalone() && la::UserPrefs::get ("tourShown") != "1")
+    {
+        juce::Component::SafePointer<LiveAlignEditor> safe (this);
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->tour == nullptr) safe->showTour (0); });
     }
     startTimerHz (30);
 }
@@ -329,6 +462,27 @@ void LiveAlignEditor::showPage (int page)
     if (spk) speakerPage->setMode (page == (int) Page::Speakers ? 0 : page == (int) Page::Response ? 1 : page == (int) Page::Crossover ? 2 : 3);
     roomPage->setVisible (page == (int) Page::Room);
     planPage->setVisible (page == (int) Page::Plan);
+    venuePage->setVisible (page == (int) Page::Venue);
+    coveragePage->setVisible (page == (int) Page::Coverage);
+    headroomPage->setVisible (page == (int) Page::Headroom);
+    listeningPage->setVisible (page == (int) Page::Listening);
+    if (page == (int) Page::Coverage) coveragePage->refresh();
+    if (page == (int) Page::Headroom) headroomPage->refresh();
+    if (page == (int) Page::Listening) listeningPage->refresh();
+    if (page == (int) Page::Venue) venuePage->refresh();
+    {
+        // the tabs of Venue and Mics
+        const bool venueTabs = la::ui::isVenueTab (page), micTabs = la::ui::isMicsTab (page);
+        static const char* vn[] = { "Details", "Speakers", "Plan and points" };
+        static const char* mn[] = { "This venue's mics", "Mic locker", "" };
+        for (int i = 0; i < 3; ++i)
+        {
+            tabButtons[i].setVisible ((venueTabs && i < 3) || (micTabs && i < 2));
+            tabButtons[i].setButtonText (venueTabs ? vn[i] : mn[i]);
+            tabButtons[i].setConnectedEdges ((i > 0 ? juce::Button::ConnectedOnLeft : 0) | (i < (venueTabs ? 2 : 1) ? juce::Button::ConnectedOnRight : 0));
+            tabButtons[i].setToggleState (tabPage (i) == page, juce::dontSendNotification);
+        }
+    }
     lockerPage->setVisible (page == (int) Page::Locker);
     settingsPage->setVisible (page == (int) Page::Settings);
     nav.setSettingsActive (page == (int) Page::Settings);
@@ -343,11 +497,11 @@ void LiveAlignEditor::showPage (int page)
     if (page == (int) Page::Plan) planPage->refresh();
     for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel, (juce::Component*) &fbWatch })
+                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel })
         c->setVisible (mon);
     micPicker.setVisible (false);   // monitoring has one mic
     // the generator strip: only on the pages that play test signals (monitoring listens to the programme)
-    generator.setVisible (page == (int) Page::Response || page == (int) Page::Level || page == (int) Page::Align || page == (int) Page::Room);
+    generator.setVisible (page == (int) Page::Response || page == (int) Page::Level || page == (int) Page::Coverage || page == (int) Page::Align || page == (int) Page::Room);
     if (! generator.isVisible() && page != (int) Page::Mics) { settings.genOn = false; generator.sync(); }
 
     if (page == (int) Page::Home) homePage->refresh();
@@ -468,8 +622,16 @@ void LiveAlignEditor::updateStatuses()
     {
         const int pts = processor.positions.size();
         set (Page::Plan, pts > 0 ? StepStatus::Ready : StepStatus::NotStarted, juce::String (pts) + (pts == 1 ? " point" : " points"),
-             pts > 0 ? juce::String (pts) + " listening points: " + processor.positions.joinIntoString (", ") + "."
-                     : juce::String ("Add the listening points (FOH, a few seats) where the mic goes."));
+             pts > 0 ? juce::String (pts) + " tuning points: " + processor.positions.joinIntoString (", ") + "."
+                     : juce::String ("Add the points (FOH, a few seats) where the mic goes."));
+        // Venue: the speakers and the points together
+        const bool sizeKnown = processor.plan.volume() > 0.0;
+        if (processor.speakers.changed) set (Page::Venue, StepStatus::Attention, "Speakers changed", "The system was marked as changed: measure the speakers again.");
+        else if (nSrc == 0) set (Page::Venue, StepStatus::NotStarted, "No speakers yet", "Add the speakers, the points and the room's details.");
+        else if (pts == 0) set (Page::Venue, StepStatus::InProgress, juce::String (nSrc) + (nSrc == 1 ? " speaker, no points" : " speakers, no points"),
+                                "Add the points where the mic goes (Plan and points).", 0.5f);
+        else set (Page::Venue, StepStatus::Ready, juce::String (nSrc) + (nSrc == 1 ? " speaker, " : " speakers, ") + juce::String (pts) + (pts == 1 ? " point" : " points"),
+                  juce::String (nSrc) + " speakers and " + juce::String (pts) + " tuning points" + (sizeKnown ? "." : "; the room's size is not entered (Details)."));
     }
 
     // ---- tuning ----
@@ -495,7 +657,13 @@ void LiveAlignEditor::updateStatuses()
         if (! sys.strayCrossoverFilters().isEmpty())
             set (Page::Crossover, StepStatus::Attention, "Remove filters", "No sub, so no crossover: remove the crossover filters left on "
                                                                              + sys.strayCrossoverFilters().joinIntoString (", ") + ".");
-        else set (Page::Crossover, StepStatus::None, "Not needed", "No sub in the system: no crossover to set.");
+        else
+        {
+            bool hp = false;
+            for (int i = 0; i < (int) sys.sources.size() && ! hp; ++i) { la::xo::Filter f; hp = sys.topHighPass (i, f); }
+            if (hp) set (Page::Crossover, StepStatus::InProgress, "Tops: high-pass", "No sub: add a protective high-pass to the tops.", 0.5f);
+            else set (Page::Crossover, StepStatus::None, "Not needed", "No sub in the system: no crossover to set.");
+        }
     }
     else if (sys.pairValid() && sys.pairInverted()) set (Page::Crossover, StepStatus::Attention, "Pair upside down", "HIGH is a sub and LOW a top: swap them.");
     else if (speakerPage->crossoverDone()) set (Page::Crossover, StepStatus::Ready, speakerPage->stepSummaryText (1), "Crossover set: " + speakerPage->stepSummaryText (1) + ".");
@@ -517,6 +685,27 @@ void LiveAlignEditor::updateStatuses()
         else if (before == 0) set (Page::Room, StepStatus::NotStarted, "Not started", "Measure the listening positions, then compare with the target.");
         else set (Page::Room, StepStatus::InProgress, juce::String (before) + (before == 1 ? " position" : " positions") + (after > 0 ? ", checking" : ""),
                   roomPage->nextHint(), after > 0 ? 0.85f : (rt.suggested.empty() ? 0.4f : 0.6f));
+    }
+    {
+        if (coveragePage->done()) set (Page::Coverage, StepStatus::Ready, processor.coverage.done && coveragePage->problems() > 0 ? "Accepted" : "Within spec",
+                                       "Each speaker covers its area" + juce::String (processor.coverage.before.empty() ? "." : " (re-aimed).")); 
+        else if (! coveragePage->measured()) set (Page::Coverage, StepStatus::NotStarted, "Needs Level balance", "Each speaker across the seats it covers, from Level balance.");
+        else set (Page::Coverage, StepStatus::Attention, juce::String (coveragePage->problems()) + " to re-aim", coveragePage->nextHint());
+    }
+    {
+        const int lv = headroomPage->verdictLevel();
+        if (lv < 0) set (Page::Headroom, StepStatus::NotStarted, "Not run", "Pink noise in steps up to the show level at FOH.");
+        else if (lv == 0) set (Page::Headroom, StepStatus::Ready, "Headroom OK", "Clean above the show level.");
+        else if (lv == 1) set (Page::Headroom, StepStatus::InProgress, "Little headroom", "Less headroom than wanted, or not run to the end.", 0.6f);
+        else set (Page::Headroom, StepStatus::Attention, "Short of the level", "The system cannot reach the show level cleanly.");
+    }
+    {
+        const auto& l = processor.listening;
+        const int heard = l.count (1) + l.count (2);
+        if (l.done) set (Page::Listening, StepStatus::Ready, "Done", "Listened at " + juce::String (heard) + " points" + (l.count (2) > 0 ? ", " + juce::String (l.count (2)) + " with notes." : "."));
+        else if (heard == 0) set (Page::Listening, StepStatus::NotStarted, "Not started", "Music you know, at each point, with the EQ in and bypassed.");
+        else set (Page::Listening, StepStatus::InProgress, juce::String (heard) + " of " + juce::String (processor.positions.size()) + " points",
+                  listeningPage->nextHint(), (float) heard / (float) juce::jmax (1, processor.positions.size()));
     }
     {
         const auto& fb = processor.feedback;
@@ -586,27 +775,28 @@ void LiveAlignEditor::refreshNext()
     juce::String what;
     auto pick = [&] (Page pg, const juce::String& w) { if (page < 0) { page = (int) pg; what = w; } };
     const auto& sys = processor.system;
+    if (sys.sources.empty()) pick (Page::Speakers, "add the speakers");
     if (micPage->nextHint().isNotEmpty()) pick (Page::Mics, micPage->nextHint());
     if (processor.positions.isEmpty()) pick (Page::Plan, "add the listening points");
     if (! speakerPage->responsesDone()) pick (Page::Response, "measure each speaker close up");
     for (const auto& s : sys.sources) if (s.polaritySummary() == la::polarity::Inverted) { pick (Page::Response, "fix " + s.name + "'s polarity and measure it again"); break; }
     if (! speakerPage->crossoverDone()) pick (Page::Crossover, "find the crossover");
     if (! levelPage->done()) pick (Page::Level, levelPage->nextHint().isNotEmpty() ? levelPage->nextHint().toLowerCase() : juce::String ("balance the levels"));
+    if (coveragePage->nextHint().isNotEmpty() && levelPage->readingsCount (false) > 0) pick (Page::Coverage, coveragePage->nextHint().toLowerCase());
     if (speakerPage->alignmentRequired() && ! speakerPage->alignmentsDone()) pick (Page::Align, "line up " + juce::String (sys.alignments.empty() ? "the fills or delays" : "the speakers"));
     if (! processor.room.acousticsFromSweeps() || acousticsPage->nextHint().isNotEmpty())
         pick (Page::Acoustics, acousticsPage->nextHint().isNotEmpty() ? acousticsPage->nextHint().toLowerCase() : juce::String ("sweep the room"));
+    if (! processor.room.tuned && roomPage->nextHint().startsWith ("Listen")) pick (Page::Listening, listeningPage->nextHint().toLowerCase());
     if (! processor.room.tuned) pick (Page::Room, roomPage->nextHint().isNotEmpty() ? roomPage->nextHint().toLowerCase() : juce::String ("EQ toward the target"));
+    if (headroomPage->nextHint().isNotEmpty()) pick (Page::Headroom, headroomPage->nextHint().toLowerCase());
+    if (listeningPage->nextHint().isNotEmpty()) pick (Page::Listening, listeningPage->nextHint().toLowerCase());
     if (la::sheet::enteredCount (sys) < (int) sys.sources.size()) pick (Page::Sheet, "enter the settings and tick them off");
     nav.setNext (page, what);
     homePage->setNext (page, what);
 }
 
-// Where venues and exports go by default: the folder in Settings (Reports and files), else Documents.
-static juce::File homeFolder()
-{
-    const juce::File f (la::UserPrefs::get ("venueFolder"));
-    return f.isDirectory() ? f : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
-}
+// Where venues and exports go by default: the folder in Settings (Reports and files), else Documents/LiveAlign Venues.
+static juce::File homeFolder() { return la::venues::folder (true); }
 
 // ---------------------------------------------------------------------------- pop-ups
 
@@ -1049,7 +1239,7 @@ void LiveAlignEditor::saveProject (bool askForFile)
         if (err.isNotEmpty()) showMessage ("Save failed", err);
         unsaved = false;
         updateStatuses();
-        homePage->repaint();
+        homePage->rescanVenues();
         return;
     }
     auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory()
@@ -1067,7 +1257,7 @@ void LiveAlignEditor::saveProject (bool askForFile)
         if (err.isNotEmpty()) safe->showMessage ("Save failed", err);
         safe->unsaved = false;
         safe->updateStatuses();
-        safe->homePage->repaint();
+        safe->homePage->rescanVenues();
     });
 }
 
@@ -1103,6 +1293,12 @@ void LiveAlignEditor::newSession()
 
 void LiveAlignEditor::afterProjectLoaded()
 {
+    refreshAllPages();
+    resetUndo();
+}
+
+void LiveAlignEditor::refreshAllPages()
+{
     micPage->refreshChoices();
     speakerPage->refreshChoices();
     planPage->refresh();
@@ -1112,6 +1308,12 @@ void LiveAlignEditor::afterProjectLoaded()
     monitorMicPage->refresh();
     homePage->refresh();
     settingsPage->refresh();
+    venuePage->refresh();
+    levelPage->refresh();
+    coveragePage->refresh();
+    headroomPage->refresh();
+    listeningPage->refresh();
+    sheetPage->refresh();
     generator.sync();
     tracesPanel.syncTarget();
     tracesPanel.refresh();
@@ -1130,6 +1332,14 @@ bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
 {
     const auto c = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
     if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { saveProject (false); return true; }
+    if (dynamic_cast<juce::TextEditor*> (getCurrentlyFocusedComponent()) == nullptr && standalone)
+    {
+        // undo and redo: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z (or Ctrl+Y)
+        if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier, 0)) { undo(); return true; }
+        if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)
+            || key == juce::KeyPress ('y', juce::ModifierKeys::commandModifier, 0)) { redo(); return true; }
+    }
+    if (key == juce::KeyPress (juce::KeyPress::F1Key)) { showHowTo(); return true; }
     if (key == juce::KeyPress::escapeKey)
     {
         if (la::StandaloneHooks::isFullScreen() && la::StandaloneHooks::isFullScreen()()) toggleFullScreen();
@@ -1150,6 +1360,13 @@ bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
 void LiveAlignEditor::timerCallback()
 {
     ++tick;
+    if (tick % 10 == 0 && standalone)
+    {
+        trackChanges();
+        undoButton.setEnabled (canUndo() || pendingFp.isNotEmpty());
+        redoButton.setEnabled (canRedo());
+    }
+    if (toastText.isNotEmpty() && la::clock::ms32() > toastUntil) { toastText.clear(); repaint(); }
     if (la::AppPrefs::get().serial != prefsSerial) applyPrefs();
     if (settings.theme.load() != appliedTheme) applyTheme (settings.theme.load());
     if (settings.paneCount.load() != laidOutCount || settings.paneLayout.load() != laidOutLayout) layoutPanes();
@@ -1163,6 +1380,7 @@ void LiveAlignEditor::timerCallback()
         {
             for (int i = 0; i < laidOutCount; ++i) panes[i]->update (snap);
             splPanel.update (snap);
+            if (snap.serial % 8 == 0) updateTunedPanel();
             // feedback watch: the newest spectrum of the monitoring mic
             if (fbWatch.watching() && snap.wfFrame != liveFbFrame && ! snap.wfLine.empty())
             {
@@ -1205,9 +1423,9 @@ void LiveAlignEditor::timerCallback()
         inputPanel.setLevels (processor.takeMicPeak (m), processor.micRmsDb (m), processor.takeRefPeak(), processor.refRmsDb());
         delayPanel.setReport (processor.analyzer.readDelayReport());
         // delay tracking: find the delay on the programme every 5 seconds
-        if (delayPanel.tracking() && settings.refSource.load() >= 1 && juce::Time::getMillisecondCounter() - lastTrackRequest > (juce::uint32) (1000.0 * la::AppPrefs::get().value ("trackSec")))
+        if (delayPanel.tracking() && settings.refSource.load() >= 1 && la::clock::ms32() - lastTrackRequest > (juce::uint32) (1000.0 * la::AppPrefs::get().value ("trackSec")))
         {
-            lastTrackRequest = juce::Time::getMillisecondCounter();
+            lastTrackRequest = la::clock::ms32();
             settings.requestFindDelay = true;
         }
         tracesPanel.refresh();
@@ -1219,7 +1437,7 @@ void LiveAlignEditor::timerCallback()
     runButton.setColour (juce::TextButton::buttonColourId, running ? pal().good : pal().warn);
     runButton.setColour (juce::TextButton::textColourOffId, pal().onAccent);
 
-    if (processor.analyzer.hasOverflowed()) overloadUntil = juce::Time::getMillisecondCounter() + 3000;
+    if (processor.analyzer.hasOverflowed()) overloadUntil = la::clock::ms32() + 3000;
 
     if (tick % 10 == 0)
     {
@@ -1251,7 +1469,7 @@ void LiveAlignEditor::timerCallback()
                 const int a = processor.activeCalAngle (fm);
                 if (a >= 0 && settings.selectedMic.load() < la::kAverageMic) s << "   CAL " << la::calAngleName (a);
             }
-            if (juce::Time::getMillisecondCounter() < overloadUntil) s << "   ANALYSIS BEHIND";
+            if (la::clock::ms32() < overloadUntil) s << "   ANALYSIS BEHIND";
         }
         panes[0]->setStatus (s);
     }
@@ -1276,12 +1494,36 @@ void LiveAlignEditor::paint (juce::Graphics& g)
     auto t = titleArea;
     g.setColour (p.text);
     g.setFont (font (19.0f, true));
-    g.drawText (pageName (shownPage), t.removeFromTop (26), juce::Justification::bottomLeft);
+    g.drawText (pageName (la::ui::navEntryOf (shownPage)), t.removeFromTop (26), juce::Justification::bottomLeft);
     g.setColour (p.textFaint);
     g.setFont (font (11.5f));
-    g.drawText (pageSubtitle (shownPage), t, juce::Justification::topLeft, true);
+    g.drawText ((isTuningStep (shownPage) ? "Tuning step " + juce::String (tuningStepNumber (shownPage)) + ": " : juce::String()) + pageSubtitle (shownPage),
+                t, juce::Justification::topLeft, true);
     g.setColour (p.border);
     g.drawHorizontalLine (titleArea.getBottom() + 6, (float) titleArea.getX(), (float) getWidth() - 12.0f);
+}
+
+void LiveAlignEditor::paintOverChildren (juce::Graphics& g)
+{
+    if (toastText.isEmpty() || la::clock::ms32() > toastUntil) return;
+    const auto& p = pal();
+    const auto f = font (13.0f, true);
+    const int w = juce::GlyphArrangement::getStringWidthInt (f, toastText) + 40;
+    auto r = juce::Rectangle<int> (w, 36).withCentre ({ NavRail::kWidth + (getWidth() - NavRail::kWidth) / 2, getHeight() - 96 });
+    g.setColour (p.panelRaised.withAlpha (0.97f));
+    g.fillRoundedRectangle (r.toFloat(), 8.0f);
+    g.setColour (p.accent);
+    g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 8.0f, 1.4f);
+    g.setColour (p.text);
+    g.setFont (f);
+    g.drawText (toastText, r, juce::Justification::centred);
+}
+
+void LiveAlignEditor::showToast (const juce::String& text)
+{
+    toastText = text;
+    toastUntil = la::clock::ms32() + 2600;
+    repaint();
 }
 
 void LiveAlignEditor::openGuided (GuidedSource& source)
@@ -1304,12 +1546,14 @@ void LiveAlignEditor::openGuided (GuidedSource& source)
     addAndMakeVisible (*guidedOverlay);
     guidedOverlay->setBounds (getLocalBounds());
     guidedOverlay->toFront (true);
-    guidedOverlay->grabKeyboardFocus();
+    if (guidedOverlay->isShowing()) guidedOverlay->grabKeyboardFocus();
 }
 
 void LiveAlignEditor::resized()
 {
     if (guidedOverlay != nullptr) guidedOverlay->setBounds (getLocalBounds());
+    if (tour != nullptr) tour->setBounds (getLocalBounds());
+    if (whatIsThis != nullptr) whatIsThis->setBounds (getLocalBounds());
     auto r = getLocalBounds();
     nav.setBounds (r.removeFromLeft (NavRail::kWidth));
     r.reduce (12, 10);
@@ -1322,6 +1566,8 @@ void LiveAlignEditor::resized()
         resetButton.setBounds (h.removeFromRight (100).withSizeKeepingCentre (100, 30));
         h.removeFromRight (8);
         runButton.setBounds (h.removeFromRight (100).withSizeKeepingCentre (100, 30));
+        h.removeFromRight (8);
+        helpButton.setBounds (h.removeFromRight (32).withSizeKeepingCentre (32, 30));
         h.removeFromRight (14);
         micPicker.setBounds (h.removeFromRight (240).withSizeKeepingCentre (240, 30));
         titleArea = h;
@@ -1329,6 +1575,36 @@ void LiveAlignEditor::resized()
     else
     {
         titleArea = header;
+    }
+    {
+        // undo and redo, at the right of the title (the monitoring page has its own controls there)
+        if (shownPage != (int) Page::Monitor)
+        {
+            auto hr = titleArea.removeFromRight (36).withSizeKeepingCentre (32, 30);
+            helpButton.setBounds (hr);
+            titleArea.removeFromRight (8);
+        }
+        const bool showUndo = standalone && shownPage != (int) Page::Monitor;
+        undoButton.setVisible (showUndo);
+        redoButton.setVisible (showUndo);
+        if (showUndo)
+        {
+            auto ur = titleArea.removeFromRight (76).withSizeKeepingCentre (76, 30);
+            redoButton.setBounds (ur.removeFromRight (36));
+            ur.removeFromRight (4);
+            undoButton.setBounds (ur.removeFromRight (36));
+            titleArea.removeFromRight (10);
+        }
+    }
+    {
+        // the tabs of Venue and Mics: on the right of the title
+        const int n = tabButtons[2].isVisible() ? 3 : tabButtons[0].isVisible() ? 2 : 0;
+        if (n > 0)
+        {
+            auto tr = titleArea.removeFromRight (juce::jmin (titleArea.getWidth() / 2, 150 * n)).withSizeKeepingCentre (juce::jmin (titleArea.getWidth() / 2, 150 * n), 30);
+            const int w = tr.getWidth() / n;
+            for (int i = 0; i < n; ++i) tabButtons[i].setBounds (i == n - 1 ? tr : tr.removeFromLeft (w));
+        }
     }
 
     if (generator.isVisible())
@@ -1343,6 +1619,10 @@ void LiveAlignEditor::resized()
     speakerPage->setBounds (r);
     roomPage->setBounds (r);
     planPage->setBounds (r);
+    venuePage->setBounds (r);
+    coveragePage->setBounds (r);
+    headroomPage->setBounds (r);
+    listeningPage->setBounds (r);
     lockerPage->setBounds (r);
     settingsPage->setBounds (r);
     for (auto* pg : std::initializer_list<juce::Component*> { feedbackPage.get(), acousticsPage.get(), monitorMicPage.get(), tuningReportPage.get(), monitorReportPage.get(),
@@ -1354,7 +1634,7 @@ void LiveAlignEditor::resized()
     paneArea = r;
     layoutPanes();
 
-    splPanel.setBounds (side.removeFromTop (196));
+    splPanel.setBounds (side.removeFromTop (184));
     side.removeFromTop (8);
     inputPanel.setBounds (side.removeFromTop (98));
     side.removeFromTop (8);
@@ -1362,7 +1642,286 @@ void LiveAlignEditor::resized()
     side.removeFromTop (8);
     eventPanel.setBounds (side.removeFromTop (90));
     side.removeFromTop (8);
-    fbWatch.setBounds (side.removeFromTop (juce::jmin (122, side.getHeight() / 2)));
+    fbWatch.setBounds (side.removeFromTop (juce::jmin (96, side.getHeight() / 2)));
+    side.removeFromTop (8);
+    tunedPanel.setBounds (side.removeFromTop (juce::jmin (80, side.getHeight() / 3)));
     side.removeFromTop (8);
     tracesPanel.setBounds (side);
+}
+
+// ---- undo, redo and the change history ----
+// Every third of a second the editable state is fingerprinted. A change that has settled (the same for two looks)
+// becomes an undo step, and what it did to the outputs' processing goes into the change history with the step it
+// was made on.
+void LiveAlignEditor::resetUndo()
+{
+    undoStack.clear();
+    redoStack.clear();
+    committedState = processor.undoState();
+    committedProc = la::ChangeLog::snapshot (processor.system);
+    committedFp = processor.undoFingerprint();
+    pendingFp.clear();
+    pendingTicks = 0;
+}
+
+void LiveAlignEditor::trackChanges()
+{
+    if (committedState == nullptr) { resetUndo(); return; }
+    if (guidedOverlay != nullptr) return;   // measuring: wait until it closes
+    const auto fp = processor.undoFingerprint();
+    if (fp == committedFp) { pendingFp.clear(); return; }
+    if (fp != pendingFp) { if (pendingFp.isEmpty()) pendingPage = shownPage; pendingFp = fp; pendingTicks = 0; return; }
+    if (++pendingTicks < 2) return;
+    // settled: the old state is an undo step
+    undoStack.push_back (std::move (committedState));
+    if (undoStack.size() > 40) undoStack.erase (undoStack.begin());
+    redoStack.clear();
+    logChanges (*committedProc, {});
+    committedState = processor.undoState();
+    committedProc = la::ChangeLog::snapshot (processor.system);
+    committedFp = fp;
+    pendingFp.clear();
+    pendingPage = -1;
+}
+
+void LiveAlignEditor::logChanges (const juce::XmlElement& procBefore, const juce::String& whyGiven)
+{
+    la::SpeakerSystem before = processor.system;
+    la::ChangeLog::restore (before, procBefore);
+    const auto changes = la::ChangeLog::diff (before, processor.system);
+    if (changes.empty()) return;
+    const int on = pendingPage >= 0 ? pendingPage : shownPage;   // the page the change was made on
+    const auto step = juce::String (pageName (on == (int) Page::Settings ? lastPage : on));
+    auto why = whyGiven;
+    if (why.isEmpty())
+    {
+        switch ((Page) on)
+        {
+            case Page::Level: why = "Level balance trim"; break;
+            case Page::Room: why = "Room EQ entered"; break;
+            case Page::Align: why = "Time alignment"; break;
+            case Page::Crossover: why = "Crossover set"; break;
+            case Page::Response: why = "Speaker response (polarity, protection)"; break;
+            case Page::Sheet: why = "Edited on the processor sheet"; break;
+            case Page::Speakers: why = "Speaker set-up"; break;
+            case Page::Coverage: why = "Re-aimed"; break;
+            default: why = "Edited"; break;
+        }
+    }
+    const auto when = LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
+    for (const auto& c : changes) processor.history.add (when, step, c.first, c.second, why, &procBefore);
+    sheetPage->refresh();
+}
+
+void LiveAlignEditor::restoreState (const juce::XmlElement& state, const juce::String& why)
+{
+    const auto procBefore = la::ChangeLog::snapshot (processor.system);
+    processor.restoreUndoState (state);
+    logChanges (*procBefore, why);
+    committedState = processor.undoState();
+    committedProc = la::ChangeLog::snapshot (processor.system);
+    committedFp = processor.undoFingerprint();
+    pendingFp.clear();
+    refreshAllPages();
+    speakerPage->refreshChoices();
+}
+
+void LiveAlignEditor::undo()
+{
+    trackChanges();
+    if (! pendingFp.isEmpty())   // a change still settling: make it a step first
+    {
+        pendingTicks = 2;
+        trackChanges();
+    }
+    if (undoStack.empty()) { showToast ("Nothing to undo."); return; }
+    auto state = std::move (undoStack.back());
+    undoStack.pop_back();
+    redoStack.push_back (processor.undoState());
+    restoreState (*state, "Undone");
+    showToast ("Undone.");
+}
+
+void LiveAlignEditor::redo()
+{
+    if (redoStack.empty()) { showToast ("Nothing to redo."); return; }
+    auto state = std::move (redoStack.back());
+    redoStack.pop_back();
+    undoStack.push_back (processor.undoState());
+    restoreState (*state, "Redone");
+    showToast ("Redone.");
+}
+
+// The processing as it was before a change in the history: every output put back (an undo step, so it can be undone).
+void LiveAlignEditor::rollBackTo (int i)
+{
+    auto& h = processor.history.entries;
+    if (i < 0 || i >= (int) h.size() || h[(size_t) i].before == nullptr) return;
+    undoStack.push_back (processor.undoState());
+    redoStack.clear();
+    const auto procBefore = la::ChangeLog::snapshot (processor.system);
+    const auto when = h[(size_t) i].when;
+    la::ChangeLog::restore (processor.system, *h[(size_t) i].before);
+    processor.system.syncLinks();
+    logChanges (*procBefore, "Rolled back to before " + when);
+    committedState = processor.undoState();
+    committedProc = la::ChangeLog::snapshot (processor.system);
+    committedFp = processor.undoFingerprint();
+    refreshAllPages();
+    speakerPage->refreshChoices();
+    showToast ("Rolled back to before the change of " + when + ".");
+}
+
+// The tuned response where the monitor mic stands: the latest Room EQ check there (else the average of the latest
+// round), for the comparison with the show.
+void LiveAlignEditor::updateTunedPanel()
+{
+    const auto& room = processor.room;
+    const bool after = room.count (true) > 0;
+    const auto& at = processor.monitorMic.position;
+    la::FreqTable ref;
+    juce::String name;
+    for (const auto& m : room.meas)
+        if (m.after == after && m.position == at && m.tf.freq.size() > 4) { ref = m.tf; name = at; }
+    if (ref.freq.empty() && room.count (after) > 0)
+    {
+        const auto avg = room.average (after);
+        const auto g = la::RoomTuning::grid();
+        for (size_t i = 0; i < g.size(); ++i) if (std::isfinite (avg[i])) { ref.freq.push_back (g[i]); ref.db.push_back (avg[i]); }
+        name = "the average of the points";
+    }
+    if (ref.freq.empty()) { tunedPanel.clear(); return; }
+    tunedPanel.update (snap, ref, name);
+}
+
+
+// ---- help ----
+void LiveAlignEditor::showHelpMenu()
+{
+    juce::PopupMenu m;
+    m.addItem (1, "How to: " + juce::String (pageName (shownPage)) + "   (F1)");
+    m.addItem (2, "What is this? (click anything)");
+    m.addItem (3, "Glossary...");
+    m.addSeparator();
+    m.addItem (4, "The tour");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&helpButton), [safe] (int r)
+    {
+        if (safe == nullptr) return;
+        if (r == 1) safe->showHowTo();
+        if (r == 2) safe->startWhatIsThis();
+        if (r == 3) safe->showGlossary();
+        if (r == 4) safe->showTour (0);
+    });
+}
+
+void LiveAlignEditor::showHowTo()
+{
+    juce::StringArray lines;
+    const auto steps = la::help::howTo (shownPage);
+    for (int i = 0; i < steps.size(); ++i) lines.add (juce::String (i + 1) + ".  " + steps[i]);
+    auto card = std::make_unique<HelpCard> ("How to: " + juce::String (pageName (shownPage)), lines.joinIntoString ("\n"), la::help::termsFor (shownPage), 460);
+    juce::CallOutBox::launchAsynchronously (std::move (card), helpButton.getScreenBounds(), nullptr);
+}
+
+void LiveAlignEditor::showGlossary()
+{
+    juce::CallOutBox::launchAsynchronously (std::make_unique<GlossaryView>(), helpButton.getScreenBounds(), nullptr);
+}
+
+void LiveAlignEditor::startWhatIsThis()
+{
+    whatIsThis = std::make_unique<WhatIsThisOverlay>();
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    whatIsThis->onPick = [safe] (juce::Point<int> pt)
+    {
+        juce::MessageManager::callAsync ([safe, pt]
+        {
+            if (safe == nullptr) return;
+            if (safe->whatIsThis != nullptr) { safe->removeChildComponent (safe->whatIsThis.get()); safe->whatIsThis.reset(); }
+            safe->helpAt (pt);
+        });
+    };
+    whatIsThis->onCancel = [safe]
+    {
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->whatIsThis != nullptr) { safe->removeChildComponent (safe->whatIsThis.get()); safe->whatIsThis.reset(); } });
+    };
+    addAndMakeVisible (*whatIsThis);
+    whatIsThis->setBounds (getLocalBounds());
+    whatIsThis->toFront (true);
+    if (whatIsThis->isShowing()) whatIsThis->grabKeyboardFocus();
+}
+
+// Help for whatever is at `pt`: its tooltip and the terms in it; on a page (a number or a graph), the page's terms.
+void LiveAlignEditor::helpAt (juce::Point<int> pt)
+{
+    juce::String title, body;
+    juce::StringArray terms;
+    for (auto* c = getComponentAt (pt); c != nullptr && c != this; c = c->getParentComponent())
+    {
+        juce::String tip;
+        if (auto* tc = dynamic_cast<juce::TooltipClient*> (c)) tip = tc->getTooltip();
+        if (tip.isEmpty()) continue;
+        body = tip;
+        if (auto* b = dynamic_cast<juce::Button*> (c)) title = b->getButtonText();
+        else if (auto* cb = dynamic_cast<juce::ComboBox*> (c)) title = cb->getText();
+        terms = la::help::termsIn (tip + " " + title);
+        break;
+    }
+    if (body.isEmpty())
+    {
+        // a number or a graph on a page: the page's own terms
+        title = juce::String (pageName (shownPage));
+        if (nav.getBounds().contains (pt)) body = "The steps, top to bottom: each shows where it stands, and NEXT marks the one to do now. Click one to go there.";
+        else body = juce::String (pageSubtitle (shownPage)).substring (0, 1).toUpperCase() + juce::String (pageSubtitle (shownPage)).substring (1) + ".";
+        terms = la::help::termsFor (shownPage);
+    }
+    if (title.isEmpty()) title = "What is this?";
+    auto card = std::make_unique<HelpCard> (title, body, terms, 440);
+    juce::CallOutBox::launchAsynchronously (std::move (card), localAreaToGlobal (juce::Rectangle<int> (pt.x - 6, pt.y - 6, 12, 12)), nullptr);
+}
+
+void LiveAlignEditor::showTour (int step)
+{
+    using Step = TourOverlay::Step;
+    auto navArea = [this] (int page) { return std::function<juce::Rectangle<int>()> ([this, page] { return nav.entryBounds (page).translated (nav.getX(), nav.getY()); }); };
+    std::vector<Step> steps;
+    steps.push_back ({ "Welcome to LiveAlign", "LiveAlign walks you through tuning a sound system: set up the venue and the mics, the tuning steps in the order a "
+                                               "system is tuned, then monitoring the show. It measures; you enter the settings in your own processor.", {} });
+    steps.push_back ({ "The steps", "Top to bottom, the way a system is tuned. Each step shows where it stands; NEXT marks the one to do now. Any step can be "
+                                    "done again at any time.", [this] { return nav.getBounds().withTrimmedTop (50).withTrimmedBottom (190); } });
+    steps.push_back ({ "Venue", "The room (what it is used for, its size, the temperature and humidity of the day, the targets), the speakers, and the plan "
+                                "with the points you measure at.", navArea ((int) Page::Venue) });
+    steps.push_back ({ "Mics", "Your measurement mics: inputs, calibration files, the reference (a loopback cable) and the pre-flight checks. The locker keeps "
+                               "every mic you own.", navArea ((int) Page::Mics) });
+    steps.push_back ({ "Tuning", "Speaker response, crossover, level balance, aim and coverage, time alignment, room acoustics, Room EQ, gain and headroom, the "
+                                 "listening check, the feedback test. Each measurement opens a guided pop-up that shows where the mic goes.", navArea ((int) Page::Response) });
+    steps.push_back ({ "The processor sheet and reports", "Every setting to enter in your processor, output by output, with the history of every change. The "
+                                                          "reports are PDFs of the tuning and the show.", navArea ((int) Page::Sheet) });
+    steps.push_back ({ "Help and undo", "The ? has how to do each step (F1), What is this? for anything on the screen, and the glossary. Cmd/Ctrl+Z undoes a "
+                                        "change; so do the arrows beside the ?.",
+                       [this]
+                       {
+                           auto r = helpButton.getBounds();
+                           if (undoButton.isVisible()) r = r.getUnion (undoButton.getBounds()).getUnion (redoButton.getBounds());
+                           return r;
+                       } });
+    steps.push_back ({ "Your venues", "The open venue and session. Click it for Home: the list of venues, the sessions, and where this venue stands.",
+                       [this] { return nav.venueArea().translated (nav.getX(), nav.getY()); } });
+    tour = std::make_unique<TourOverlay> (std::move (steps));
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    tour->onClose = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->closeTour(); }); };
+    addAndMakeVisible (*tour);
+    tour->setBounds (getLocalBounds());
+    tour->setStep (step);
+    tour->toFront (true);
+    if (tour->isShowing()) tour->grabKeyboardFocus();
+}
+
+void LiveAlignEditor::closeTour()
+{
+    if (tour == nullptr) return;
+    removeChildComponent (tour.get());
+    tour.reset();
+    la::UserPrefs::set ("tourShown", "1");
 }

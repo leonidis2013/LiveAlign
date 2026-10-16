@@ -6,7 +6,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 # Apple universal binary (Apple silicon + Intel) by default; Windows builds are x64.
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
 
-project(LiveAlign VERSION 0.18.0 LANGUAGES C CXX)
+project(LiveAlign VERSION 0.19.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +74,16 @@ if (LA_BUILD_TESTS)
     add_executable(AnalysisTests Tests/AnalysisTests.cpp)
     target_include_directories(AnalysisTests PRIVATE Source)
     add_test(NAME AnalysisTests COMMAND AnalysisTests)
+
+    # the tuning logic with JUCE's core: level balance, the sheet, prefs, coverage, headroom, history, venue list
+    juce_add_console_app(AppTests PRODUCT_NAME "AppTests")
+    target_sources(AppTests PRIVATE Tests/AppTests.cpp)
+    target_include_directories(AppTests PRIVATE Source)
+    target_compile_definitions(AppTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=1
+                                               JucePlugin_VersionString="${PROJECT_VERSION}")
+    target_link_libraries(AppTests PRIVATE juce::juce_core juce::juce_events juce::juce_data_structures
+                                   PUBLIC juce::juce_recommended_config_flags)
+    add_test(NAME AppTests COMMAND AppTests)
 endif()
 
 # Local UI check: simulated PA + room, screenshots of every view (not built in CI).

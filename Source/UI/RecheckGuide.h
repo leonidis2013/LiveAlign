@@ -41,6 +41,13 @@ public:
         return proc.positions.isEmpty() ? juce::String ("FOH") : proc.positions[0];
     }
 
+    // Where a speaker is checked against the level balance: the first point the balance measured it at.
+    juce::String pointOf (int spk) const
+    {
+        for (const auto& p : proc.level.points) if (proc.level.latest (spk, p) != nullptr) return p;
+        return fohPoint();
+    }
+
     // ---- the points: 0 each speaker close up, 1 each speaker at FOH, 2 the whole system at FOH ----
     struct Task { int kind, spk; int id() const { return kind * 100 + spk; } };
     std::vector<Task> tasks() const
@@ -64,9 +71,11 @@ public:
     int micFor (const Task& t) const
     {
         if (t.kind == 0) return proc.system.micFor (t.spk, proc.tuningMicCount());
-        for (int m = 0; m < proc.tuningMicCount(); ++m) if (proc.mics.position[(size_t) m] == fohPoint()) return m;
+        const auto pt = pointFor (t);
+        for (int m = 0; m < proc.tuningMicCount(); ++m) if (proc.mics.position[(size_t) m] == pt) return m;
         return 0;
     }
+    juce::String pointFor (const Task& t) const { return t.kind == 1 ? pointOf (t.spk) : fohPoint(); }
 
     juce::String guidedTitle() const override { return "Quick re-check"; }
 
@@ -96,10 +105,11 @@ public:
             }
             else
             {
-                sp.marker = foh;
-                sp.x = proc.plan.items[(size_t) foh].x;
-                sp.y = proc.plan.items[(size_t) foh].y;
-                sp.label = (t.kind == 1 ? sys.nameOf (t.spk) : juce::String ("Whole system")) + " at " + fohPoint();
+                const int mk = t.kind == 1 ? proc.plan.ensureMarker (pointFor (t)) : foh;
+                sp.marker = mk;
+                sp.x = proc.plan.items[(size_t) mk].x;
+                sp.y = proc.plan.items[(size_t) mk].y;
+                sp.label = (t.kind == 1 ? sys.nameOf (t.spk) : juce::String ("Whole system")) + " at " + pointFor (t);
             }
             if (sp.state == GuideSpot::Now)
             {
@@ -131,7 +141,7 @@ public:
         if (k < 0) { status = "Every point is checked."; return false; }
         const auto t = ts[(size_t) k];
         const int mic = micFor (t);
-        if (t.kind > 0) proc.setMicPosition (mic, fohPoint());
+        if (t.kind > 0) proc.setMicPosition (mic, pointFor (t));
         now = t;
         const int out = t.kind == 2 ? 0 : proc.system.sources[(size_t) t.spk].output;
         const bool ok = runner.start (out, mic, t.kind == 0 ? proc.speakerAim : -1, [this, t] (const MeasureRunner::Result& r) { finished (t, r); });
@@ -200,7 +210,7 @@ private:
         // a re-measured point replaces its earlier lines
         const auto who = t.kind == 2 ? juce::String ("Whole system") : proc.system.nameOf (t.spk);
         auto& lines = proc.recheck.lines;
-        const auto tag = t.kind == 0 ? who + " close up" : who + " at " + fohPoint();
+        const auto tag = t.kind == 0 ? who + " close up" : who + " at " + pointFor (t);
         lines.erase (std::remove_if (lines.begin(), lines.end(), [&tag] (const Recheck::Line& l) { return l.text.startsWith (tag); }), lines.end());
         auto f1 = [] (double v) { return (v >= 0.0 ? "+" : "") + juce::String (v, 1); };
         const double minCoh = juce::jmax (0.2f, proc.settings.coherenceBlank.load());
@@ -222,7 +232,7 @@ private:
         }
         else if (t.kind == 1)
         {
-            const auto* was = proc.level.latest (t.spk, fohPoint());
+            const auto* was = proc.level.latest (t.spk, pointFor (t));
             const auto& s = proc.system.sources[(size_t) t.spk];
             if (was == nullptr) add (0, tag + ": measured (no level balance there to compare with).");
             else

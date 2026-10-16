@@ -10,6 +10,11 @@
 #include "UI/MicSetupPage.h"
 #include "UI/SpeakersPage.h"
 #include "UI/PlanPage.h"
+#include "UI/VenuePage.h"
+#include "UI/CoveragePage.h"
+#include "UI/HeadroomPage.h"
+#include "UI/ListeningPage.h"
+#include "UI/Help.h"
 #include "UI/RoomPage.h"
 #include "UI/GuidedMeasure.h"
 #include "UI/FeedbackPage.h"
@@ -33,6 +38,7 @@ public:
     ~LiveAlignEditor() override;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
     void mouseDown (const juce::MouseEvent&) override { grabKeyboardFocus(); }
@@ -49,6 +55,7 @@ public:
     la::ui::MicSetupPage& micPageForPreview() { return *micPage; }
     la::ui::MicLockerPage& lockerPageForPreview() { return *lockerPage; }
     la::ui::SettingsPage& settingsPageForPreview() { return *settingsPage; }
+    la::ui::VenueDetailsPage& venuePageForPreview() { return *venuePage; }
     void applyThemeForPreview() { applyTheme (settings.theme.load()); }
     la::ui::RecheckGuide& recheckForPreview() { return *recheck; }
     void exportReportTo (bool monitoring, const juce::File& f);   // without the file chooser (local screenshot tool)
@@ -81,6 +88,22 @@ private:
     void toggleGenerator();
     void toggleFullScreen();
     void showMessage (const juce::String& title, const juce::String& text);
+    void showToast (const juce::String& text);   // a short note at the bottom that fades on its own
+    juce::String toastText;
+    juce::uint32 toastUntil = 0;
+    juce::TextButton undoButton, redoButton, helpButton { "?" };
+    std::unique_ptr<la::ui::WhatIsThisOverlay> whatIsThis;
+    std::unique_ptr<la::ui::TourOverlay> tour;
+    void showHelpMenu();
+    void showHowTo();
+    void startWhatIsThis();
+    void helpAt (juce::Point<int> pt);
+    void showGlossary();
+public:
+    void showTour (int step = 0);
+    void closeTour();
+    bool tourShowing() const { return tour != nullptr; }
+private:
     void askText (const juce::String& title, const juce::String& message, const juce::String& initial,
                   std::function<void (const juce::String&)> done);
 
@@ -106,6 +129,39 @@ private:
     std::unique_ptr<la::ui::SpeakersPage> speakerPage;
     std::unique_ptr<la::ui::RoomPage> roomPage;
     std::unique_ptr<la::ui::PlanPage> planPage;
+    std::unique_ptr<la::ui::VenueDetailsPage> venuePage;
+    std::unique_ptr<la::ui::CoveragePage> coveragePage;
+    std::unique_ptr<la::ui::HeadroomPage> headroomPage;
+    std::unique_ptr<la::ui::ListeningPage> listeningPage;
+
+    // undo / redo and the change history (see trackChanges)
+    std::vector<std::unique_ptr<juce::XmlElement>> undoStack, redoStack;
+    std::unique_ptr<juce::XmlElement> committedState, committedProc;
+    juce::String committedFp, pendingFp;
+    int pendingTicks = 0, pendingPage = -1;
+    void resetUndo();
+    void trackChanges();
+    void logChanges (const juce::XmlElement& procBefore, const juce::String& why);
+    void restoreState (const juce::XmlElement& state, const juce::String& why);
+    void refreshAllPages();
+public:
+    void undo();
+    void redo();
+    bool canUndo() const { return ! undoStack.empty(); }
+    void undoTickForPreview() { trackChanges(); }
+    bool canRedo() const { return ! redoStack.empty(); }
+    void rollBackTo (int historyEntry);
+    la::ui::CoveragePage& coveragePageForPreview() { return *coveragePage; }
+    la::ui::HeadroomPage& headroomPageForPreview() { return *headroomPage; }
+    la::ui::ListeningPage& listeningPageForPreview() { return *listeningPage; }
+private:
+    juce::TextButton tabButtons[3];
+    int tabPage (int i) const
+    {
+        using la::ui::Page;
+        if (la::ui::isMicsTab (shownPage)) return i == 0 ? (int) Page::Mics : (int) Page::Locker;
+        return i == 0 ? (int) Page::Venue : i == 1 ? (int) Page::Speakers : (int) Page::Plan;
+    }
     std::unique_ptr<la::ui::MicLockerPage> lockerPage;
     std::unique_ptr<la::ui::SettingsPage> settingsPage;
     std::unique_ptr<la::ui::FeedbackPage> feedbackPage;
@@ -133,6 +189,8 @@ private:
     la::ui::TracesPanel tracesPanel;
     la::ui::EventPanel eventPanel;
     la::ui::FeedbackWatchPanel fbWatch;
+    la::ui::TunedPanel tunedPanel;
+    void updateTunedPanel();
     la::fb::Detector liveFb { { 80.0, 12000.0, 15.0, 18, 3, 1.0 / 12.0 } };   // stricter than the feedback test: music has peaks too
     juce::uint64 liveFbFrame = 0;
     juce::uint32 lastTrackRequest = 0;

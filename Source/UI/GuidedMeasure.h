@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include "../Clock.h"
 // Guided measuring: a pop-up over the page with the venue plan, the point to measure highlighted (the mic, where it
 // goes and how it is aimed), one big button (Measure, then Next point), a short count-in before the noise starts and
 // the time left while it measures. Every measurement goes through it: Speaker response, Level balance, Time
@@ -9,6 +10,7 @@
 // mic) is its "First:" line. The page does the measuring; this only shows the way through it.
 #include <functional>
 #include "PlanPage.h"
+#include "../ProcessorSheet.h"
 #include "../UpdateChecker.h"
 
 namespace la::ui
@@ -41,6 +43,9 @@ public:
     enum AimKind { NoAim = -1, SpeakerAim = 0, RoomAim = 1 };
     virtual int guidedAimKind() const { return NoAim; }
     virtual int guidedAimMic() const { return guidedMic(); }
+
+    // Measures with the processing in place: the settings worked out so far must be in the processor first.
+    virtual bool guidedNeedsProcessor() const { return false; }
 
     // Every measurement is guided now: the pop-up is the one way to measure.
     static bool enabled() { return true; }
@@ -100,6 +105,18 @@ public:
         close.setButtonText ("Close");
         close.onClick = [this] { closeNow(); };
         addAndMakeVisible (close);
+        enteredButton.setButtonText ("They're entered");
+        enteredButton.setTooltip ("The settings on the processor sheet are in the processor: ticks them on the sheet");
+        enteredButton.onClick = [this]
+        {
+            sheet::tickAll (proc.system);
+            proc.system.syncLinks();
+            enteredButton.setVisible (false);
+            resized();
+            repaint();
+            if (onChanged) onChanged();
+        };
+        addChildComponent (enteredButton);
 
         proc.plan.placeMissing ((int) proc.system.sources.size(), proc.tuningMicCount());
         reload();
@@ -161,6 +178,10 @@ public:
             g.setFont (font (14.5f, true));
         }
         auto howTo = source.guidedHowTo();
+        // measuring with the processing in place: what is not entered yet comes first
+        if (const auto pend = pendingSettings(); ! pend.isEmpty())
+            howTo = "First: enter the processor settings for " + pend.joinIntoString (", ") + " (Processor sheet), then press They're entered. "
+                    "This step measures with them in place.";
         // the interface or the wiring changed since this session's checks: say so before anything else
         if (proc.checks.setup.isNotEmpty() && proc.checks.setup != proc.setupFingerprint() && ! howTo.startsWith ("First:"))
             howTo = "First: the wiring changed since this session's checks (" + proc.setupChanges().joinIntoString ("; ") + "). Run the pre-flight on Mics, or carry on.";
@@ -186,7 +207,7 @@ public:
         {
             fill = source.guidedProgress();
             line = source.guidedPhase();
-            const double el = (juce::Time::getMillisecondCounterHiRes() - measureStart) / 1000.0;
+            const double el = (la::clock::ms() - measureStart) / 1000.0;
             if (fill > 0.08f && el > 1.0)
                 line << "   about " << juce::jmax (1, juce::roundToInt (el * (1.0 - fill) / fill)) << " s left";
             lineCol = p.accent;
@@ -204,7 +225,7 @@ public:
         }
         else
         {
-            line = message.isNotEmpty() ? message : juce::String ("Put the mic in place, then press Measure.");
+            line = message.isNotEmpty() ? message : placeLine();
             lineCol = message.isNotEmpty() ? p.warn : p.textDim;
         }
         g.setColour (lineCol);
@@ -287,7 +308,11 @@ public:
             buttons.removeFromLeft (12);
         }
         skip.setBounds (buttons.removeFromLeft (150).withSizeKeepingCentre (150, 34));
+        enteredButton.setVisible (! pendingSettings().isEmpty());
+        if (enteredButton.isVisible()) enteredButton.setBounds (buttons.removeFromLeft (170).withSizeKeepingCentre (170, 34));
     }
+
+    juce::StringArray pendingSettings() const { return source.guidedNeedsProcessor() ? sheet::pending (proc.system) : juce::StringArray(); }
 
     bool keyPressed (const juce::KeyPress& k) override
     {
@@ -323,7 +348,7 @@ private:
     enum class State { Ready, CountIn, Measuring, Done };
     static constexpr double kCountIn = 3.0;
 
-    double countInLeft() const { return juce::jmax (0.0, kCountIn - (juce::Time::getMillisecondCounterHiRes() - countInStart) / 1000.0); }
+    double countInLeft() const { return juce::jmax (0.0, kCountIn - (la::clock::ms() - countInStart) / 1000.0); }
 
     bool problem() const
     {
@@ -331,6 +356,20 @@ private:
         return false;
     }
 
+    // "Mic 2 to Front Left, Mic 1 to FOH, then press Measure."
+    juce::String placeLine() const
+    {
+        juce::StringArray parts;
+        for (const auto& sp : spots)
+        {
+            if (sp.state != GuideSpot::Now || sp.label.isEmpty()) continue;
+            if (sp.mic >= 0) parts.add (proc.mics.nameOf (sp.mic) + " to " + sp.label);
+            else parts.add ("the mic to " + sp.label);
+        }
+        if (parts.isEmpty()) return "Put the mic in place, then press Measure.";
+        auto t = parts.joinIntoString (", ");
+        return t.substring (0, 1).toUpperCase() + t.substring (1) + ", then press Measure.";
+    }
     bool allDone() const
     {
         for (const auto& sp : spots) if (sp.state == GuideSpot::Now) return false;
@@ -454,7 +493,7 @@ private:
     {
         message.clear();
         state = State::CountIn;
-        countInStart = juce::Time::getMillisecondCounterHiRes();
+        countInStart = la::clock::ms();
         refreshButtons();
         repaint();
     }
@@ -471,7 +510,7 @@ private:
             if (source.guidedStart())
             {
                 state = State::Measuring;
-                measureStart = juce::Time::getMillisecondCounterHiRes();
+                measureStart = la::clock::ms();
             }
             else
             {
@@ -494,7 +533,7 @@ private:
     LiveAlignProcessor& proc;
     GuidedSource& source;
     PlanCanvas canvas;
-    juce::TextButton primary, again, skip, close;
+    juce::TextButton primary, again, skip, close, enteredButton;
     juce::ComboBox micPicker, aimPicker;
     juce::Rectangle<int> micLabel, aimLabel, keysLine;
     juce::Rectangle<int> card, header, instr, progressArea, dotsArea;

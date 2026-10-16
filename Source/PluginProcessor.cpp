@@ -5,6 +5,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "StandaloneHooks.h"
+#include "VenueLibrary.h"
 
 // The app takes up to 16 inputs (mics + reference) and 8 outputs; inside a host the plug-in starts as stereo.
 juce::AudioProcessor::BusesProperties LiveAlignProcessor::defaultBuses()
@@ -309,9 +310,12 @@ juce::String LiveAlignProcessor::setupFingerprint() const
 
 void LiveAlignProcessor::syncPositionsWithPlan()
 {
+    // every point on the plan is a tuning point, a monitoring point, or both
     for (const auto& it : plan.items)
-        if (it.kind == la::PlanItem::Marker && it.text.isNotEmpty() && ! positions.contains (it.text)) positions.add (it.text);
+        if (it.kind == la::PlanItem::Marker && it.text.isNotEmpty() && ! positions.contains (it.text) && ! monitorPoints.contains (it.text)) positions.add (it.text);
+    if (monitorMic.position.isNotEmpty()) monitorPoints.addIfNotAlreadyThere (monitorMic.position);
     for (const auto& p : positions) plan.ensureMarker (p);
+    for (const auto& p : monitorPoints) plan.ensureMarker (p);
     // each tuning mic sits on its position's marker
     for (int m = 0; m < juce::jmin (settings.micCount.load(), la::kMaxMics); ++m)
     {
@@ -330,6 +334,7 @@ void LiveAlignProcessor::renamePosition (const juce::String& from, const juce::S
     const int i = positions.indexOf (from);
     if (i >= 0) { if (positions.contains (t)) positions.remove (i); else positions.set (i, t); }
     for (auto& p : mics.position) if (p == from) p = t;
+    if (const int k = monitorPoints.indexOf (from); k >= 0) { if (monitorPoints.contains (t)) monitorPoints.remove (k); else monitorPoints.set (k, t); }
     if (auto it = positionAim.find (from); it != positionAim.end()) { const int a = it->second; positionAim.erase (it); positionAim[t] = a; }
     for (auto& m : room.meas) if (m.position == from) m.position = t;
     for (auto& w : room.sweeps) if (w.position == from) w.position = t;
@@ -342,6 +347,8 @@ void LiveAlignProcessor::renamePosition (const juce::String& from, const juce::S
 void LiveAlignProcessor::removePosition (const juce::String& name)
 {
     positions.removeString (name);
+    monitorPoints.removeString (name);
+    if (monitorMic.position == name) monitorMic.position.clear();
     for (auto& p : mics.position) if (p == name) p.clear();
     positionAim.erase (name);
     room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [&name] (const la::RoomMeasurement& m) { return m.position == name; }), room.meas.end());
@@ -643,6 +650,9 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::sessionBody() const
     feedback.save (*b);
     asFound.save (*b);
     splLog.save (*b);
+    coverage.save (*b);
+    headroom.save (*b);
+    listening.save (*b);
     if (monitorModeOn) d->setAttribute ("mic0", tuningSlot.delay);   // the tuning mic's, not the monitor mic's
     return b;
 }
@@ -670,12 +680,17 @@ void LiveAlignProcessor::loadSessionBody (const juce::XmlElement* b)
     feedback.load (b);
     asFound.load (b);
     splLog.load (b);
+    coverage.load (b);
+    headroom.load (b);
+    listening.load (b);
     for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
     if (b == nullptr) return;
     if (const auto* d = b->getChildByName ("Delays"))
         for (int m = 0; m < la::kMaxMics; ++m)
             settings.micDelayMs[m] = (float) d->getDoubleAttribute ("mic" + juce::String (m), 0.0);
     checks.load (*b);
+    if (std::isfinite (checks.tempC)) settings.temperatureC = juce::jlimit (-20.0f, 50.0f, checks.tempC);
+    if (std::isfinite (checks.humidity)) settings.humidity = juce::jlimit (0.0f, 100.0f, checks.humidity);
     traces.load (*b);
     settings.requestResetAverages = true;
     settings.requestResetLeq = true;
@@ -693,7 +708,12 @@ void LiveAlignProcessor::newSession (const juce::String& name)
     auto keepDelays = sessionBody();
     sessions.push_back (std::move (s));
     current = (int) sessions.size() - 1;
+    const auto tunedC = checks.tunedTempC, tunedH = checks.tunedHumidity;   // the conditions the tuning was done in carry on
+    const auto tunedOn = checks.tunedConditionsOn;
     loadSessionBody (nullptr);
+    checks.tunedTempC = tunedC;
+    checks.tunedHumidity = tunedH;
+    checks.tunedConditionsOn = tunedOn;
     if (const auto* d = keepDelays->getChildByName ("Delays"))
         for (int m = 0; m < la::kMaxMics; ++m)
             settings.micDelayMs[m] = (float) d->getDoubleAttribute ("mic" + juce::String (m), 0.0);
@@ -744,6 +764,10 @@ void LiveAlignProcessor::resetVenue()
     feedback = {};
     asFound = {};
     splLog.load (nullptr);
+    coverage = {};
+    headroom = {};
+    listening = {};
+    history.entries.clear();
     venueName = "Untitled venue";
     venueNotes.clear();
     projectFile = juce::File();
@@ -752,6 +776,7 @@ void LiveAlignProcessor::resetVenue()
     aimOverrideValue = -1;
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     positions = { "FOH", "Centre", "Rear", "Balcony" };
+    monitorPoints = { "FOH" };
     positionAim.clear();
     roomAim = la::Cal90;
     speakerAim = la::Cal0;
@@ -759,7 +784,17 @@ void LiveAlignProcessor::resetVenue()
     recheck = {};
     venuePrefs = {};
     speakers = {};
-    system = la::SpeakerSystem::defaults();
+    system = {};   // a new venue starts with no speakers: they are added on the Venue page
+    // and with nothing attached: one mic slot, no input link, no calibration, no sound level, the default reference
+    settings.micCount = 1;
+    for (int m = 0; m < la::kMaxMics; ++m)
+    {
+        settings.micInput[m] = m == 0 ? 0 : m + 1;
+        settings.micSplCalibrated[m] = false;
+        settings.micSplOffset[m] = 120.0f;
+    }
+    settings.refSource = 3;
+    settings.selectedMic = 0;
     plan = la::VenuePlan::defaults();
     checks = {};
     room.load (nullptr);   // a new venue: this computer's Room EQ defaults
@@ -783,10 +818,13 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     auto* venue = x->createNewChildElement ("Venue");
     venue->setAttribute ("name", venueName);
     venue->setAttribute ("notes", venueNotes);
+    // read by the venue list on Home without opening the whole file
+    venue->setAttribute ("sessions", (int) sessions.size());
+    venue->setAttribute ("tuned", room.tuned);
 
     auto* st = x->createNewChildElement ("Settings");
     settings.save (*st);
-    for (auto* a : { "theme", "currentTab" }) st->removeAttribute (a);   // preferences of this computer
+    for (const auto& a : la::Settings::userKeys()) st->removeAttribute (a);   // preferences of this computer
     for (int m = 0; m < la::kMaxMics; ++m) st->removeAttribute ("micDelayMs" + juce::String (m));   // per session
     if (monitorModeOn)   // the tuning mics as they are outside monitoring
     {
@@ -817,10 +855,16 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
         auto* e = pos->createNewChildElement ("Position");
         e->setAttribute ("name", p);
     }
+    for (const auto& p : monitorPoints)
+    {
+        auto* e = pos->createNewChildElement ("MonitorPoint");
+        e->setAttribute ("name", p);
+    }
     speakers.save (*x);
     system.save (*x);
     plan.save (*x);
     venuePrefs.save (*x);
+    history.save (*x);
 
     auto* list = x->createNewChildElement ("Sessions");
     list->setAttribute ("current", current);
@@ -852,8 +896,8 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     }
     if (const auto* st = x.getChildByName ("Settings"))
     {
-        settings.load (*st);
-        if (! st->hasAttribute ("theme")) settings.theme = theme;
+        settings.loadVenue (*st);   // the mics, inputs and reference; not this computer's analysis and display preferences
+        settings.theme = theme;
         settings.currentTab = tab;
     }
     settings.genOn = false;
@@ -867,13 +911,19 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
         speakerAim = la::calSlotFromDegrees (pos->getIntAttribute ("speakerAim", 0));
         for (const auto* p : pos->getChildWithTagNameIterator ("Position"))
             positions.add (p->getStringAttribute ("name"));
+        monitorPoints.clear();
+        for (const auto* p : pos->getChildWithTagNameIterator ("MonitorPoint"))
+            monitorPoints.add (p->getStringAttribute ("name"));
         for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     }
     speakers.load (x);
     system.load (x);
     plan.load (x);
     venuePrefs.load (x);
+    history.load (x);
     monitorMic.load (x);
+    // venues from before 0.19: the monitor mic's place (or FOH) is the monitoring point
+    if (monitorPoints.isEmpty()) monitorPoints.add (monitorMic.position.isNotEmpty() ? monitorMic.position : juce::String ("FOH"));
     // mics linked to the locker pick up their latest calibration from it
     for (int m = 0; m < la::kMaxMics; ++m)
         if (const auto* e = locker.find (mics.lockerId[(size_t) m]))
@@ -921,9 +971,12 @@ juce::String LiveAlignProcessor::saveProject (const juce::File& f)
 {
     const auto file = f.withFileExtension (projectExtension());
     auto x = createProjectXml();
+    const auto text = x->toString();
+    if (auto* v = x->getChildByName ("Venue")) v->setAttribute ("savedOn", juce::String (juce::Time::getCurrentTime().toMilliseconds()));
     if (! x->writeTo (file)) return "Could not write " + file.getFullPathName();
     projectFile = file;
-    savedProjectText = x->toString();
+    savedProjectText = text;
+    la::venues::noteUsed (file);
     return {};
 }
 
@@ -934,6 +987,7 @@ juce::String LiveAlignProcessor::openProject (const juce::File& f)
     loadProjectXml (*x);
     projectFile = f;
     savedProjectText = createProjectXml()->toString();
+    la::venues::noteUsed (f);
     return {};
 }
 
@@ -951,13 +1005,18 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     const auto keepMics = mics;
     const auto keepCals = cals;
     const auto keepPositions = positions;
+    const auto keepMonitorPoints = monitorPoints;
     const auto keepAim = positionAim;
     const int keepRoomAim = roomAim, keepSpeakerAim = speakerAim;
     const auto keepPlan = plan;
     auto keepMonitor = monitorMic;
     if (monitorModeOn) { keepMonitor.delayMs = settings.micDelayMs[0].load(); keepMonitor.splOffset = settings.micSplOffset[0].load(); }
     auto keepSystem = system;
+    juce::XmlElement keepSettings ("Settings");   // the mics' inputs, sound level and the reference
+    settings.save (keepSettings);
     resetVenue();
+    settings.loadVenue (keepSettings);
+    for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
     monitorMic = keepMonitor;
     applyMonitorMic();
     venueName = name.trim().isNotEmpty() ? name.trim() : juce::String ("Untitled venue");
@@ -965,6 +1024,7 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     cals = keepCals;
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
     positions = keepPositions;
+    monitorPoints = keepMonitorPoints;
     positionAim = keepAim;
     roomAim = keepRoomAim;
     speakerAim = keepSpeakerAim;
@@ -1091,3 +1151,101 @@ juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new LiveAlignProcessor();
 }
+
+// ---- undo ----
+namespace
+{
+void saveUndoCommon (const LiveAlignProcessor& p, juce::XmlElement& x)
+{
+    auto* v = x.createNewChildElement ("Venue");
+    v->setAttribute ("name", p.venueName);
+    v->setAttribute ("notes", p.venueNotes);
+    v->setAttribute ("tempC", p.settings.temperatureC.load());
+    v->setAttribute ("humidity", p.settings.humidity.load());
+    v->setAttribute ("roomTarget", p.room.target);
+    v->setAttribute ("roomUse", p.room.use);
+    v->setAttribute ("lengthM", p.plan.lengthM);
+    auto* pos = x.createNewChildElement ("Positions");
+    pos->setAttribute ("tuning", p.positions.joinIntoString ("|"));
+    pos->setAttribute ("monitoring", p.monitorPoints.joinIntoString ("|"));
+    pos->setAttribute ("monitorMic", p.monitorMic.position);
+    for (int m = 0; m < la::kMaxMics; ++m) pos->setAttribute ("mic" + juce::String (m), p.mics.position[(size_t) m]);
+    p.plan.save (x);
+    p.venuePrefs.save (x);
+}
+} // namespace
+
+juce::String LiveAlignProcessor::undoFingerprint() const
+{
+    juce::XmlElement x ("U");
+    saveUndoCommon (*this, x);
+    x.addChildElement (la::ChangeLog::snapshot (system).release());
+    auto* d = x.createNewChildElement ("Spk");
+    for (const auto& s : system.sources)
+        d->createNewChildElement ("S")->setAttribute ("d", s.name + "|" + s.model + "|" + juce::String (s.role) + "|" + juce::String (s.channel) + "|"
+                                                         + juce::String (s.output) + "|" + juce::String (s.count) + "|" + juce::String (s.linkTo) + "|"
+                                                         + juce::String (s.directivityQ));
+    return juce::String::toHexString (x.toString (juce::XmlElement::TextFormat().singleLine()).hashCode64());
+}
+
+std::unique_ptr<juce::XmlElement> LiveAlignProcessor::undoState() const
+{
+    auto x = std::make_unique<juce::XmlElement> ("Undo");
+    saveUndoCommon (*this, *x);
+    system.save (*x);
+    return x;
+}
+
+void LiveAlignProcessor::restoreUndoState (const juce::XmlElement& x)
+{
+    if (const auto* v = x.getChildByName ("Venue"))
+    {
+        venueName = v->getStringAttribute ("name", venueName);
+        venueNotes = v->getStringAttribute ("notes");
+        settings.temperatureC = (float) v->getDoubleAttribute ("tempC", settings.temperatureC.load());
+        settings.humidity = (float) v->getDoubleAttribute ("humidity", settings.humidity.load());
+        room.target = v->getIntAttribute ("roomTarget", room.target);
+        room.use = v->getIntAttribute ("roomUse", room.use);
+    }
+    if (const auto* pos = x.getChildByName ("Positions"))
+    {
+        positions.clear();
+        positions.addTokens (pos->getStringAttribute ("tuning"), "|", {});
+        positions.removeEmptyStrings();
+        monitorPoints.clear();
+        monitorPoints.addTokens (pos->getStringAttribute ("monitoring"), "|", {});
+        monitorPoints.removeEmptyStrings();
+        monitorMic.position = pos->getStringAttribute ("monitorMic");
+        for (int m = 0; m < la::kMaxMics; ++m) mics.position[(size_t) m] = pos->getStringAttribute ("mic" + juce::String (m));
+    }
+    plan.load (x);
+    venuePrefs.load (x);
+    la::SpeakerSystem was;
+    was.load (x);
+    if (was.sources.size() == system.sources.size())
+    {
+        // the same speakers: their set-up and processing come back; what was measured since stays
+        for (size_t i = 0; i < was.sources.size(); ++i)
+        {
+            auto& to = was.sources[i];
+            const auto& now = system.sources[i];
+            to.response = now.response;
+            to.imported = now.imported;
+            to.source = now.source;
+            to.delayUsedMs = now.delayUsedMs;
+            to.offsetMs = now.offsetMs;
+            to.hasArrival = now.hasArrival;
+            to.arrivalMs = now.arrivalMs;
+            to.nearField = now.nearField;
+            to.measureMic = now.measureMic;
+            to.polarity = now.polarity;
+            to.asFound = now.asFound;
+            to.asFoundProc = now.asFoundProc;
+            to.asFoundWhen = now.asFoundWhen;
+        }
+        was.alignments = system.alignments;
+    }
+    system = was;
+    syncPositionsWithPlan();
+}
+

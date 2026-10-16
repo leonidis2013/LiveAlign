@@ -29,7 +29,7 @@ public:
         posBox.onChange = [this]
         {
             const int id = posBox.getSelectedId();
-            if (id > 0 && id - 1 < proc.positions.size()) { mic.position = proc.positions[id - 1]; mic.configured = true; changed(); }
+            if (id > 0 && id - 1 < proc.monitorPoints.size()) { mic.position = proc.monitorPoints[id - 1]; mic.configured = true; changed(); }
         };
         addAndMakeVisible (posBox);
 
@@ -76,7 +76,7 @@ public:
         limitBox.addSectionHeading ("A-weighted (LAeq)");
         for (int l = 75; l <= 110; ++l) limitBox.addItem (juce::String (l) + " dBA", l + 1);
         limitBox.addSectionHeading ("C-weighted (LCeq)");
-        for (int l = 85; l <= 125; ++l) limitBox.addItem (juce::String (l) + " dBC", 1000 + l);
+        for (int l = 75; l <= 125; ++l) limitBox.addItem (juce::String (l) + " dBC", 1000 + l);
         limitBox.setTooltip ("A sound level limit, as an LAeq (or LCeq) over the window beside it: the monitoring report shows the time over it. "
                              "The default for new sessions is in Settings, Monitoring.");
         limitBox.onChange = [this]
@@ -114,8 +114,8 @@ public:
         if (! posBox.isPopupActive())
         {
             posBox.clear (juce::dontSendNotification);
-            for (int i = 0; i < proc.positions.size(); ++i) posBox.addItem (proc.positions[i], i + 1);
-            const int at = proc.positions.indexOf (mic.position);
+            for (int i = 0; i < proc.monitorPoints.size(); ++i) posBox.addItem (proc.monitorPoints[i], i + 1);
+            const int at = proc.monitorPoints.indexOf (mic.position);
             if (at >= 0) posBox.setSelectedId (at + 1, juce::dontSendNotification);
             else posBox.setText (mic.position, juce::dontSendNotification);
         }

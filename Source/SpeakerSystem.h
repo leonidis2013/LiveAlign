@@ -13,6 +13,7 @@
 #include "Analysis/CrossoverPair.h"
 #include "Analysis/FreqTable.h"
 #include "Analysis/Polarity.h"
+#include "Settings.h"
 
 namespace la
 {
@@ -44,8 +45,10 @@ struct PolarityCheck
     juce::String when, mic;
     double levelDb = NAN;              // the capture's level through its own range (cabinets on one output should match)
     bool notClose = false;             // arrived much later than the other close-up captures: the mic was probably not close
+    bool atCrossover = false;          // a sub whose close-up capture can't tell: its polarity is judged against the tops at the crossover
+    bool processorInverted = false;    // the processor inverts this output on purpose: allowed for in the verdict
 
-    bool done() const { return verdict != polarity::Unknown; }
+    bool done() const { return verdict != polarity::Unknown || atCrossover; }
 };
 
 struct SpeakerSource
@@ -103,6 +106,8 @@ struct SpeakerSource
     xo::Processing proc;           // suggested settings for the speaker processor
     double trimDb = 0.0;           // level trim from Level balance, on top of proc.gainDb (kept for a linked speaker too)
     double directivityQ = 0.0;     // directivity factor for the critical distance (0 = typical for its role)
+    bool hpProtective = false;     // its high-pass is the protective one for a system with no sub (not a crossover)
+    juce::String ampGain, limiter; // as set on its amp channel and in the processor (free text: "+32 dB", "+12 dBu"), for the sheet
 
     // A typical directivity factor (Q) for the role: a sub radiates nearly all round, a long-throw top narrowly.
     static double typicalQ (int role)
@@ -329,6 +334,22 @@ struct SpeakerSystem
 
     // The range a speaker plays (with its processing): within 10 dB of its smoothed peak, from its close-up
     // measurement; by its role when it has none (a sub 40 - 100 Hz, anything else 200 Hz - 5 kHz).
+    // With no sub, a top still wants a protective high-pass near its own low end (where it is 10 dB down), so it is
+    // not driven below what it can play. False for a sub, or when it has one already.
+    bool topHighPass (int i, xo::Filter& f) const
+    {
+        if (i < 0 || i >= (int) sources.size() || hasSub()) return false;
+        const auto& s = sources[(size_t) i];
+        if (s.role == (int) SpeakerRole::Sub || master (i) != i || s.proc.hp.active()) return false;
+        double lo, hi;
+        playRange (i, lo, hi);
+        const double fc = std::max (40.0, std::round (lo * 0.85 / 5.0) * 5.0);
+        f.type = xo::Butterworth;
+        f.slope = 24;
+        f.freq = fc;
+        return true;
+    }
+
     void playRange (int i, double& lo, double& hi) const
     {
         const bool sub = i >= 0 && i < (int) sources.size() && sources[(size_t) i].role == (int) SpeakerRole::Sub;
@@ -462,7 +483,7 @@ struct SpeakerSystem
         juce::StringArray out;
         if (realPair() && xoNeeded()) return out;
         for (const auto& s : sources)
-            if (s.linkTo < 0 && ((s.proc.hp.active() && s.role != (int) SpeakerRole::Sub) || s.proc.lp.active()))
+            if (s.linkTo < 0 && ((s.proc.hp.active() && s.role != (int) SpeakerRole::Sub && ! (s.hpProtective && ! hasSub())) || s.proc.lp.active()))
                 out.add (s.name);
         return out;
     }
@@ -595,11 +616,16 @@ struct SpeakerSystem
                 pe->setAttribute ("mic", pc.mic);
                 if (std::isfinite (pc.levelDb)) pe->setAttribute ("levelDb", pc.levelDb);
                 if (pc.notClose) pe->setAttribute ("notClose", true);
+                if (pc.atCrossover) pe->setAttribute ("atCrossover", true);
+                if (pc.processorInverted) pe->setAttribute ("processorInverted", true);
             }
             c->setAttribute ("arrivalMs", s.arrivalMs);
             c->setAttribute ("nearField", s.nearField);
             if (s.trimDb != 0.0) c->setAttribute ("trimDb", s.trimDb);
             if (s.directivityQ > 0.0) c->setAttribute ("directivityQ", s.directivityQ);
+            if (s.hpProtective) c->setAttribute ("hpProtective", true);
+            if (s.ampGain.isNotEmpty()) c->setAttribute ("ampGain", s.ampGain);
+            if (s.limiter.isNotEmpty()) c->setAttribute ("limiter", s.limiter);
             if (s.sheetEntered.isNotEmpty()) c->setAttribute ("sheetEntered", s.sheetEntered);
             if (s.asFound.freq.size() > 2)
             {
@@ -685,6 +711,9 @@ struct SpeakerSystem
             s.nearField = c->getBoolAttribute ("nearField");
             s.trimDb = juce::jlimit (-24.0, 24.0, c->getDoubleAttribute ("trimDb"));
             s.directivityQ = juce::jlimit (0.0, 50.0, c->getDoubleAttribute ("directivityQ"));
+            s.hpProtective = c->getBoolAttribute ("hpProtective");
+            s.ampGain = c->getStringAttribute ("ampGain");
+            s.limiter = c->getStringAttribute ("limiter");
             s.sheetEntered = c->getStringAttribute ("sheetEntered");
             if (const auto* af = c->getChildByName ("AsFound"))
             {
@@ -722,6 +751,8 @@ struct SpeakerSystem
                 pc.mic = pe->getStringAttribute ("mic");
                 pc.levelDb = pe->hasAttribute ("levelDb") ? pe->getDoubleAttribute ("levelDb") : NAN;
                 pc.notClose = pe->getBoolAttribute ("notClose");
+                pc.atCrossover = pe->getBoolAttribute ("atCrossover");
+                pc.processorInverted = pe->getBoolAttribute ("processorInverted");
             }
             s.measureMic = juce::jlimit (-1, kMaxMics - 1, c->getIntAttribute ("measureMic", -1));
             s.proc.hp = loadFilter (*c, "hp");

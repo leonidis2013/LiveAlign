@@ -11,14 +11,75 @@ permissions:
 
 jobs:
   tests:
-    name: Analysis engine tests
+    name: Linux checks (tests, screenshot run, pluginval)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Measurement engine tests (with address and undefined-behaviour sanitizers)
         run: |
           g++ -std=c++17 -O1 -g -fsanitize=address,undefined -Wall -Wextra -ISource Tests/AnalysisTests.cpp -o analysis_tests
           ./analysis_tests
+
+      - name: Linux build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache xvfb libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev fonts-dejavu-core
+
+      # JUCE and the compiled objects are kept between runs: an unchanged file is not compiled again
+      - uses: actions/cache@v4
+        with:
+          path: |
+            build/_deps
+            ~/.cache/ccache
+          key: linux-${{ hashFiles('CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            linux-${{ hashFiles('CMakeLists.txt') }}-
+            linux-
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLA_BUILD_TESTS=ON -DLA_BUILD_PREVIEW=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build the tests, the screenshot tool and the VST3
+        run: |
+          set -o pipefail
+          cmake --build build --target AppTests LiveAlignPreview LiveAlign_VST3 --parallel 2>&1 | tee build.log
+          ccache -s || true
+
+      - name: Report compile errors
+        if: failure()
+        run: |
+          grep -E "error:|fatal error" build.log | sort -u | head -40 | while IFS= read -r line; do echo "::error::${line//%/%25}"; done
+
+      - name: Tuning logic tests
+        run: ./build/AppTests_artefacts/Release/AppTests
+
+      # The whole tuning flow on a simulated PA and room: every page, the reports, and pass / fail checks along the
+      # way (it fails the build when one fails). Text that does not fit is listed.
+      - name: Screenshot run with checks
+        run: |
+          set -o pipefail
+          mkdir -p shots
+          xvfb-run -a -s "-screen 0 1920x1200x24" ./build/LiveAlignPreview shots 2>&1 | tee shots/preview.log
+          grep -E "^(CHECK|OVERFLOW|RESULT)" shots/preview.log | sed -e 's/^CHECK FAIL/::error::CHECK FAIL/' -e 's/^OVERFLOW/::warning::OVERFLOW/' || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LiveAlign-screenshots
+          path: |
+            shots/*.png
+            shots/*.pdf
+            shots/preview.log
+
+      - name: pluginval (the VST3 in a test host)
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -o -q pluginval.zip
+          VST3=$(find build -type d -name "LiveAlign.vst3" | head -n 1)
+          echo "VST3: $VST3"
+          xvfb-run -a ./pluginval --strictness-level 5 --validate-in-process --skip-gui-tests --timeout-ms 600000 --validate "$VST3"
 
   build:
     name: App + VST3 (${{ matrix.name }})
@@ -34,6 +95,12 @@ jobs:
             os: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      # JUCE, fetched (and its build tools built) once and kept between runs
+      - uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'

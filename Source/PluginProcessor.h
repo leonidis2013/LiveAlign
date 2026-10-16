@@ -19,6 +19,7 @@
 #include "Monitoring.h"
 #include "TuningExtras.h"
 #include "LevelBalance.h"
+#include "ShowChecks.h"
 #include "UpdateChecker.h"
 #include "Prefs.h"
 #include "Analysis/Generator.h"
@@ -142,7 +143,32 @@ public:
     juce::String venueName { "Untitled venue" }, venueNotes;
     juce::File projectFile;
     la::VenueMics mics;
-    juce::StringArray positions;
+    juce::StringArray positions;        // the tuning points (measurement points used for tuning)
+    juce::StringArray monitorPoints { "FOH" };   // the points the monitoring mic can stand at (a point can be both)
+    enum PointUse { UseTuning = 0, UseMonitoring = 1, UseBoth = 2 };
+    int pointUse (const juce::String& name) const
+    {
+        const bool t = positions.contains (name), m = monitorPoints.contains (name);
+        return t && m ? UseBoth : m ? UseMonitoring : UseTuning;
+    }
+    void setPointUse (const juce::String& name, int use)
+    {
+        if (use == UseMonitoring) { positions.removeString (name); linkMicToPoint (name, -1); } else positions.addIfNotAlreadyThere (name);
+        if (use == UseTuning) { monitorPoints.removeString (name); if (monitorMic.position == name) monitorMic.position.clear(); }
+        else monitorPoints.addIfNotAlreadyThere (name);
+    }
+    // The tuning mic linked to a point (-1: none).
+    int micAtPoint (const juce::String& name) const
+    {
+        for (int m = 0; m < juce::jmin (settings.micCount.load(), la::kMaxMics); ++m) if (mics.position[(size_t) m] == name) return m;
+        return -1;
+    }
+    // Links a tuning mic to a point (-1: no mic there): a mic moves from wherever it was; the one there before is unlinked.
+    void linkMicToPoint (const juce::String& name, int mic)
+    {
+        for (int m = 0; m < la::kMaxMics; ++m) if (mics.position[(size_t) m] == name && m != mic) setMicPosition (m, {});
+        if (mic >= 0) setMicPosition (mic, name);
+    }
     // Positions are one list, kept the same everywhere: every position has its marker on the venue plan (placed for
     // you when it has none) and every marker on the plan is a position. Rename and remove go through here.
     void syncPositionsWithPlan();
@@ -155,6 +181,28 @@ public:
     la::RoomTuning room;                // the open session's room tuning
     la::VenuePrefs venuePrefs;          // this venue's overrides of the tuning preferences
     double pref (const char* key) const { return venuePrefs.value (key); }
+    // Undo and redo (Cmd/Ctrl+Z): what the user edits by hand, not the measurements. A fingerprint to see that
+    // something changed (cheap: the processing, the speakers' set-up, the plan, the points, the venue values), and the
+    // state itself (with the whole speaker system).
+    juce::String undoFingerprint() const;
+    std::unique_ptr<juce::XmlElement> undoState() const;
+    void restoreUndoState (const juce::XmlElement& x);
+
+    // The tuning was just set (delays, EQ, trims): remember the room's conditions, for the drift check later.
+    void noteTunedConditions()
+    {
+        checks.tunedTempC = settings.temperatureC.load();
+        checks.tunedHumidity = settings.humidity.load();
+        checks.tunedConditionsOn = today();
+    }
+    // The conditions of the day were entered (Venue, Details).
+    void setConditions (float tC, float rh)
+    {
+        settings.temperatureC = juce::jlimit (-20.0f, 50.0f, tC);
+        settings.humidity = juce::jlimit (0.0f, 100.0f, rh);
+        checks.tempC = settings.temperatureC.load();
+        checks.humidity = settings.humidity.load();
+    }
     void applyAppPrefs();
     la::LevelBalance::Aims levelAims() const { return { pref ("lrTol"), pref ("fillHi"), pref ("fillLo"), pref ("subTol"), pref ("trimCap") }; }
     // The close-up distance for Speaker response, as "12 in (30 cm)", and its short form.
@@ -164,6 +212,10 @@ public:
     la::FeedbackTest feedback;          // the open session's feedback test
     la::AsFound asFound;                // the open session's processor settings before anything was changed
     la::LevelBalance level;             // the open session's level balance
+    la::CoverageData coverage;          // the open session's aim and coverage (what was re-aimed)
+    la::HeadroomData headroom;          // the open session's gain and headroom runs
+    la::ListeningData listening;        // the open session's listening check
+    la::ChangeLog history;              // every change to the outputs' processing (venue)
     la::Recheck recheck;                // the open session's quick re-check
     la::SplLog splLog;                  // the open session's sound level log (monitoring)
     la::MonitorMic monitorMic;          // the monitoring mic (venue)

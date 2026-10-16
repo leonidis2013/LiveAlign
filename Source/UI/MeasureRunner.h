@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include "../Clock.h"
 // One measurement of whatever plays from one output, at one mic: pink noise for a few seconds, the arrival found, then
 // the transfer function averaged timed to that arrival. Level balance and the quick re-check use it; Speaker response
 // and Room EQ have their own (they measure several mics, or keep the timing locked). Message thread only: the page
@@ -44,7 +45,7 @@ public:
         settings.genOn = true;
         settings.running = true;
         phase = Phase::Settling;
-        phaseStart = juce::Time::getMillisecondCounterHiRes();
+        phaseStart = la::clock::ms();
         settleUntil = proc.analyzer.samplesWritten() + (juce::uint64) (kSettleSeconds * rate());
         progressValue = 0.0f;
         error.clear();
@@ -81,7 +82,7 @@ public:
     {
         if (phase == Phase::Idle) return;
         if (! settings.genOn.load()) { finish ("Stopped: the generator was turned off."); return; }
-        const double elapsed = juce::Time::getMillisecondCounterHiRes() - phaseStart;
+        const double elapsed = la::clock::ms() - phaseStart;
         if (phase == Phase::Settling)
         {
             const auto done = proc.analyzer.samplesAnalysed();
@@ -91,7 +92,7 @@ public:
                 delaySerial = proc.analyzer.readDelayReport().serial;
                 settings.requestFindDelay = true;
                 phase = Phase::FindingTime;
-                phaseStart = juce::Time::getMillisecondCounterHiRes();
+                phaseStart = la::clock::ms();
             }
         }
         else if (phase == Phase::FindingTime)
@@ -115,7 +116,7 @@ public:
                 overflowsSeen = proc.analyzer.overflowCount();
                 restarts = 0;
                 phase = Phase::Averaging;
-                phaseStart = juce::Time::getMillisecondCounterHiRes();
+                phaseStart = la::clock::ms();
             }
             else if (elapsed > 10000.0) finish ("The timing search did not answer. Check the audio device and try again.");
         }
@@ -129,7 +130,7 @@ public:
                 if (++restarts > 3) { finish ("The computer could not keep up with the analysis. Close other programs, then measure again."); return; }
                 settings.requestResetAverages = true;
                 sawReset = false;
-                phaseStart = juce::Time::getMillisecondCounterHiRes();
+                phaseStart = la::clock::ms();
             }
             if (! sawReset && frames < want) sawReset = true;
             progressValue = 0.25f + 0.75f * (sawReset ? juce::jlimit (0.0f, 1.0f, (float) frames / (float) want) : 0.0f);

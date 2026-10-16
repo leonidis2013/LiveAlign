@@ -1,4 +1,5 @@
 #pragma once
+#include "../Clock.h"
 // Right-hand column: sound level, input meters, delay finder and saved traces.
 #include <functional>
 #include "Graph.h"
@@ -103,7 +104,7 @@ public:
 
     void setLevels (float micPeak, float micRmsDb, float refPeak, float refRmsDb)
     {
-        const auto now = juce::Time::getMillisecondCounter();
+        const auto now = la::clock::ms32();
         mic.update (micPeak, micRmsDb, now);
         ref.update (refPeak, refRmsDb, now);
         repaint();
@@ -141,7 +142,7 @@ private:
         g.setFont (font (11.5f, true));
         g.drawText (label, r.removeFromLeft (92), juce::Justification::centredLeft);
         auto led = r.removeFromRight (16).toFloat().withSizeKeepingCentre (10.0f, 10.0f);
-        const bool clip = juce::Time::getMillisecondCounter() < m.clipUntil;
+        const bool clip = la::clock::ms32() < m.clipUntil;
         g.setColour (clip ? p.bad : p.border);
         g.fillEllipse (led);
         r.removeFromRight (6);
@@ -362,6 +363,115 @@ private:
     int minutes = 15;
     juce::String name { "LAeq" }, unit { "dBA" };
     juce::String since;
+};
+
+// Live monitoring against the tuning: the programme's transfer function at the monitor mic, octave by octave, against
+// what was measured there when the room was tuned (both levelled at 500 Hz - 4 kHz). A difference of 2 dB or more
+// where the music has energy suggests a small change (half of it, never more than 3 dB): the room fills up, the air
+// dries out.
+class TunedPanel : public juce::Component
+{
+public:
+    static constexpr int kBands = 8;
+    static inline const double kFreq[kBands] = { 63, 125, 250, 500, 1000, 2000, 4000, 8000 };
+
+    // `ref`: the tuned response at the monitor mic's point (empty: nothing to compare with).
+    void update (const Snapshot& s, const FreqTable& ref, const juce::String& refName)
+    {
+        refText = refName;
+        std::array<double, kBands> live {}, tuned {};
+        std::array<int, kBands> nLive {}, nTuned {};
+        auto band = [] (double f) { for (int b = 0; b < kBands; ++b) if (f >= kFreq[b] / 1.414 && f < kFreq[b] * 1.414) return b; return -1; };
+        double midL = 0.0, midT = 0.0;
+        int nmL = 0, nmT = 0;
+        for (size_t i = 0; i < s.tfFreq.size() && i < s.tfMag.size(); ++i)
+        {
+            const double f = s.tfFreq[i];
+            const float c = i < s.tfCoh.size() ? s.tfCoh[i] : 1.0f;
+            if (! std::isfinite (s.tfMag[i]) || c < 0.6f) continue;
+            if (const int b = band (f); b >= 0) { live[(size_t) b] += s.tfMag[i]; ++nLive[(size_t) b]; }
+            if (f >= 500.0 && f <= 4000.0) { midL += s.tfMag[i]; ++nmL; }
+        }
+        for (size_t i = 0; i < ref.freq.size(); ++i)
+        {
+            if (! std::isfinite (ref.db[i])) continue;
+            if (const int b = band (ref.freq[i]); b >= 0) { tuned[(size_t) b] += ref.db[i]; ++nTuned[(size_t) b]; }
+            if (ref.freq[i] >= 500.0 && ref.freq[i] <= 4000.0) { midT += ref.db[i]; ++nmT; }
+        }
+        valid = nmL > 10 && nmT > 3;
+        int worst = -1;
+        for (int b = 0; b < kBands; ++b)
+        {
+            diff[(size_t) b] = NAN;
+            if (! valid || nLive[(size_t) b] < 3 || nTuned[(size_t) b] < 1) continue;
+            diff[(size_t) b] = (live[(size_t) b] / nLive[(size_t) b] - midL / nmL) - (tuned[(size_t) b] / nTuned[(size_t) b] - midT / nmT);
+            if (worst < 0 || std::abs (diff[(size_t) b]) > std::abs (diff[(size_t) worst])) worst = b;
+        }
+        // a suggestion only when it has held for a while (the music changes from moment to moment)
+        if (worst >= 0 && std::abs (diff[(size_t) worst]) >= 2.0)
+        {
+            if (worst == heldBand) ++held; else { heldBand = worst; held = 0; }
+        }
+        else { heldBand = -1; held = 0; }
+        if (held >= 20)
+        {
+            const double d = diff[(size_t) heldBand];
+            const double change = -juce::jlimit (-3.0, 3.0, d * 0.5);
+            suggestion = freqWords (kFreq[heldBand]) + " is " + juce::String (std::abs (d), 1) + (d > 0.0 ? " dB up" : " dB down") + " on the tuning: try "
+                         + (change > 0.0 ? "+" : "") + juce::String (change, 1) + " dB there"
+                         + (heldBand <= 1 ? " (an audience soaks up the low end)." : heldBand >= 6 ? " (dry air or a full room takes the top off)." : ".");
+        }
+        else if (! valid || worst < 0 || std::abs (diff[(size_t) worst]) < 2.0) suggestion.clear();
+        repaint();
+    }
+    void clear() { valid = false; refText.clear(); suggestion.clear(); repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        auto r = getLocalBounds().toFloat();
+        drawPanel (g, r, "Against the tuning");
+        auto c = r.reduced (12.0f, 0.0f).withTrimmedTop (30.0f);
+        if (refText.isEmpty() || ! valid)
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (11.0f));
+            g.drawFittedText (refText.isEmpty() ? "Tune the room (Room EQ) to compare the show with it here." : "Waiting for the programme (the reference and the mic need music).",
+                              c.toNearestInt(), juce::Justification::topLeft, 3);
+            return;
+        }
+        // a small bar per octave: up or down against the tuning
+        auto bars = c.removeFromTop (30.0f);
+        const float w = bars.getWidth() / kBands;
+        for (int b = 0; b < kBands; ++b)
+        {
+            auto cell = bars.removeFromLeft (w).reduced (2.0f, 0.0f);
+            const double d = diff[(size_t) b];
+            const float mid = cell.getY() + 10.0f;
+            g.setColour (p.border);
+            g.drawHorizontalLine ((int) mid, cell.getX(), cell.getRight());
+            if (std::isfinite (d))
+            {
+                const float h = (float) juce::jlimit (-9.0, 9.0, d) * 1.0f;
+                g.setColour (std::abs (d) >= 2.0 ? p.warn : p.accent);
+                g.fillRect (juce::Rectangle<float>::leftTopRightBottom (cell.getX() + 3.0f, std::min (mid, mid - h), cell.getRight() - 3.0f, std::max (mid, mid - h) + 1.0f));
+            }
+            g.setColour (p.textFaint);
+            g.setFont (font (9.0f));
+            g.drawText (kFreq[b] >= 1000.0 ? juce::String ((int) (kFreq[b] / 1000.0)) + "k" : juce::String ((int) kFreq[b]), cell.withTrimmedTop (20.0f), juce::Justification::centred);
+        }
+        c.removeFromTop (2.0f);
+        g.setColour (suggestion.isNotEmpty() ? p.warn : p.textDim);
+        g.setFont (font (11.0f, suggestion.isNotEmpty()));
+        g.drawFittedText (suggestion.isNotEmpty() ? suggestion : "Close to the tuning at " + refText + ".", c.toNearestInt(), juce::Justification::topLeft, 2);
+    }
+
+private:
+    static juce::String freqWords (double f) { return f >= 1000.0 ? juce::String ((int) (f / 1000.0)) + " kHz" : juce::String ((int) f) + " Hz"; }
+    std::array<double, kBands> diff {};
+    bool valid = false;
+    juce::String refText, suggestion;
+    int heldBand = -1, held = 0;
 };
 
 class TracesPanel : public juce::Component

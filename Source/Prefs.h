@@ -81,6 +81,12 @@ inline const std::vector<PrefDef>& all()
                        range (0.5, 4.0, 0.5), plainDb (1), true });
         v.push_back ({ "trimCap", PrefCat::Tuning, "Level balance", "Largest trim", "Beyond this, check the aim and the amp rather than trim", 6.0,
                        range (1.0, 12.0, 1.0), plainDb (0), true });
+        v.push_back ({ "coverageTol", PrefCat::Tuning, "Aim and coverage", "Coverage within", "How evenly each speaker should cover its area (plus or minus)", 3.0,
+                       range (1.0, 6.0, 0.5), [] (double x) { return juce::String (juce::CharPointer_UTF8 ("\xc2\xb1")) + juce::String (x, 1) + " dB"; }, true });
+        v.push_back ({ "targetDbA", PrefCat::Tuning, "Gain and headroom", "Target level at FOH", "The loudest the show should run at FOH (A-weighted, slow)", 95.0,
+                       range (80.0, 110.0, 1.0), [] (double x) { return juce::String ((int) x) + " dBA"; }, true });
+        v.push_back ({ "headroomDb", PrefCat::Tuning, "Gain and headroom", "Headroom wanted", "Above the target level before the system compresses or limits", 6.0,
+                       range (3.0, 15.0, 1.0), plainDb (0), true });
         v.push_back ({ "closeUpCm", PrefCat::Tuning, "Speaker response", "Close-up distance", "How far from the cone the mic goes for Speaker response", 30.0,
                        range (10.0, 100.0, 5.0), [] (double x) { return juce::String (juce::roundToInt (x / 2.54)) + " in (" + juce::String ((int) x) + " cm)"; }, true });
         v.push_back ({ "speechDbA", PrefCat::Tuning, "Room acoustics", "Speech level at the listener", "For the STI with the noise taken into account", 70.0,
@@ -158,6 +164,9 @@ public:
         if (d == nullptr) return;
         values[key] = prefs::snap (*d, v);
         UserPrefs::set ("pref_" + key, juce::String (values[key]));
+        // the fill's range stays the right way round
+        if (key == "fillHi" && value ("fillLo") > values[key]) set ("fillLo", values[key]);
+        if (key == "fillLo" && value ("fillHi") < values[key]) set ("fillHi", values[key]);
         ++serial;
     }
     void reset (const juce::String& key) { values.erase (key); UserPrefs::set ("pref_" + key, {}); ++serial; }
@@ -198,6 +207,8 @@ struct VenuePrefs
         const auto* d = prefs::find (key);
         if (d == nullptr || ! d->venue) return;
         values[key] = prefs::snap (*d, v);
+        if (key == "fillHi" && value ("fillLo") > values[key]) set ("fillLo", values[key]);
+        if (key == "fillLo" && value ("fillHi") < values[key]) set ("fillHi", values[key]);
     }
     void reset (const juce::String& key) { values.erase (key); }
 

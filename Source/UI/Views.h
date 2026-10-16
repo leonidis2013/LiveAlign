@@ -1,4 +1,5 @@
 #pragma once
+#include "../Clock.h"
 // The three measurement views: transfer function (magnitude, phase, coherence), RTA, and impulse response.
 #include <algorithm>
 #include <cmath>
@@ -525,7 +526,7 @@ public:
         rows[(size_t) head] = snap.wfLine;
         head = (head + 1) % kRows;
         filled = juce::jmin (kRows, filled + 1);
-        stamps[(size_t) ((head + kRows - 1) % kRows)] = juce::Time::getMillisecondCounter();
+        stamps[(size_t) ((head + kRows - 1) % kRows)] = la::clock::ms32();
         float pk = -200.0f;
         for (float v : snap.wfLine) pk = juce::jmax (pk, v);
         top = juce::jmax (pk, top - 0.05f);   // follows the loudest band, falls back slowly
@@ -574,7 +575,7 @@ public:
         }
 
         // rows, newest at the top; each row placed by its age
-        const auto now = juce::Time::getMillisecondCounter();
+        const auto now = la::clock::ms32();
         const float floorDb = top - range;
         const auto& f = data->wfFreq;
         std::vector<float> xs ((size_t) bands + 1);

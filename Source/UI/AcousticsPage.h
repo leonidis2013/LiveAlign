@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include "../Clock.h"
 #include <thread>
 // Tuning step 5: room acoustics, before Room EQ (it decides whether EQ can help). A sweep at each ticked listening
 // point, in the guided pop-up, gives a long impulse response: reverberation time and early decay per octave, clarity
@@ -257,7 +258,7 @@ private:
 class AcousticsPage : public juce::Component, public GuidedSource, private juce::Timer
 {
 public:
-    std::function<void()> onChanged, onOpenPlan;
+    std::function<void()> onChanged, onOpenPlan, onOpenVenue, onEditSpeakers;
     std::function<void (GuidedSource&)> onGuided;
 
     ~AcousticsPage() override { stopTimer(); proc.recorder.stop(); }
@@ -275,10 +276,10 @@ public:
             addAndMakeVisible (metricButtons[i]);
         }
         metricButtons[0].setToggleState (true, juce::dontSendNotification);
-        useBox.addItemList (RoomTuning::useNames(), 1);
-        useBox.setTooltip ("What the room is mostly used for: sets the typical reverberation time and intelligibility to compare with");
-        useBox.onChange = [this] { proc.room.use = useBox.getSelectedItemIndex(); changed(); chart.repaint(); };
-        addAndMakeVisible (useBox);
+        roomLink.setTooltip ("What the room is used for (sets the reverberation time and intelligibility to compare with) and its size. "
+                             "Both are set on Venue, Details.");
+        roomLink.onClick = [this] { if (onOpenVenue) onOpenVenue(); };
+        addAndMakeVisible (roomLink);
         sweepButton.setTooltip ("A 4-second sweep (twice) through the whole system at each ticked point, in the guided pop-up: a long "
                                 "impulse response for the reverberation time of any room. Quiet room, please.");
         sweepButton.onClick = [this]
@@ -292,9 +293,6 @@ public:
         planButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("Points on the plan  \xe2\x86\x92")));
         planButton.onClick = [this] { if (onOpenPlan) onOpenPlan(); };
         addAndMakeVisible (planButton);
-        sizeButton.setTooltip ("The room's length, width and height (or its volume): for the Schroeder frequency and the critical distance");
-        sizeButton.onClick = [this] { askRoomSize(); };
-        addAndMakeVisible (sizeButton);
         refresh();
     }
 
@@ -315,7 +313,7 @@ public:
         st.genOn = true;
         st.running = true;
         phase = Phase::Lead;
-        phaseStart = juce::Time::getMillisecondCounterHiRes();
+        phaseStart = la::clock::ms();
         status = "Sweeping: " + where.joinIntoString (", ") + ". Keep the room quiet.";
         sweepButton.setButtonText ("Stop");
         startTimerHz (15);
@@ -339,7 +337,13 @@ public:
     void refresh()
     {
         proc.syncPositionsWithPlan();
-        useBox.setSelectedItemIndex (juce::jlimit (0, 3, proc.room.use), juce::dontSendNotification);
+        {
+            const double vol = proc.plan.volume();
+            const bool ft = proc.settings.distanceUnit.load() == 0;
+            roomLink.setButtonText (RoomTuning::useNames()[juce::jlimit (0, 3, proc.room.use)] + ", "
+                                    + (vol > 0.0 ? juce::String (juce::roundToInt (ft ? vol * 35.3147 : vol)) + (ft ? " cu ft" : " m3") : juce::String ("size not entered"))
+                                    + juce::String (juce::CharPointer_UTF8 ("   \xc2\xb7   Edit on Venue \xe2\x86\x92")));
+        }
         refreshButtons();
         resized();
         repaint();
@@ -400,6 +404,7 @@ public:
         }
         return out;
     }
+    bool guidedNeedsProcessor() const override { return true; }
     juce::String guidedHowTo() const override
     {
         return "First: unmute every speaker and keep the room quiet. The sweep plays twice through the whole system (about 10 seconds).";
@@ -529,9 +534,7 @@ public:
         const int bw = 58;
         for (auto& b : metricButtons) { b.setBounds (bar.removeFromLeft (bw).reduced (0, 2)); bar.removeFromLeft (3); }
         bar.removeFromLeft (10);
-        sizeButton.setBounds (bar.removeFromRight (120).reduced (0, 2));
-        bar.removeFromRight (6);
-        useBox.setBounds (bar.removeFromRight (juce::jmin (300, bar.getWidth())).reduced (0, 2));
+        roomLink.setBounds (bar.removeFromRight (juce::jmin (440, bar.getWidth())).reduced (0, 2));
         sweepButton.setBounds (right.removeFromTop (34));
         right.removeFromTop (6);
         sweepInfo = right.removeFromTop (34);
@@ -549,7 +552,7 @@ public:
 
     void mouseUp (const juce::MouseEvent& e) override
     {
-        if (qArea.contains (e.getPosition())) { pickDirectivity(); return; }
+        if (qArea.contains (e.getPosition())) { if (onEditSpeakers) onEditSpeakers(); return; }
         for (int i = 0; i < proc.positions.size(); ++i)
             if (pointRow (i).contains (e.getPosition()) && e.x < pointRow (i).getX() + 30)
             {
@@ -703,7 +706,7 @@ private:
 
     void timerCallback() override
     {
-        const double el = juce::Time::getMillisecondCounterHiRes() - phaseStart;
+        const double el = la::clock::ms() - phaseStart;
         if (phase == Phase::Lead && el > 300.0)
         {
             // two sweeps and the silence after each: the second is clean of the start-up
@@ -779,9 +782,8 @@ private:
     int serial = 0;
     juce::Rectangle<int> sweepInfo, pointsList;
     juce::TextButton metricButtons[AcousticsChart::kNumMetrics];
-    juce::TextButton sizeButton { "Room size..." };
+    juce::TextButton roomLink;
     juce::Rectangle<int> detailsCard, qArea;
-    juce::ComboBox useBox;
     std::array<juce::Rectangle<int>, 6> tiles;
     juce::Rectangle<int> posCard, treeCard;
 
@@ -890,69 +892,6 @@ private:
                 if (row.what == "STI" && row.s.n > 1) sp = "STI " + juce::String (row.s.lo, 2) + " - " + juce::String (row.s.hi, 2);
             g.drawText (juce::String (a.points) + (a.points == 1 ? " point" : " points") + (sp.isNotEmpty() ? ", " + sp : juce::String()), line, juce::Justification::centredLeft, true);
         }
-    }
-
-    // Length, width and height (or the volume), in the distance unit of Settings.
-    void askRoomSize()
-    {
-        const bool feet = proc.settings.distanceUnit.load() == 0;
-        const double k = feet ? 3.28084 : 1.0;
-        auto* w = new juce::AlertWindow ("Room size", juce::String ("The room's inside size, in ") + (feet ? "feet" : "metres")
-                                         + ". Or type its volume if it is not a box (it wins over the three sizes). Leave a box empty if you do not know it.",
-                                         juce::MessageBoxIconType::NoIcon, this);
-        auto fmt = [] (double v) { return v > 0.0 ? juce::String (v, 1) : juce::String(); };
-        const auto& pl = proc.plan;
-        w->addTextEditor ("l", fmt (pl.lengthM * k), "Length (" + juce::String (feet ? "ft" : "m") + ")");
-        w->addTextEditor ("w", fmt (pl.widthM * k), "Width");
-        w->addTextEditor ("h", fmt (pl.heightM * k), "Ceiling height (average)");
-        w->addTextEditor ("v", pl.volumeM3 > 0.0 ? juce::String (juce::roundToInt (pl.volumeM3 * k * k * k)) : juce::String(), juce::String ("Volume (") + (feet ? "cu ft" : "m3") + ", optional)");
-        w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-        w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-        juce::Component::SafePointer<AcousticsPage> safe (this);
-        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w, k] (int result)
-        {
-            if (safe != nullptr && result == 1)
-            {
-                auto val = [w] (const char* id) { return juce::jmax (0.0, w->getTextEditorContents (id).trim().getDoubleValue()); };
-                auto& pl2 = safe->proc.plan;
-                pl2.lengthM = val ("l") / k;
-                pl2.widthM = val ("w") / k;
-                pl2.heightM = val ("h") / k;
-                pl2.volumeM3 = val ("v") / (k * k * k);
-                safe->changed();
-            }
-        }), true);
-    }
-
-    // A speaker's directivity factor for its critical distance.
-    void pickDirectivity()
-    {
-        juce::PopupMenu m;
-        int id = 1;
-        std::vector<std::pair<int, double>> ids;
-        for (int i = 0; i < (int) proc.system.sources.size(); ++i)
-        {
-            const auto& s = proc.system.sources[(size_t) i];
-            if (s.role == (int) SpeakerRole::Sub) continue;
-            juce::PopupMenu sub;
-            sub.addItem (id, "Typical for a " + speakerRoleNames()[s.role].toLowerCase() + " (Q " + juce::String (juce::roundToInt (SpeakerSource::typicalQ (s.role))) + ")", true, s.directivityQ <= 0.0);
-            ids.push_back ({ i, 0.0 });
-            ++id;
-            for (double q : { 2.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0 })
-            {
-                sub.addItem (id, "Q " + juce::String (juce::roundToInt (q)), true, std::abs (s.directivityQ - q) < 0.01);
-                ids.push_back ({ i, q });
-                ++id;
-            }
-            m.addSubMenu (proc.system.nameOf (i), sub);
-        }
-        juce::Component::SafePointer<AcousticsPage> safe (this);
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (qArea)), [safe, ids] (int r)
-        {
-            if (safe == nullptr || r <= 0 || r > (int) ids.size()) return;
-            safe->proc.system.sources[(size_t) ids[(size_t) r - 1].first].directivityQ = ids[(size_t) r - 1].second;
-            safe->changed();
-        });
     }
 };
 } // namespace la::ui

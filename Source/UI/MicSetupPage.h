@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include "../Clock.h"
 // Mics: the tuning mics of this venue, picked from the mic locker (which owns their calibration files and sound
 // level): their input, where each one is now (a point on the venue plan, or moved by the guided measurements), and
 // the session's checklist with one pre-flight run for the loopback, the room noise and the level re-check.
@@ -135,7 +136,8 @@ public:
         positionBox.onChange = [this]
         {
             const int id = positionBox.getSelectedId();
-            proc.setMicPosition (index, id <= 1 ? juce::String() : proc.positions[id - 2]);
+            if (id <= 1) proc.setMicPosition (index, {});
+            else proc.linkMicToPoint (proc.positions[id - 2], index);   // one mic per point: the one there before moves off
             changed();
         };
         addAndMakeVisible (positionBox);
@@ -378,7 +380,7 @@ public:
     void setNote (int mic, const juce::String& text)
     {
         note = mic >= 0 ? proc.mics.nameOf (mic) + ": " + text : text;
-        noteUntil = juce::Time::getMillisecondCounter() + 10000;
+        noteUntil = la::clock::ms32() + 10000;
         repaint();
     }
 
@@ -686,7 +688,7 @@ private:
         pollNoise();
         pollPreflight();
         if (++tick % 4 == 0) { for (auto& r : rows) r->refresh(); update(); }
-        if (note.isNotEmpty() && juce::Time::getMillisecondCounter() > noteUntil) { note.clear(); repaint(); }
+        if (note.isNotEmpty() && la::clock::ms32() > noteUntil) { note.clear(); repaint(); }
     }
 
     // ---- step logic ----
@@ -821,7 +823,7 @@ private:
         settings.genLevelDb = -20.0f;
         settings.genOn = true;
         loopPhase = 1;
-        loopStart = juce::Time::getMillisecondCounter();
+        loopStart = la::clock::ms32();
         loopSerial = proc.analyzer.readLoopbackReport().serial;
         loopMessage.clear();
         update();
@@ -830,7 +832,7 @@ private:
     void pollLoopback()
     {
         if (loopPhase == 0) return;
-        const auto now = juce::Time::getMillisecondCounter();
+        const auto now = la::clock::ms32();
         if (loopPhase == 1 && now - loopStart > 2000)
         {
             proc.analyzer.requestLoopbackCheck();

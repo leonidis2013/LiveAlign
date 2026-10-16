@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include "../Clock.h"
 // Step 3: Room tuning. Measure the whole system at the listening positions - several mics at once, or one mic moved
 // from position to position - and compare their average with a target curve. LiveAlign suggests parametric EQ
 // within your processor's limits; once it is in the processor, measure again to check the result.
@@ -243,6 +244,7 @@ public:
     std::function<void()> onChanged;
     std::function<void (GuidedSource&)> onGuided;   // opens the guided pop-up
     std::function<void()> onOpenPlan;                // the points are made on the venue plan
+    std::function<void()> onOpenVenue;               // the target is set on Venue, Details
     std::function<void (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)>)> askText;
 
     explicit RoomPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), room (p.room), graph (p)
@@ -319,8 +321,10 @@ public:
             refresh();
             changed();
         };
-        for (auto* c : std::initializer_list<juce::Component*> { &targetBox, &speakerBox, &bandsBox, &boostBox, &allowToggle, &suggestButton, &applyButton })
+        for (auto* c : std::initializer_list<juce::Component*> { &targetLink, &speakerBox, &bandsBox, &boostBox, &allowToggle, &suggestButton, &applyButton })
             addAndMakeVisible (*c);
+        targetLink.setTooltip ("The tonal balance Room EQ tunes toward. It is set with the venue's other targets on Venue, Details.");
+        targetLink.onClick = [this] { if (onOpenVenue) onOpenVenue(); };
 
         // ---- 3 check ----
         tunedButton.onClick = [this]
@@ -369,6 +373,8 @@ public:
         outputBox.setSelectedItemIndex (juce::jlimit (0, outs, playOutput), juce::dontSendNotification);
 
         targetBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, room.target), juce::dontSendNotification);
+        targetLink.setButtonText (juce::String (targets::list()[(size_t) juce::jlimit (0, targets::count() - 1, room.target)].name)
+                                  + juce::String (juce::CharPointer_UTF8 ("   \xc2\xb7   Edit on Venue \xe2\x86\x92")));
         speakerBox.clear (juce::dontSendNotification);
         speakerBox.addItem ("Whole system (every speaker)", 1);
         bool anyMain = false;
@@ -410,6 +416,7 @@ public:
         if (room.checkRound > 0 && plannedLeft (true) > 0) return "Measure check " + juce::String (room.checkRound);
         if (room.tuned) return {};
         if (room.checkRound == 0) return "Suggest EQ";
+        if (closeEnough() && ! proc.listening.done) return "Listen at the points (Listening check)";
         return closeEnough() ? juce::String ("Mark the room as tuned") : juce::String ("Refine the EQ");
     }
 
@@ -435,6 +442,21 @@ public:
     }
 
     bool busy() const { return phase != Phase::Idle; }
+
+    // The listening check found a problem at a point: measure it again (the latest round), in the guided pop-up.
+    void remeasurePoint (const juce::String& point)
+    {
+        if (phase != Phase::Idle || point.isEmpty()) return;
+        const bool after = room.checkRound > 0;
+        room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [&] (const RoomMeasurement& m) { return m.position == point && m.after == after; }),
+                         room.meas.end());
+        room.skipped.removeString (point);
+        if (proc.micAtPoint (point) < 0) proc.linkMicToPoint (point, 0);
+        setMeasuringAfter (after);
+        status = "Measuring " + point + " again (the listening check found a problem there).";
+        refresh();
+        requestMeasure();
+    }
 
     // Measure: in the guided pop-up when Guided is on, otherwise right here.
     void requestMeasure()
@@ -491,6 +513,7 @@ public:
         return out;
     }
 
+    bool guidedNeedsProcessor() const override { return true; }
     juce::String guidedHowTo() const override
     {
         if (proc.positions.isEmpty()) return "Add the listening points on the venue plan first.";
@@ -725,12 +748,16 @@ public:
                 t << "As found: " << juce::String (rb, 1) << " dB RMS from the target (worst " << juce::String (mb, 1) << " dB).";
                 const double spread = room.levelSpread (false);
                 if (std::isfinite (spread) && room.count (false) > 1) t << "\nLevel across positions: " << juce::String (spread, 1) << " dB.";
+                const double v0 = seatVariance (room, false);
+                if (std::isfinite (v0)) t << "\nSeat to seat: " << juce::String (v0, 1) << " dB as found" << (room.count (true) > 1 ? ", " + juce::String (seatVariance (room, true), 1) + " dB now" : juce::String())
+                                         << " (the tonal difference between points; under 2 dB is very even).";
             }
             if (room.count (true) > 0)
             {
                 room.deviation (room.average (true), lo, hi, ra, ma);
                 t << "\nCheck " << room.checkRound << ": " << juce::String (ra, 1) << " dB RMS (worst " << juce::String (ma, 1) << " dB)"
-                  << (ra <= proc.pref ("eqClose") ? ": close enough, mark the room as tuned." : ": refine the EQ, or mark it as tuned if it sounds right.");
+                  << (ra <= proc.pref ("eqClose") ? (proc.listening.done ? ": close enough, mark the room as tuned." : ": close enough. Now the listening check, then mark it as tuned.")
+                                                  : ": refine the EQ, or mark it as tuned if it sounds right.");
             }
             if (t.isEmpty()) t = "Once the EQ is in your processor (I've entered this EQ), measure a check at the same positions.";
             txt (checkInfo, t, room.count (true) > 0 ? p.text : p.textDim);
@@ -796,7 +823,7 @@ public:
                 comp.setBounds (row);
                 c.removeFromTop (6);
             };
-            put ("Target", targetBox);
+            put ("Target", targetLink);
             put ("EQ on", speakerBox);
             {
                 auto row = c.removeFromTop (24);
@@ -989,6 +1016,7 @@ private:
         proc.system.syncLinks();
         room.baseEq = entered;
         room.suggested.clear();
+        proc.noteTunedConditions();
         // the previous check is replaced by the next one
         room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [] (const RoomMeasurement& m) { return m.after; }), room.meas.end());
         ++room.checkRound;
@@ -1069,7 +1097,7 @@ private:
         settings.genOn = true;
         settings.running = true;
         phase = Phase::Settling;
-        phaseStart = juce::Time::getMillisecondCounterHiRes();
+        phaseStart = la::clock::ms();
         settleUntil = proc.analyzer.samplesWritten() + (juce::uint64) (kSettleSeconds * rate());
         progress = 0.0f;
         status.clear();
@@ -1104,7 +1132,7 @@ private:
         if (proc.numOutputs() + 1 != outputBox.getNumItems()) refresh();
         if (phase == Phase::Idle) return;
         if (! settings.genOn.load()) { cancel ("Stopped: the generator was turned off."); return; }
-        const double elapsed = juce::Time::getMillisecondCounterHiRes() - phaseStart;
+        const double elapsed = la::clock::ms() - phaseStart;
         if (phase == Phase::Settling)
         {
             const auto done = proc.analyzer.samplesAnalysed();
@@ -1114,7 +1142,7 @@ private:
                 delaySerial = proc.analyzer.readDelayReport().serial;
                 settings.requestFindDelay = true;
                 phase = Phase::FindingTime;
-                phaseStart = juce::Time::getMillisecondCounterHiRes();
+                phaseStart = la::clock::ms();
             }
         }
         else if (phase == Phase::FindingTime)
@@ -1125,7 +1153,7 @@ private:
                 settings.requestResetAverages = true;
                 sawReset = false;
                 phase = Phase::Averaging;
-                phaseStart = juce::Time::getMillisecondCounterHiRes();
+                phaseStart = la::clock::ms();
             }
             else if (elapsed > 10000.0) { cancel ("The timing search did not answer. Check the audio device."); return; }
         }
@@ -1213,7 +1241,8 @@ private:
 
     juce::ToggleButton showPositions { "Positions" }, showBefore { "As found" }, showAfter { "Check" }, showPredicted { "With suggested EQ" };
     juce::TextButton addPositionButton;
-    juce::ComboBox outputBox, targetBox, speakerBox, bandsBox, boostBox;
+    juce::ComboBox outputBox, targetBox, speakerBox, bandsBox, boostBox;   // targetBox: kept for the preview, not shown
+    juce::TextButton targetLink;
     juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "I've entered this EQ" };
     juce::ToggleButton allowToggle;
     juce::TextButton tunedButton { "Mark the room as tuned" };

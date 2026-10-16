@@ -17,7 +17,7 @@ namespace la::ui
 class SettingsPage : public juce::Component, private juce::Timer
 {
 public:
-    std::function<void()> onThemeChanged, onLayoutChanged, onPrefsChanged, onVenueChanged;
+    std::function<void()> onThemeChanged, onLayoutChanged, onPrefsChanged, onVenueChanged, onShowTour;
 
     explicit SettingsPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), updates (p.updates)
     {
@@ -186,8 +186,8 @@ private:
     bool visibleCat (int c) const
     {
         if (proc.isStandalone() || proc.uiAsStandalone) return true;
-        // the VST3 only monitors: no audio device, no tuning
-        return c != (int) PrefCat::Tuning && c != (int) PrefCat::Audio;
+        // the VST3 only monitors: no audio device, no tuning, no generator
+        return c != (int) PrefCat::Tuning && c != (int) PrefCat::Audio && c != (int) PrefCat::Generator;
     }
 
     static juce::String catBlurb (int c)
@@ -196,8 +196,8 @@ private:
         {
             case PrefCat::Audio: return "The interface and the reference the mics are compared against. The mics themselves are set up on Mics.";
             case PrefCat::Measurement: return "How the transfer function and the RTA are worked out. The defaults suit most tuning; the guided steps pick what they need.";
-            case PrefCat::Display: return "What the screen shows and how.";
-            case PrefCat::Units: return "Distances and the air temperature (it sets the speed of sound for delays).";
+            case PrefCat::Display: return "What the screen shows and how, and the tour of LiveAlign.";
+            case PrefCat::Units: return "Distances and temperatures (the temperature of the day is on Venue, Details).";
             case PrefCat::Tuning: return "Your defaults for every venue. A venue can keep its own value (This venue): it is saved with the venue and listed in the report.";
             case PrefCat::Generator: return "The test signal: where it starts, how loud it may ever get and how gently it comes in.";
             case PrefCat::Monitoring: return "Defaults for new sessions' event level, and how the feedback watch and the delay tracking behave.";
@@ -377,6 +377,13 @@ private:
             }
             case PrefCat::Display:
             {
+                heading ("Help");
+                {
+                    auto& b = make<juce::TextButton>();
+                    b.setButtonText ("Show the tour");
+                    b.onClick = [this] { if (onShowTour) onShowTour(); };
+                    row ("Tour", b, "A few cards on how LiveAlign is laid out. Help for each step is on the ? next to the page title.");
+                }
                 heading ("Screen");
                 row ("Graphs", combo ({ "1 graph", "2 graphs", "3 graphs" }, settings.paneCount.load() - 1,
                                       [this] (int i) { settings.paneCount = i + 1; if (onLayoutChanged) onLayoutChanged(); }),
@@ -402,19 +409,10 @@ private:
                 const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
                 row ("Temperature unit", combo ({ deg + "C  Celsius", deg + "F  Fahrenheit" }, settings.temperatureUnit.load(),
                                                 [this] (int i) { settings.temperatureUnit = i; rebuildLater(); }));
-                auto& t = make<juce::Slider>();
-                t.setSliderStyle (juce::Slider::LinearHorizontal);
-                t.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 24);
-                const bool f = settings.temperatureUnit.load() == 1;
-                t.setRange (f ? 14.0 : -10.0, f ? 113.0 : 45.0, 1.0);
-                t.setTextValueSuffix (" " + deg + (f ? "F" : "C"));
-                const double c = settings.temperatureC.load();
-                t.setValue (f ? c * 9.0 / 5.0 + 32.0 : c, juce::dontSendNotification);
-                t.onValueChange = [this, &t]
-                {
-                    const double v = t.getValue();
-                    settings.temperatureC = (float) (settings.temperatureUnit.load() == 1 ? (v - 32.0) * 5.0 / 9.0 : v);
-                };
+                auto& t = make<juce::Label>();
+                t.setText ("On Venue, Details (each session keeps its own, with the humidity)", juce::dontSendNotification);
+                t.setFont (font (12.0f));
+                t.setColour (juce::Label::textColourId, pal().textDim);
                 row ("Temperature", t, "The air temperature sets the speed of sound, used to turn delays into distances");
                 row ("Distance unit", combo ({ "Feet", "Metres" }, settings.distanceUnit.load(), [this] (int i) { settings.distanceUnit = i; }));
                 break;
@@ -527,7 +525,7 @@ private:
                 if (settings.theme.load() != 0) { settings.theme = 0; if (onThemeChanged) onThemeChanged(); }
                 if (onLayoutChanged) onLayoutChanged();
                 break;
-            case PrefCat::Units: settings.temperatureUnit = 1; settings.temperatureC = 20.0f; settings.distanceUnit = 0; break;
+            case PrefCat::Units: settings.temperatureUnit = 1; settings.distanceUnit = 0; break;
             case PrefCat::Reports:
                 UserPrefs::set ("reportLogo", {});
                 UserPrefs::set ("venueFolder", {});
