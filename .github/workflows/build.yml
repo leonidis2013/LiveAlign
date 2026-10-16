@@ -147,16 +147,28 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          Compress-Archive -Path "${{ steps.locate.outputs.vst3 }}" -DestinationPath LiveAlign-Windows-VST3.zip
-          Compress-Archive -Path "${{ steps.locate.outputs.app }}" -DestinationPath LiveAlign-Windows-App.zip
+          # 7-Zip keeps the LiveAlign.vst3 bundle folder as the archive's root (Compress-Archive wrote an empty zip for it)
+          7z a -tzip LiveAlign-Windows-VST3.zip "${{ steps.locate.outputs.vst3 }}" > /dev/null
+          7z a -tzip LiveAlign-Windows-App.zip "${{ steps.locate.outputs.app }}" > /dev/null
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
           ditto -c -k --keepParent "${{ steps.locate.outputs.vst3 }}" LiveAlign-macOS-VST3.zip
           ditto -c -k --keepParent "${{ steps.locate.outputs.app }}" LiveAlign-macOS-App.zip
+
+      - name: Check the packages
+        shell: bash
+        run: |
+          # a package that is only a few bytes is an empty archive: fail here rather than publish it
+          for z in LiveAlign-*.zip; do
+            size=$(wc -c < "$z")
+            echo "$z: $size bytes"
+            if [[ "$size" -lt 500000 ]]; then echo "::error::$z is too small to be a build"; exit 1; fi
+          done
+          unzip -l LiveAlign-*-VST3.zip | tail -n 12
 
       - uses: actions/upload-artifact@v4
         with:
