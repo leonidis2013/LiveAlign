@@ -137,7 +137,9 @@ public:
             }
             r.checkedAt = juce::Time::getCurrentTime();
             if (! flag->load()) return;
-            juce::MessageManager::callAsync ([flag, self, r]
+            auto* mm = juce::MessageManager::getInstanceWithoutCreating();
+            if (mm == nullptr) return;   // the app has shut down
+            mm->callAsync ([flag, self, r]
             {
                 if (! flag->load()) return;
                 self->current = r;

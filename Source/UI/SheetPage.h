@@ -210,7 +210,7 @@ public:
                 if (rr.contains (e.getPosition())) { selectedEntry = idx; refresh(); return; }
             return;
         }
-        for (int i = 0; i < (int) rows.size(); ++i)
+        for (int i = 0; i < (int) rows.size() && i < (int) proc.system.sources.size(); ++i)
             if (rows[(size_t) i].contains (e.getPosition()))
             {
                 auto& s = proc.system.sources[(size_t) i];

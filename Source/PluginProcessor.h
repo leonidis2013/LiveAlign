@@ -114,7 +114,10 @@ public:
     // plan; nothing measured, no delays, EQ or alignments, one new session.
     void newVenueFrom (const juce::String& name);
     static juce::String projectExtension() { return ".lavenue"; }
-    bool projectChanged() const;   // differs from the last save / open
+    bool projectChanged() const;      // differs from the last save / open (kept for a moment: see the .cpp)
+    bool projectChangedNow() const;   // asked afresh
+    mutable bool changedCache = false;
+    mutable juce::uint32 changedCheckedAt = 0;
 
     // ---- autosave and crash recovery (standalone) ----
     // Every few minutes the open venue, if changed, is copied to a recovery file (the venue file itself is only written

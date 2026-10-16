@@ -170,7 +170,7 @@ struct SessionChecks
             loopbackInverted = e->getBoolAttribute ("loopbackInverted");
             loopbackLevelDbfs = (float) e->getDoubleAttribute ("loopbackLevelDbfs", -200.0);
             noiseDone = e->getBoolAttribute ("noiseDone");
-            noiseMics = e->getIntAttribute ("noiseMics");
+            noiseMics = juce::jlimit (0, kMaxMics, e->getIntAttribute ("noiseMics"));
             setup = e->getStringAttribute ("setup");
             auto getF = [e] (const char* k) { return e->hasAttribute (k) ? (float) e->getDoubleAttribute (k) : NAN; };
             tempC = getF ("tempC");

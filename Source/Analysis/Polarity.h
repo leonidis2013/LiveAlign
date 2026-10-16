@@ -169,6 +169,7 @@ inline Result absolute (const FreqTable& t, double minCoh, bool peakKnown, bool 
     Result r;
     r.peakKnown = peakKnown;
     r.peakInverted = peakInverted;
+    if (! t.hasPhase()) { r.verdict = Unknown; return r; }   // an imported response without phase says nothing about polarity
     auto idx = passband (t, minCoh, 10.0);
     if (idx.size() < 4) { r.verdict = peakKnown ? Unsure : Unknown; return r; }
     // Only the woofer's own range: a two-way box has its own crossover (woofer to horn, often near 1.5 - 3 kHz) whose
@@ -220,6 +221,7 @@ inline Result absolute (const FreqTable& t, double minCoh, bool peakKnown, bool 
 // the phase difference through the band both are loud in. Normal = same polarity as `ref`, Inverted = opposite.
 inline Result relative (const FreqTable& t, const FreqTable& ref, double minCoh, double maxTauMs = 0.5)
 {
+    if (! t.hasPhase() || ! ref.hasPhase()) { Result r; r.verdict = Unknown; return r; }
     Result r;
     const auto a = passband (t, minCoh), b = passband (ref, minCoh);
     if (a.size() < 4 || b.size() < 4 || ! ref.hasPhase()) { r.verdict = Unknown; return r; }

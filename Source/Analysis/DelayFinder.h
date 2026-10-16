@@ -81,7 +81,8 @@ inline DelayResult findDelay (const float* ref, const float* mic, int count, dou
         noise += v * v;
         ++nn;
     }
-    noise = nn > 0 ? std::sqrt (noise / nn) : 1e-30;
+    if (nn == 0) return r;   // too narrow a window to judge the peak against anything: not valid
+    noise = std::sqrt (noise / nn);
 
     // Parabolic interpolation on |r| around the peak for a sub-sample estimate.
     const double ym = std::abs (at (best - 1)), y0 = bestAbs, yp = std::abs (at (best + 1));

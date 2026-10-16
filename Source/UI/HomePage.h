@@ -221,7 +221,7 @@ public:
             drawStatusBadge (g, juce::Rectangle<float> (16.0f, 16.0f).withCentre ({ (float) r.getRight() - 18.0f, (float) r.getCentreY() }), st.status, st.fraction);
 
             auto text = r.withTrimmedLeft (48).withTrimmedRight (i == (int) Page::Venue ? 180 : 36);
-            juce::String name = pageName (i);
+            juce::String name = i == (int) Page::Venue ? "Venue" : i == (int) Page::Mics ? "Mics" : pageName (i);   // the groups, as the navigation names them
             if (isTuningStep (i)) name = juce::String (tuningStepNumber (i)) + "  " + name;
             g.setColour (p.text);
             g.setFont (font (13.5f, true));
@@ -308,8 +308,8 @@ public:
             return col;
         };
         auto restA = column (colA, { -1, (int) Page::Venue, (int) Page::Mics, -3, (int) Page::MonitorMic, (int) Page::Monitor });
-        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Crossover, (int) Page::Level, (int) Page::Coverage, (int) Page::Align, (int) Page::Acoustics,
-                                     (int) Page::Room, (int) Page::Headroom, (int) Page::Listening, (int) Page::Feedback });
+        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Headroom, (int) Page::Crossover, (int) Page::Level, (int) Page::Coverage, (int) Page::Align,
+                                     (int) Page::Acoustics, (int) Page::Room, (int) Page::Listening, (int) Page::Feedback });
         auto bottom = colA.getBottom() > colB.getBottom() ? restA : restB;
         juce::ignoreUnused (bottom);
         // reports along the bottom of both columns
@@ -668,8 +668,11 @@ private:
         updateButtons();
         repaint (sessionsCard);
         repaint (summaryArea);
-        const bool u = proc.projectChanged();
-        if (u != unsavedNow) { unsavedNow = u; repaint (venueCard); }
+        if (isShowing())
+        {
+            const bool u = proc.projectChanged();
+            if (u != unsavedNow) { unsavedNow = u; repaint (venueCard); }
+        }
         // the folder may change behind our back (a venue copied in): look again now and then
         if (isShowing() && ++scanTick % 40 == 0) rescanVenues();
     }

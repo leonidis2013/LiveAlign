@@ -3,8 +3,9 @@
 
 #pragma once
 #include "../Clock.h"
-// Tuning step: Gain and headroom. Pink noise in 3 dB steps through the whole system up to the show level at FOH
-// (Venue, Details) plus the headroom wanted, watching the FOH mic: when the level stops rising with the generator the
+// Tuning step 2: Gain and headroom, once every speaker is verified (Speaker response) and before anything is tuned,
+// so the gain structure is set first (and checked again at the end with the EQ in). Pink noise in 3 dB steps through
+// the whole system up to the show level at FOH (Venue, Details) plus the headroom wanted, watching the FOH mic: when the level stops rising with the generator the
 // system is compressing or limiting, and when the coherence drops it is distorting. Then each speaker alone at the
 // same drive (what it gets in the show): one that compresses first is the weak link. The amp gains and limiter
 // thresholds go on the processor sheet. Loud: hearing protection, and nobody near the speakers.
@@ -476,7 +477,7 @@ private:
         {
             g.setColour (p.textDim);
             g.setFont (font (13.0f));
-            g.drawFittedText ("Each step plays 5 s of pink noise and reads the level at FOH (dBA for the whole system, dBC for a speaker alone). A clean system rises 3 dB for every 3 dB of generator; "
+            g.drawFittedText ("Each step plays 5 s of pink noise and reads the level at FOH (LAeq for the whole system, LCeq for a speaker alone, per IEC 61672-1). A clean system rises 3 dB for every 3 dB of generator; "
                               "a step that rises less is compressing.", plot.reduced (40), juce::Justification::centred, 3);
         }
     }

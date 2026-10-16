@@ -444,7 +444,8 @@ public:
             drawTile (g, tiles[(size_t) i].toFloat(), label, value, unit, c, 22.0f);
         };
         auto num = [] (double v, int d) { return ! std::isfinite (v) ? juce::String ("-") : d == 0 ? juce::String (juce::roundToInt (v)) : juce::String (v, d); };
-        const auto sum = summariseAcoustics (proc);
+        summary = summariseAcoustics (proc);   // once per paint: paintTree reads the same summary
+        const auto& sum = summary;
         const double rt = sum.rtMid;
         tile (0, fromSweeps ? "REVERB (RT, 500-1k)" : "REVERB (ESTIMATE)", num (rt, 2), "s", ! std::isfinite (rt) ? p.textDim : rt < rtLo * 0.85 || rt > rtHi * 1.15 ? p.warn : p.good);
         tile (1, "WARMTH / BRILLIANCE", num (sum.bassRatio, 2) + " / " + num (sum.trebleRatio, 2), "BR / TR",
@@ -617,7 +618,7 @@ private:
                 if (hiRt > rt * 1.2) t << " The highs ring longer than the mids: hard, bare surfaces.";
                 const auto modes = room.modes (room.count (true) > 0 && room.count (false) == 0);
                 if (! modes.empty()) t << " Room modes at " << freqLabel (modes.front().freq) << " Hz" << (modes.size() > 1 ? " and more" : "") << ": cut gently; moving the subs changes them.";
-                const auto sum = summariseAcoustics (proc);
+                const auto& sum = summary;
                 if (sum.ringingThird >= 0) { t << " The " << freqLabel (acoustics::thirds()[(size_t) sum.ringingThird]) << " Hz third octave rings " << juce::String (sum.ringingRatio, 1) << "x its neighbours."; st = std::max (st, 2); }
                 if (std::isfinite (sum.schroederHz)) t << " Below about " << juce::String (juce::roundToInt (sum.schroederHz)) << " Hz (the Schroeder frequency) single room modes rule: EQ there only helps where most seats agree.";
                 else t << " Set the Room size for the Schroeder frequency and the critical distance.";
@@ -625,7 +626,7 @@ private:
             }
             // 4 speech, and late energy
             {
-                const auto sum = summariseAcoustics (proc);
+                const auto& sum = summary;
                 const double edt = avg.mid (&acoustics::Band::edt), sti = std::isfinite (sum.stiCorrected) ? sum.stiCorrected : avg.sti;
                 juce::String t;
                 int st = 1;
@@ -689,7 +690,7 @@ private:
         }
         g.setColour (p.textFaint);
         g.setFont (font (10.5f));
-        g.drawFittedText ("From the system's own sweeps (ISO 3382 / IEC 60268-16 methods); a full acoustic survey uses an omnidirectional source.",
+        g.drawFittedText ("From the system's own sweeps: RT, EDT, clarity and Ts per ISO 3382-1, the sweep per ISO 18233, STI per IEC 60268-16, NC per ANSI S12.2, NR per ISO 1996. A full acoustic survey uses an omnidirectional source.",
                           treeCard.reduced (12, 8).removeFromBottom (28), juce::Justification::bottomLeft, 2);
     }
 
@@ -739,7 +740,8 @@ private:
                 auto results = std::make_shared<std::vector<acoustics::Result>>();
                 for (const auto& x : job->mics)
                     results->push_back (acoustics::analyse (deconv::impulse (job->ref.data(), x.data(), job->n, job->fs, 3.5), job->fs));
-                juce::MessageManager::callAsync ([safe, job, results] { if (safe != nullptr) safe->sweepDone (job->where, job->names, *results); });
+                if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())   // not after the app has shut down
+                    mm->callAsync ([safe, job, results] { if (safe != nullptr) safe->sweepDone (job->where, job->names, *results); });
             }).detach();
         }
         else if (phase == Phase::Recording && el > (2.0 * (sweepSec + 0.5) + 6.0) * 1000.0)
@@ -788,6 +790,8 @@ private:
     juce::Rectangle<int> posCard, treeCard;
 
     // ---- the details: reverberation, speech and reflections, the room ----
+    AcousticsSummary summary;   // the summary this paint is drawing
+
     void paintDetails (juce::Graphics& g, const AcousticsSummary& a, double rtLo, double rtHi)
     {
         const auto& p = pal();

@@ -261,7 +261,7 @@ private:
         s << "At " << (f ? juce::String (juce::roundToInt (far * 3.28084)) + " ft" : juce::String (juce::roundToInt (far)) + " m")
           << (proc.plan.lengthM > 1.0 ? " (the back of the room)" : "") << " the air takes " << juce::String (a4, 1) << " dB off 4 kHz, "
           << juce::String (a8, 1) << " dB off 8 kHz and " << juce::String (a16, 1) << " dB off 16 kHz";
-        s << (a8 >= 3.0 ? ": expected at the back, so Room EQ leaves it alone." : ".");
+        s << (a8 >= 3.0 ? ": expected at the back, so Room EQ leaves it alone" : "") << " (ISO 9613-1).";
         return s;
     }
 

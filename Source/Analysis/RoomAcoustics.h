@@ -140,7 +140,7 @@ inline std::vector<double> decayCurve (const std::vector<double>& h, int start, 
         peak = std::max (peak, s);
         if (i > win * 3 && s < noise * 2.0) { cut = i; break; }
     }
-    rangeDb = peak > 0.0 && noise > 0.0 ? 10.0 * std::log10 (peak / noise) : 100.0;
+    rangeDb = peak > 0.0 && noise > 0.0 ? 10.0 * std::log10 (peak / noise) : NAN;   // digital silence in the tail: no real noise floor to judge the decay against
 
     std::vector<double> edc ((size_t) cut, 0.0);
     double acc = 0.0;

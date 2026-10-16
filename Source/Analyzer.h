@@ -138,7 +138,7 @@ public:
 
     // ---- message thread ----
     void requestLoopbackCheck() { loopbackRequested = true; }
-    void requestNoiseMeasurement (double seconds) { noiseSeconds = seconds; noiseRequested = true; }
+    void requestNoiseMeasurement (double seconds) { noiseSeconds = juce::jlimit (1.0, 60.0, seconds); noiseRequested = true; }
 
     void setCalibration (int mic, const FreqTable& t, const juce::String& name)
     {

@@ -151,6 +151,9 @@ struct Alignment
     // For the crossover pair: both transfer functions at the spot (same timing), and the delay of `align` that makes
     // them add up best through the crossover region. Used instead of the arrivals when found.
     FreqTable refTf, alignTf;   // not saved
+    std::vector<float> refIr, alignIr;   // each speaker's impulse response at the spot, on the same time base (not saved)
+    int refIrZero = 0, alignIrZero = 0;  // the sample of time zero (the mic delay both were measured with)
+    double irRate = 48000.0;
     double lockMs = 0.0;        // the mic delay both were measured with
     bool phaseValid = false;
     double phaseDelayMs = 0.0;

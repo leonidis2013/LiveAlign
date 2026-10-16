@@ -26,6 +26,7 @@ LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
     applyAppPrefs();
     settings.genLevelDb = (float) la::AppPrefs::get().value ("genStartDb");
     savedProjectText = createProjectXml()->toString();
+    changedCheckedAt = 0;
 }
 
 // This computer's preferences that live in the audio settings (the generator's ceiling and fade-in).
@@ -976,6 +977,7 @@ juce::String LiveAlignProcessor::saveProject (const juce::File& f)
     if (! x->writeTo (file)) return "Could not write " + file.getFullPathName();
     projectFile = file;
     savedProjectText = text;
+    changedCheckedAt = 0;
     la::venues::noteUsed (file);
     return {};
 }
@@ -987,6 +989,7 @@ juce::String LiveAlignProcessor::openProject (const juce::File& f)
     loadProjectXml (*x);
     projectFile = f;
     savedProjectText = createProjectXml()->toString();
+    changedCheckedAt = 0;
     la::venues::noteUsed (f);
     return {};
 }
@@ -998,6 +1001,7 @@ void LiveAlignProcessor::newProject()
     settings.requestResetAverages = true;
     settings.requestResetLeq = true;
     savedProjectText = createProjectXml()->toString();
+    changedCheckedAt = 0;
 }
 
 void LiveAlignProcessor::newVenueFrom (const juce::String& name)
@@ -1054,11 +1058,22 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     settings.requestResetAverages = true;
     settings.requestResetLeq = true;
     savedProjectText = createProjectXml()->toString();
+    changedCheckedAt = 0;
 }
 
+// Serialising the whole venue is not free (every trace, measurement and the level log), so the answer is kept for a
+// second and a half: the pages ask several times a second. projectChangedNow() asks afresh (before a save or close).
 bool LiveAlignProcessor::projectChanged() const
 {
-    return createProjectXml()->toString() != savedProjectText;
+    const auto now = la::clock::ms32();
+    if (changedCheckedAt != 0 && now - changedCheckedAt < 1500) return changedCache;
+    return projectChangedNow();
+}
+bool LiveAlignProcessor::projectChangedNow() const
+{
+    changedCache = createProjectXml()->toString() != savedProjectText;
+    changedCheckedAt = la::clock::ms32();
+    return changedCache;
 }
 
 // ---------------------------------------------------------------------------- autosave
@@ -1094,6 +1109,7 @@ juce::String LiveAlignProcessor::restoreRecovery()
     const auto from = x->getStringAttribute ("recoveredFrom");
     projectFile = from.isNotEmpty() && juce::File::isAbsolutePath (from) ? juce::File (from) : juce::File();
     savedProjectText.clear();   // restored work is unsaved until the user saves it
+    changedCheckedAt = 0;
     return {};
 }
 
@@ -1130,6 +1146,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
             const juce::String path = x->getStringAttribute ("projectFile");
             projectFile = path.isNotEmpty() ? juce::File (path) : juce::File();
             savedProjectText = x->getStringAttribute ("savedProjectText", createProjectXml()->toString());
+            changedCheckedAt = 0;
         }
         else
         {
@@ -1137,6 +1154,7 @@ void LiveAlignProcessor::setStateInformation (const void* data, int size)
             settings.load (*x);
             loadMicCalibrations (*x);
             savedProjectText = createProjectXml()->toString();
+            changedCheckedAt = 0;
         }
     }
     if (! startLevelApplied) { settings.genLevelDb = (float) la::AppPrefs::get().value ("genStartDb"); startLevelApplied = true; }

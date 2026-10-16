@@ -108,7 +108,7 @@ private:
                   std::function<void (const juce::String&)> done);
 
     // venue and sessions
-    void saveProject (bool askForFile);
+    void saveProject (bool askForFile, std::function<void()> then = {});
     void openProject();
     void newProject();
     void newSession();
@@ -155,13 +155,6 @@ public:
     la::ui::HeadroomPage& headroomPageForPreview() { return *headroomPage; }
     la::ui::ListeningPage& listeningPageForPreview() { return *listeningPage; }
 private:
-    juce::TextButton tabButtons[3];
-    int tabPage (int i) const
-    {
-        using la::ui::Page;
-        if (la::ui::isMicsTab (shownPage)) return i == 0 ? (int) Page::Mics : (int) Page::Locker;
-        return i == 0 ? (int) Page::Venue : i == 1 ? (int) Page::Speakers : (int) Page::Plan;
-    }
     std::unique_ptr<la::ui::MicLockerPage> lockerPage;
     std::unique_ptr<la::ui::SettingsPage> settingsPage;
     std::unique_ptr<la::ui::FeedbackPage> feedbackPage;

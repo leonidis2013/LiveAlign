@@ -1129,7 +1129,7 @@ private:
 
     void timerCallback() override
     {
-        if (proc.numOutputs() + 1 != outputBox.getNumItems()) refresh();
+        if (juce::jmax (1, proc.numOutputs()) + 1 != outputBox.getNumItems()) refresh();   // the same count refresh() builds with
         if (phase == Phase::Idle) return;
         if (! settings.genOn.load()) { cancel ("Stopped: the generator was turned off."); return; }
         const double elapsed = la::clock::ms() - phaseStart;

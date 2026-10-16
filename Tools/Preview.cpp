@@ -287,7 +287,7 @@ public:
                         const auto* pc = proc.system.sources[(size_t) i].polarityOf (c);
                         return pc == nullptr ? juce::String ("none")
                                              : juce::String (la::polarity::verdictName (pc->verdict)) + " (own " + la::polarity::verdictName (pc->own) + ", excess "
-                                                   + juce::String (pc->phaseDeg, 0) + " deg, peak " + (pc->peakInverted ? "-" : "+") + ", vs " + juce::String (pc->against)
+                                                   + juce::String (juce::roundToInt (pc->phaseDeg)) + " deg, peak " + (pc->peakInverted ? "-" : "+") + ", vs " + juce::String (pc->against)
                                                    + " " + la::polarity::verdictName (pc->relative) + ")";
                     };
                     std::printf ("polarity: Main L %s | Sub %s\n", pol (0, 0).toRawUTF8(), pol (2, 0).toRawUTF8());
@@ -455,6 +455,8 @@ public:
                     std::printf ("alignment 1: ref=%s align=%s at %s arrivals %.3f / %.3f phase=%d %.2f need=%.3f\n", proc.system.sources[(size_t) a.ref].name.toRawUTF8(),
                                  proc.system.sources[(size_t) a.align].name.toRawUTF8(), a.spot.toRawUTF8(), a.refArrivalMs, a.alignArrivalMs, (int) a.phaseValid, a.phaseDelayMs,
                                  a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs));
+                    shot ("alignment-impulse");
+                    check (! a.refIr.empty() && ! a.alignIr.empty(), "time alignment: both impulse responses captured");
                     page.applyAlignmentNow();
                     // the processor has the delay now: apply it in the simulation too
                     simSubDelay = (int) std::lround (proc.system.sources[2].proc.delayMs * 48.0);
@@ -524,7 +526,7 @@ public:
                 if (after (200))
                 {
                     std::printf ("feedback watch: %d marked (%s Hz)\n", (int) la::ui::feedbackMarks().size(),
-                                 la::ui::feedbackMarks().empty() ? "-" : juce::String (la::ui::feedbackMarks().back(), 0).toRawUTF8());
+                                 la::ui::feedbackMarks().empty() ? "-" : juce::String (juce::roundToInt (la::ui::feedbackMarks().back())).toRawUTF8());
                     shot ("monitor-waterfall");
                     ringHz = 0.0;
                     proc.settings.view = 1;

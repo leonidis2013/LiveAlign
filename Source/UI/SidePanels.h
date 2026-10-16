@@ -208,6 +208,7 @@ public:
             history.push_back ({ juce::Time::getCurrentTime(), r.ms[(size_t) m] });
             if (history.size() > 720) history.erase (history.begin());   // an hour at one every 5 s
         }
+        if (r.serial == report.serial && ! tracking()) return;   // nothing new: no repaint
         if (r.serial != report.serial) waiting = false;
         report = r;
         repaint();

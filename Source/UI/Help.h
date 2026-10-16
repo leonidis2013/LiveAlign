@@ -15,57 +15,58 @@ struct Term { const char* name; const char* text; };
 inline const std::vector<Term>& glossary()
 {
     static const std::vector<Term> t {
-        { "Absorption (air)", "High frequencies lose energy travelling through air, more when it is dry. At 30 m (100 ft) 8 kHz can be several dB down: normal at the back of a room, and not something to EQ." },
-        { "ALcons", "Articulation loss of consonants (%), from the STI: the share of consonants likely to be missed. Under 5 % is good, over 15 % is poor." },
+        { "Absorption (air)", "High frequencies lose energy travelling through air, more when it is dry. At 30 m (100 ft) 8 kHz can be several dB down: normal at the back of a room, and not something to EQ. Worked out as in ISO 9613-1." },
+        { "ALcons", "Articulation loss of consonants (%), from the STI (Farrel Becker's relation): the share of consonants likely to be missed. Under 5 % is good, over 15 % is poor." },
         { "As found / as left", "The processor settings and responses before this session changed anything, and after. The reports show both." },
         { "Bass ratio", "The reverberation at 125 - 250 Hz against 500 Hz - 1 kHz. Above 1 the room is warm; much above 1.3 it can sound boomy." },
-        { "C50", "Clarity for speech: the sound energy in the first 50 ms against the rest (dB). Above 0 dB speech is clear; below -3 dB it starts to blur." },
-        { "C80", "Clarity for music: the first 80 ms against the rest (dB). About -2 to +4 dB suits most music." },
+        { "C50", "Clarity for speech: the sound energy in the first 50 ms against the rest (dB, ISO 3382-1). Above 0 dB speech is clear; below -3 dB it starts to blur." },
+        { "C80", "Clarity for music: the first 80 ms against the rest (dB, ISO 3382-1). About -2 to +4 dB suits most music." },
         { "Calibration file", "A mic's own frequency response, measured by its maker, that LiveAlign takes out of every measurement. A 0 degree file is for a mic aimed at the speaker, a 90 degree file for one pointing up." },
         { "Coherence", "How much of what the mic hears is the signal you are playing (1) rather than noise or the room (0). Below about 0.6 a reading is not to be trusted, so it is greyed out." },
         { "Compression", "When a system is pushed, the amps or limiters stop the level rising as fast as the signal: 3 dB more in gives less than 3 dB more out. Gain and headroom looks for it." },
-        { "Coverage", "How evenly a speaker reaches the seats it is meant for. The spec (plus or minus 3 dB by default) is how much the level may vary across its area." },
+        { "Coverage", "How evenly a speaker reaches the seats it is meant for. The spec (plus or minus 3 dB by default) is how much the level may vary across its area; AVIXA A102.01 (Audio Coverage Uniformity) rates a system the same way." },
         { "Critical distance", "Where the direct sound from a speaker and the room's reverberant sound are equally loud. Beyond it the room dominates and EQ helps less. Depends on the speaker's directivity (Q) and the room." },
         { "Crossover", "Where the sub hands over to the tops: a low-pass on the sub and a high-pass on the tops, at the same frequency, so they add up to a flat response." },
-        { "dBA, dBC, dBZ", "Sound level weighted like the ear at moderate levels (A), with the low end included (C), or flat (Z). Show limits are usually LAeq (A) or LCeq (C)." },
+        { "dBA, dBC, dBZ", "Sound level weighted like the ear at moderate levels (A), with the low end included (C), or flat (Z), as IEC 61672-1 defines them. Show limits are usually LAeq (A) or LCeq (C)." },
         { "dBFS", "Decibels against digital full scale: 0 dBFS is the loudest a signal can be. Used when a mic has no sound-level calibration." },
         { "Delay", "Time added to a speaker in the processor so its sound arrives together with another's. 1 ms is about 34 cm (13.5 in) at 20 C." },
         { "Directivity (Q)", "How narrowly a speaker radiates: 2 for nearly all round (a sub), around 9 for 90 x 60 degrees, 30 for a line array. From the data sheet's coverage angles." },
         { "Distortion", "Sound that is not in the signal: the amps or drivers running out. With pink noise it shows as the coherence dropping as the level goes up." },
         { "Echo", "A reflection late and loud enough to be heard as a repeat (usually more than 50 ms after the direct sound): a far wall, a balcony front." },
-        { "EDT", "Early decay time: the reverberation time from the first 10 dB of the decay, which is what the ear notices most. Compare it with RT." },
+        { "EDT", "Early decay time: the reverberation time from the first 10 dB of the decay (ISO 3382-1), which is what the ear notices most. Compare it with RT." },
         { "EQ (parametric)", "A filter at a frequency, with a gain and a width (Q). Room EQ uses broad cuts and gentle boosts toward the target." },
         { "First reflection", "The delay between the direct sound and the first strong reflection (the initial time delay gap). Short gaps add intimacy; very short ones colour the sound." },
         { "Flutter echo", "A rapid ringing between two parallel hard surfaces. A clap in the room shows it." },
         { "Generator", "LiveAlign's test signal: pink noise, a sweep or a sine, out of the outputs you pick. It always starts off, and never goes above the ceiling in Settings." },
         { "Headroom", "How far the system can go above the show level before it compresses or limits. Peaks in music need several dB (6 dB is a common aim)." },
         { "Impulse response", "What the mic hears from an instant click through the system and the room: the direct sound, then the reflections and the decay. Everything about the room comes from it." },
-        { "LAeq", "The A-weighted sound level averaged over a time (15 minutes, an hour ...). Most show limits are an LAeq." },
+        { "LAeq", "The A-weighted sound level averaged over a time (15 minutes, an hour ...), per IEC 61672-1. Most show limits are an LAeq (the WHO and many local rules quote 15 minute or 1 hour LAeq)." },
         { "Level balance", "Each speaker's level against the others where the audience hears them: left and right equal, fills a little under the mains, the sub as the target asks." },
         { "Limiter", "A ceiling in the processor or amp that protects the speakers. The threshold is its setting (dBu or dBFS)." },
         { "Loopback", "A cable from an interface output straight back to an input, carrying the signal that feeds the PA. The reference every mic is compared with, and the interface's own delay." },
-        { "NC, NR", "Noise criterion and noise rating: one number for the background noise in a room (air handling, traffic). Under 30 is quiet; over 40 starts to mask speech." },
+        { "NC, NR", "Noise criterion (ANSI S12.2) and noise rating (ISO 1996): one number for the background noise in a room (air handling, traffic), from its octave bands. Under 30 is quiet; over 40 starts to mask speech." },
         { "Phase", "Where in its cycle a frequency arrives. Two speakers that add up in phase reinforce; out of phase they cancel." },
-        { "Pink noise", "Noise with equal energy in every octave: it sounds even, and it is the usual test signal for system tuning." },
+        { "Pink noise", "Noise with equal energy in every octave: it sounds even, and it is the usual test signal for system tuning (IEC 60268-1 describes it as the programme simulation noise for loudspeaker testing)." },
         { "Polarity", "Whether a speaker pushes when the signal pushes (normal) or pulls (inverted). A wrong polarity cancels low end where speakers overlap." },
         { "Processor sheet", "Every setting to enter in your processor, output by output: filters, delay, polarity, gain, EQ. Tick each output once it is in." },
         { "Q", "The width of an EQ band: higher Q is narrower. Room EQ keeps cuts at Q 4 or wider, boosts wider still." },
         { "Reference", "The signal the system is fed, which every mic is compared with: the loopback, or the generator's own copy." },
-        { "Reverberation time (RT)", "How long the sound takes to die away by 60 dB (RT60), in seconds, per octave. Speech wants under about 1 s; music a little more." },
+        { "Reverberation time (RT)", "How long the sound takes to die away by 60 dB (RT60), in seconds, per octave, measured from the decay as T20 or T30 (ISO 3382-1 / ISO 3382-2). Speech wants under about 1 s; music a little more." },
         { "RTA", "Real-time analyser: the level of what the mic hears in each band (1/3 octave or finer), with no reference." },
         { "Schroeder frequency", "Below it, single room modes (standing waves) rule: peaks and dips that change from seat to seat. EQ there only helps where most seats agree." },
         { "Seat-to-seat variance", "How much the tonal balance differs from point to point (dB). Under 2 dB is very even; EQ cannot fix differences between seats, aim and coverage can." },
-        { "SPL", "Sound pressure level (dB SPL). A mic calibrated with an acoustic calibrator reads true SPL." },
+        { "SPL", "Sound pressure level (dB re 20 µPa). A mic calibrated with an acoustic calibrator (IEC 60942 class 1 or 2, usually 94 or 114 dB at 1 kHz) reads true SPL." },
         { "Speed of sound", "About 343 m/s (1125 ft/s) at 20 C, faster when warmer. Delays set at one temperature drift when the room warms up." },
-        { "STI", "Speech transmission index, 0 to 1: how well speech gets through the system and the room (with the noise). Above 0.6 is good, under 0.45 poor." },
+        { "STI", "Speech transmission index (IEC 60268-16), 0 to 1: how well speech gets through the system and the room (with the noise). Above 0.6 is good, under 0.45 poor; emergency and voice-alarm systems usually ask for 0.5 or more (ISO 7240-19, NFPA 72)." },
         { "Sweep", "A tone that glides from low to high. Sweeps give long, clean impulse responses for the room acoustics." },
         { "Target curve", "The tonal balance to tune toward: usually a gentle tilt with more low end, as people prefer for music and speech." },
         { "Time alignment", "Delaying the speaker that arrives first so two speakers arrive together where they overlap." },
-        { "Transfer function", "What the system does to the signal: the mic against the reference, level (magnitude) and phase per frequency. The main view for tuning." },
+        { "Transfer function", "What the system does to the signal: the mic against the reference, level (magnitude) and phase per frequency. The main view for tuning (a dual-channel FFT, as in Smaart or SIM)." },
         { "Treble ratio", "The reverberation at 2 - 4 kHz against 500 Hz - 1 kHz. Low is a dull room, high a bright one." },
         { "Trim", "A small level change on an output (from Level balance), on top of its gain." },
-        { "Ts", "Centre time: the 'centre of gravity' of the impulse response (ms). Lower is clearer." },
-        { "Waterfall", "The spectrum over time, as a 3D landscape: ringing frequencies (feedback, room modes) stand out as ridges." } };
+        { "Ts", "Centre time (ISO 3382-1): the 'centre of gravity' of the impulse response (ms). Lower is clearer." },
+        { "Waterfall", "The spectrum over time, as a 3D landscape: ringing frequencies (feedback, room modes) stand out as ridges." },
+        { "Standards", "Where LiveAlign follows a published standard: room acoustics per ISO 3382-1 (RT, EDT, C50, C80, Ts) and the sweep method of ISO 18233; STI per IEC 60268-16; sound level weighting and Leq per IEC 61672-1; NC per ANSI S12.2 and NR per ISO 1996; air absorption per ISO 9613-1; coverage uniformity in the spirit of AVIXA A102.01; calibrators per IEC 60942. The numbers are comparable with other tools that follow the same standards." } };
     return t;
 }
 
@@ -85,13 +86,13 @@ inline juce::StringArray termsFor (int page)
         case Page::Coverage: return { "Coverage", "Directivity (Q)" };
         case Page::Align: return { "Time alignment", "Delay", "Impulse response", "Speed of sound" };
         case Page::Acoustics: return { "Reverberation time (RT)", "EDT", "C50", "C80", "Ts", "STI", "ALcons", "Bass ratio", "Treble ratio", "Schroeder frequency",
-                                       "Critical distance", "First reflection", "Echo", "Flutter echo", "NC, NR", "Sweep" };
+                                       "Critical distance", "First reflection", "Echo", "Flutter echo", "NC, NR", "Sweep", "Standards" };
         case Page::Room: return { "Target curve", "EQ (parametric)", "Q", "Seat-to-seat variance", "Schroeder frequency", "Absorption (air)" };
         case Page::Headroom: return { "Headroom", "Compression", "Distortion", "Limiter", "dBA, dBC, dBZ" };
         case Page::Listening: return { "EQ (parametric)", "Target curve" };
         case Page::Feedback: return { "Waterfall", "EQ (parametric)", "Q" };
         case Page::MonitorMic: return { "Calibration file", "LAeq", "dBA, dBC, dBZ" };
-        case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "Coherence" };
+        case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "Coherence", "Standards" };
         case Page::Sheet: return { "Processor sheet", "Delay", "Polarity", "Q", "Limiter" };
         case Page::Home: case Page::TuningReport: case Page::MonitorReport: case Page::Locker: case Page::Settings:
         default: return { "As found / as left" };
@@ -128,7 +129,8 @@ inline juce::StringArray howTo (int page)
                                        "Room EQ allows for what it finds (the switch on Room EQ)." };
         case Page::Room: return { "Measure the points as found.", "Suggest EQ, enter it in the processor, then I've entered this EQ.",
                                   "Measure a check at the same points; refine until it is close enough.", "Then the listening check." };
-        case Page::Headroom: return { "Hearing protection on, nobody near the speakers.", "Run the whole system: pink noise in steps up to the show level plus headroom.",
+        case Page::Headroom: return { "Right after every speaker is verified: the gain structure comes before any tuning.", "Hearing protection on, nobody near the speakers.",
+                                      "Run the whole system: pink noise in steps up to the show level plus headroom.",
                                       "Then each speaker alone at the same drive: the one that compresses first is the weak link.", "Note the amp gains and limiters for the sheet." };
         case Page::Listening: return { "Play music you know, at show level.", "At each point: Good or A problem, and a note.", "Compare with the EQ bypassed; then call it done." };
         case Page::Feedback: return { "The PA at show level, the stage mic in place.", "Bring the mic up slowly; LiveAlign catches each ring.", "Notch the rings on the mic's channel." };

@@ -73,6 +73,9 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                                         + juce::String (juce::roundToInt (st.coherenceBlank.load() * 100.0f)) + " %" });
         L.keyValues (kv);
         if (p.venueNotes.isNotEmpty()) { L.sub ("Venue notes"); L.para (p.venueNotes); }
+        L.para ("Methods: room acoustics per ISO 3382-1 (RT, EDT, C50, C80, Ts) from swept-sine impulse responses (ISO 18233); STI per IEC 60268-16; "
+                "sound levels A- and C-weighted per IEC 61672-1; NC per ANSI S12.2 and NR per ISO 1996; air absorption per ISO 9613-1; coverage "
+                "uniformity in the spirit of AVIXA A102.01.", 8.0f);
     }
     const float contentsY = L.y + 14.0f;
 

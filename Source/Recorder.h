@@ -15,9 +15,12 @@ namespace la
 class Recorder
 {
 public:
+    // Message thread. The audio thread may be inside push() when this is called: it is told to stop, given a moment to
+    // leave (push() marks itself busy), and only then are the buffers resized.
     void start (int samples, int mics)
     {
         active = false;
+        for (int spins = 0; busy.load() && spins < 2000; ++spins) juce::Thread::sleep (1);
         numMics = std::max (1, std::min (mics, kMaxMics));
         for (int m = 0; m < numMics; ++m) mic[(size_t) m].assign ((size_t) samples, 0.0f);
         ref.assign ((size_t) samples, 0.0f);
@@ -33,16 +36,19 @@ public:
     // Audio thread.
     void push (const float* const* mics, const float* reference, int n)
     {
+        struct Busy { std::atomic<bool>& b; explicit Busy (std::atomic<bool>& x) : b (x) { b = true; } ~Busy() { b = false; } } guard (busy);
         if (! active.load()) return;
+        const int len = length.load(), nm = numMics.load();
         int p = pos.load();
-        const int k = std::min (n, length - p);
+        const int k = std::min (n, len - p);
         if (k <= 0) return;
-        for (int m = 0; m < numMics; ++m) std::copy (mics[m], mics[m] + k, mic[(size_t) m].begin() + p);
+        for (int m = 0; m < nm; ++m) std::copy (mics[m], mics[m] + k, mic[(size_t) m].begin() + p);
         std::copy (reference, reference + k, ref.begin() + p);
         pos = p + k;
     }
 
-    int numMics = 1, length = 0;
+    std::atomic<int> numMics { 1 }, length { 0 };
+    std::atomic<bool> busy { false };
     std::array<std::vector<float>, kMaxMics> mic;
     std::vector<float> ref;
 

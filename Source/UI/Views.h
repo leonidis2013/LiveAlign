@@ -2,6 +2,7 @@
 #include "../Clock.h"
 // The three measurement views: transfer function (magnitude, phase, coherence), RTA, and impulse response.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <optional>
 #include "Graph.h"
@@ -574,40 +575,19 @@ public:
                         juce::Rectangle<float> (plot.getX() - 44.0f, y - 7.0f, 40.0f, 14.0f), juce::Justification::centredRight);
         }
 
-        // rows, newest at the top; each row placed by its age
+        // rows, newest at the top; each row placed by its age. Rasterised once per frame into an image the size of the
+        // plot (a pixel row per screen row) rather than thousands of rectangles on every repaint.
         const auto now = la::clock::ms32();
         const float floorDb = top - range;
         const auto& f = data->wfFreq;
-        std::vector<float> xs ((size_t) bands + 1);
-        for (int i = 0; i <= bands; ++i)
+        const int w = juce::jmax (1, (int) plot.getWidth()), h = juce::jmax (1, (int) plot.getHeight());
+        const CacheKey key { head, span, range, top, w, h, bands, settings.running.load() ? 0u : now };
+        if (! (key == cacheKey) || ! cache.isValid())
         {
-            const double edge = i == 0 ? f[0] / std::pow (2.0, 1.0 / 48.0) : (i == bands ? f[(size_t) bands - 1] * std::pow (2.0, 1.0 / 48.0)
-                                                                                         : std::sqrt (f[(size_t) i - 1] * f[(size_t) i]));
-            xs[(size_t) i] = juce::jlimit (plot.getX(), plot.getRight(), ax.x (edge));
+            cacheKey = key;
+            renderRows (plot, span, floorDb, range, now, w, h);
         }
-        float prevY = plot.getY();
-        for (int k = 0; k < filled; ++k)
-        {
-            const int idx = (head - 1 - k + kRows * 2) % kRows;
-            const float age = (float) (now - stamps[(size_t) idx]) / 1000.0f;
-            if (age > span) break;
-            const float y0 = plot.getY() + age / span * plot.getHeight();
-            const int idxOlder = (idx - 1 + kRows) % kRows;
-            // a row covers the time until the next one, but never more than a frame or two: where nothing was
-            // recorded (graphs frozen, another page shown, start-up) the waterfall stays empty instead of streaking
-            const float ageOlder = juce::jmin (k + 1 < filled ? (float) (now - stamps[(size_t) idxOlder]) / 1000.0f : age + 0.4f,
-                                               age + kMaxRowSeconds);
-            const float y1 = juce::jmin (plot.getBottom(), plot.getY() + juce::jmin (span, ageOlder) / span * plot.getHeight());
-            const float top0 = juce::jmax (prevY, y0);
-            if (y1 - top0 < 0.25f) continue;
-            const auto& row = rows[(size_t) idx];
-            for (int i = 0; i < bands; ++i)
-            {
-                g.setColour (colourFor ((row[(size_t) i] - floorDb) / range));
-                g.fillRect (juce::Rectangle<float>::leftTopRightBottom (xs[(size_t) i], top0, xs[(size_t) i + 1] + 0.6f, y1 + 0.6f));
-            }
-            prevY = y1;
-        }
+        g.drawImageAt (cache, (int) plot.getX(), (int) plot.getY());
 
         // colour scale
         auto scale = juce::Rectangle<float> (plot.getRight() + 14.0f, plot.getY(), 10.0f, plot.getHeight());
@@ -665,9 +645,69 @@ private:
         return stops[i].interpolatedWith (stops[i + 1], pos - (float) i);
     }
 
+    struct CacheKey
+    {
+        int head = -1; float span = 0, range = 0, top = 0; int w = 0, h = 0, bands = 0; juce::uint32 frozenAt = 0;
+        bool operator== (const CacheKey& o) const
+        {
+            return head == o.head && juce::exactlyEqual (span, o.span) && juce::exactlyEqual (range, o.range) && juce::exactlyEqual (top, o.top) && w == o.w && h == o.h && bands == o.bands && frozenAt == o.frozenAt;
+        }
+    };
+
+    void renderRows (juce::Rectangle<float> plot, float span, float floorDb, float range, juce::uint32 now, int w, int h)
+    {
+        if (cache.getWidth() != w || cache.getHeight() != h) cache = juce::Image (juce::Image::ARGB, w, h, true);
+        else cache.clear (cache.getBounds(), juce::Colours::transparentBlack);
+        const auto& f = data->wfFreq;
+        // band edges in image pixels
+        std::vector<int> xs ((size_t) bands + 1);
+        for (int i = 0; i <= bands; ++i)
+        {
+            const double edge = i == 0 ? f[0] / std::pow (2.0, 1.0 / 48.0) : (i == bands ? f[(size_t) bands - 1] * std::pow (2.0, 1.0 / 48.0)
+                                                                                         : std::sqrt (f[(size_t) i - 1] * f[(size_t) i]));
+            xs[(size_t) i] = juce::jlimit (0, w, juce::roundToInt (ax.x (edge) - plot.getX()));
+        }
+        // a colour per band level, quantised: the palette lookup is the costly part
+        static constexpr int kSteps = 64;
+        std::array<juce::PixelARGB, kSteps + 1> lut;
+        for (int i = 0; i <= kSteps; ++i) lut[(size_t) i] = colourFor ((float) i / kSteps).getPixelARGB();
+        const juce::Image::BitmapData bd (cache, juce::Image::BitmapData::writeOnly);
+        const float pxPerSec = (float) h / span;
+        int yDone = 0;   // image rows painted so far (top down)
+        for (int k = 0; k < filled && yDone < h; ++k)
+        {
+            const int idx = (head - 1 - k + kRows * 2) % kRows;
+            const float age = (float) (now - stamps[(size_t) idx]) / 1000.0f;
+            if (age > span) break;
+            const int idxOlder = (idx - 1 + kRows) % kRows;
+            // a row covers the time until the next one, but never more than a frame or two: where nothing was
+            // recorded (graphs frozen, another page shown, start-up) the waterfall stays empty instead of streaking
+            const float ageOlder = juce::jmin (k + 1 < filled ? (float) (now - stamps[(size_t) idxOlder]) / 1000.0f : age + 0.4f,
+                                               age + kMaxRowSeconds);
+            const int y0 = juce::jmax (yDone, juce::roundToInt (age * pxPerSec));
+            const int y1 = juce::jmin (h, juce::roundToInt (juce::jmin (span, ageOlder) * pxPerSec) + 1);
+            if (y1 <= y0) continue;
+            const auto& row = rows[(size_t) idx];
+            for (int y = y0; y < y1; ++y)
+            {
+                auto* line = bd.getLinePointer (y);
+                for (int i = 0; i < bands; ++i)
+                {
+                    const int li = juce::jlimit (0, kSteps, juce::roundToInt ((row[(size_t) i] - floorDb) / range * kSteps));
+                    const auto px = lut[(size_t) li];
+                    for (int x = xs[(size_t) i]; x < juce::jmin (w, xs[(size_t) i + 1] + 1); ++x)
+                        reinterpret_cast<juce::PixelARGB*> (line + x * bd.pixelStride)->set (px);
+                }
+            }
+            yDone = y1;
+        }
+    }
+
     Settings& settings;
     const Snapshot* data = nullptr;
     FreqAxis ax;
+    juce::Image cache;
+    CacheKey cacheKey;
     std::vector<std::vector<float>> rows;
     std::vector<juce::uint32> stamps;
     int bands = 0, head = 0, filled = 0;
