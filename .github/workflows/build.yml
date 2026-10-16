@@ -128,7 +128,10 @@ jobs:
         id: locate
         shell: bash
         run: |
-          VST3=$(find build -maxdepth 6 -name "LiveAlign.vst3" | head -n 1)
+          # the VST3 is a bundle folder on both platforms (the Windows DLL inside it has the same name)
+          VST3=$(find build -maxdepth 6 -type d -name "LiveAlign.vst3" | head -n 1)
+          echo "::notice::vst3 candidates: $(find build -maxdepth 8 -name 'LiveAlign.vst3' -printf '%p (%s bytes, %y) ' 2>/dev/null || find build -maxdepth 8 -name 'LiveAlign.vst3' | tr '\n' ' ')"
+          echo "::notice::vst3 picked: $VST3 ($(du -sk "$VST3" 2>/dev/null | cut -f1) KB)"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             APP=$(find build -maxdepth 6 -name "LiveAlign.app" | head -n 1)
           else
@@ -166,7 +169,7 @@ jobs:
           for z in LiveAlign-*.zip; do
             size=$(wc -c < "$z")
             echo "$z: $size bytes"
-            if [[ "$size" -lt 500000 ]]; then echo "::error::$z is too small to be a build"; exit 1; fi
+            if [[ "$size" -lt 500000 ]]; then echo "::error::$z is too small to be a build ($(unzip -l "$z" | tail -n 8 | tr '\n' ' '))"; exit 1; fi
           done
           unzip -l LiveAlign-*-VST3.zip | tail -n 12
 
