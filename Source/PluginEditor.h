@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
+#include <atomic>
 #include <memory>
 #include "PluginProcessor.h"
 #include "UI/LALookAndFeel.h"
@@ -138,6 +139,18 @@ private:
     std::vector<std::unique_ptr<juce::XmlElement>> undoStack, redoStack;
     std::unique_ptr<juce::XmlElement> committedState, committedProc;
     juce::String committedFp, pendingFp;
+    // When the user last clicked, dragged or scrolled anywhere in the app: the undo fingerprint (the venue's editable
+    // state, serialised) is taken three times a second only around input, every two seconds otherwise.
+    struct InputWatch : juce::MouseListener
+    {
+        std::atomic<juce::uint32> last { 0 };
+        void touch() { last = juce::Time::getMillisecondCounter(); }
+        void mouseDown (const juce::MouseEvent&) override { touch(); }
+        void mouseUp (const juce::MouseEvent&) override { touch(); }
+        void mouseDrag (const juce::MouseEvent&) override { touch(); }
+        void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override { touch(); }
+        bool recent() const { return juce::Time::getMillisecondCounter() - last.load() < 3000; }
+    } inputWatch;
     int pendingTicks = 0, pendingPage = -1;
     void resetUndo();
     void trackChanges();
@@ -183,6 +196,8 @@ private:
     la::ui::EventPanel eventPanel;
     la::ui::FeedbackWatchPanel fbWatch;
     la::ui::TunedPanel tunedPanel;
+    la::ui::ConditionsPanel condPanel;   // the room sensor's reading and its effect (shown when a sensor is set up)
+    void updateConditionsPanel();
     void updateTunedPanel();
     la::fb::Detector liveFb { { 80.0, 12000.0, 15.0, 18, 3, 1.0 / 12.0 } };   // stricter than the feedback test: music has peaks too
     juce::uint64 liveFbFrame = 0;

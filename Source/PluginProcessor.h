@@ -21,6 +21,7 @@
 #include "LevelBalance.h"
 #include "ShowChecks.h"
 #include "UpdateChecker.h"
+#include "ClimateFeed.h"
 #include "Prefs.h"
 #include "Analysis/Generator.h"
 
@@ -97,6 +98,8 @@ public:
     juce::String micModelSerial (int mic) const;              // from the locker, for tags and reports
     la::MicLocker locker;
     la::UpdateChecker updates;
+    la::ClimateFeed climate;            // live temperature and humidity over MQTT (Settings, Units and environment)
+    void configureClimate() { climate.configure (la::ClimateFeed::fromPrefs ([] (const char* k, const char* d) { return la::UserPrefs::get (k, d); })); }
 
     // Input meters: peak since the last read, and a smoothed RMS (dBFS)
     float takeMicPeak (int mic) { return micPeak[(size_t) juce::jlimit (0, la::kMaxMics - 1, mic)].exchange (0.0f); }

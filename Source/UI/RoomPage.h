@@ -27,6 +27,37 @@ public:
     void setShow (bool positions, bool before, bool after, bool predicted) { showPos = positions; showBefore = before; showAfter = after; showPred = predicted; repaint(); }
     void setRange (double lo, double hi) { eqLo = lo; eqHi = hi; repaint(); }
 
+    // The averages and each seat's smoothed curve change only when a measurement does: worked out then, not on every
+    // repaint (a dozen seats at 1/6 octave was most of the page's paint time).
+    static juce::String measKey (const RoomMeasurement& m)
+    {
+        const double mid = m.tf.db.empty() ? 0.0 : m.tf.db[m.tf.db.size() / 2];
+        return m.position + "|" + m.time + "|" + (m.after ? "a" : "b") + (m.include ? "i" : "x") + "|" + juce::String ((int) m.tf.freq.size())
+               + "|" + juce::String (mid, 6);
+    }
+    void refreshCache()
+    {
+        const auto& room = proc.room;
+        juce::String key;
+        for (const auto& m : room.meas) key << measKey (m) << ";";
+        if (key == cacheKey && posCurves.size() == room.meas.size()) return;
+        cacheKey = key;
+        avgBefore = room.average (false);
+        avgAfter = room.average (true);
+        const auto grid = RoomTuning::grid();
+        posCurves.assign (room.meas.size(), {});
+        for (size_t k = 0; k < room.meas.size(); ++k)
+        {
+            const auto& m = room.meas[k];
+            if (m.tf.freq.size() < 2) { posCurves[k].assign (grid.size(), NAN); continue; }
+            const double lvl = m.levelDb();
+            std::vector<double> raw (grid.size());
+            for (size_t i = 0; i < grid.size(); ++i)
+                raw[i] = grid[i] >= m.tf.freq.front() && grid[i] <= m.tf.freq.back() ? m.tf.dbAt (grid[i]) - lvl : NAN;
+            posCurves[k] = eq::smooth (grid, raw, 1.0 / 6.0);
+        }
+    }
+
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
@@ -60,7 +91,9 @@ public:
         drawFreqGrid (g, ax, plot, plot.withY (plot.getBottom()).withHeight (16.0f));
 
         const auto grid = RoomTuning::grid();
-        const auto before = room.average (false), after = room.average (true);
+        refreshCache();
+        const auto& before = avgBefore;
+        const auto& after = avgAfter;
         const bool hasBefore = room.count (false) > 0, hasAfter = room.count (true) > 0;
         const auto& ref = hasBefore ? before : after;
 
@@ -198,13 +231,9 @@ public:
             {
                 const auto& m = room.meas[k];
                 if (! m.include || (m.after && ! showAfter) || (! m.after && ! showBefore)) continue;
-                const double lvl = m.levelDb();
                 const int pi = proc.positions.indexOf (m.position);
                 const bool sel = m.position == selected;
-                std::vector<double> raw (grid.size());
-                for (size_t i = 0; i < grid.size(); ++i)
-                    raw[i] = grid[i] >= m.tf.freq.front() && grid[i] <= m.tf.freq.back() ? m.tf.dbAt (grid[i]) - lvl : NAN;
-                const auto v = eq::smooth (grid, raw, 1.0 / 6.0);   // the tonal shape at each seat, not every reflection
+                const auto& v = posCurves[k];   // the tonal shape at each seat (1/6 octave), worked out once per measurement
                 strokeTrace (g, tracePath (grid.size(), xAt, [&] (size_t i) { return std::isfinite (v[i]) ? yDb (v[i]) : NAN; }, [] (size_t) { return true; }),
                              positionColour (juce::jmax (0, pi)).withAlpha (sel ? 0.95f : 0.35f), sel ? 1.8f : 1.0f);
             }
@@ -235,6 +264,9 @@ private:
     juce::String selected;
     bool showPos = true, showBefore = true, showAfter = true, showPred = true;
     double eqLo = 0.0, eqHi = 0.0;
+    juce::String cacheKey;
+    std::vector<double> avgBefore, avgAfter;
+    std::vector<std::vector<double>> posCurves;
 };
 
 //==============================================================================

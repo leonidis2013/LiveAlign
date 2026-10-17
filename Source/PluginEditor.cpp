@@ -311,7 +311,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         addChildComponent (*panes[i]);
     }
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel })
+                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel, (juce::Component*) &condPanel })
         addChildComponent (*c);
 
     micPicker.setTooltip ("Which mic the graphs and sound level show, or the average of all mics");
@@ -375,6 +375,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         juce::Component::SafePointer<LiveAlignEditor> safe (this);
         juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->tour == nullptr) safe->showTour (0); });
     }
+    juce::Desktop::getInstance().addGlobalMouseListener (&inputWatch);
     startTimerHz (30);
 }
 
@@ -406,6 +407,7 @@ void LiveAlignEditor::offerRecovery()
 LiveAlignEditor::~LiveAlignEditor()
 {
     stopTimer();
+    juce::Desktop::getInstance().removeGlobalMouseListener (&inputWatch);
     if (processor.isStandalone())   // a clean close: nothing to recover next time
     {
         processor.clearRecovery();
@@ -476,6 +478,8 @@ void LiveAlignEditor::showPage (int page)
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
                      (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel })
         c->setVisible (mon);
+    condPanel.setVisible (mon && processor.climate.enabled());
+    if (mon) updateConditionsPanel();
     micPicker.setVisible (false);   // monitoring has one mic
     // the generator strip: only on the pages that play test signals (monitoring listens to the programme)
     generator.setVisible (page == (int) Page::Response || page == (int) Page::Level || page == (int) Page::Coverage || page == (int) Page::Align || page == (int) Page::Room);
@@ -1341,7 +1345,8 @@ void LiveAlignEditor::timerCallback()
     ++tick;
     if (tick % 10 == 0 && standalone)
     {
-        trackChanges();
+        const bool typing = dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent()) != nullptr;
+        if (pendingFp.isNotEmpty() || typing || inputWatch.recent() || tick % 60 == 0) trackChanges();
         undoButton.setEnabled (canUndo() || pendingFp.isNotEmpty());
         redoButton.setEnabled (canRedo());
     }
@@ -1408,7 +1413,7 @@ void LiveAlignEditor::timerCallback()
             settings.requestFindDelay = true;
         }
         tracesPanel.refresh();
-        if (tick % 15 == 0) eventPanel.setLog (processor.splLog);
+        if (tick % 15 == 0) { eventPanel.setLog (processor.splLog); updateConditionsPanel(); }
     }
 
     const bool running = settings.running.load();
@@ -1459,7 +1464,7 @@ void LiveAlignEditor::timerCallback()
 
     if (tick % 15 == 0)
     {
-        // every half second: has anything changed since the save, and where does each step stand (once per tick)
+        // every half second: has anything changed since the save, and where does each step stand
         unsaved = processor.projectChanged();
         updateStatuses();
     }
@@ -1610,12 +1615,22 @@ void LiveAlignEditor::resized()
     side.removeFromTop (8);
     delayPanel.setBounds (side.removeFromTop (160));
     side.removeFromTop (8);
-    eventPanel.setBounds (side.removeFromTop (90));
-    side.removeFromTop (8);
-    fbWatch.setBounds (side.removeFromTop (juce::jmin (96, side.getHeight() / 2)));
-    side.removeFromTop (8);
-    tunedPanel.setBounds (side.removeFromTop (juce::jmin (80, side.getHeight() / 3)));
-    side.removeFromTop (8);
+    // the panels below share what is left: their usual heights when it fits, shrinking toward a minimum when not
+    struct Slot { juce::Component* c; int want, min; };
+    std::vector<Slot> slots;
+    if (condPanel.isVisible()) slots.push_back ({ &condPanel, 96, 96 });
+    slots.push_back ({ &eventPanel, 90, 80 });
+    slots.push_back ({ &fbWatch, 96, 68 });
+    slots.push_back ({ &tunedPanel, 80, 72 });
+    int want = 0, min = 0;
+    for (const auto& s : slots) { want += s.want; min += s.min; }
+    const int avail = side.getHeight() - 8 * (int) slots.size() - 60;   // the traces keep a little
+    for (const auto& s : slots)
+    {
+        const int h = avail >= want ? s.want : s.min + (want > min ? (s.want - s.min) * juce::jmax (0, avail - min) / (want - min) : 0);
+        s.c->setBounds (side.removeFromTop (h));
+        side.removeFromTop (8);
+    }
     tracesPanel.setBounds (side);
 }
 
@@ -1632,6 +1647,46 @@ void LiveAlignEditor::resetUndo()
     committedFp = processor.undoFingerprint();
     pendingFp.clear();
     pendingTicks = 0;
+}
+
+void LiveAlignEditor::updateConditionsPanel()
+{
+    auto& f = processor.climate;
+    const bool want = f.enabled();
+    if (condPanel.isVisible() != want) { condPanel.setVisible (want); resized(); }
+    if (! want) return;
+    la::ui::ConditionsPanel::State s;
+    s.live = f.live();
+    s.connected = f.connected.load();
+    s.status = f.status();
+    s.age = f.ageText();
+    s.tC = f.tempC.load();
+    s.rh = f.humidity.load();
+    const auto& ch = processor.checks;
+    if (std::isfinite (ch.tunedTempC))
+    {
+        s.refC = ch.tunedTempC;
+        s.refRh = ch.tunedHumidity;
+        s.refLabel = "Tuned";
+    }
+    else
+    {
+        s.refC = settings.temperatureC.load();
+        s.refRh = settings.humidity.load();
+        s.refLabel = "Session";
+    }
+    for (int i = 0; i < (int) processor.system.sources.size(); ++i)
+        if (processor.system.sources[(size_t) i].proc.delayMs > s.maxDelayMs)
+        {
+            s.maxDelayMs = processor.system.sources[(size_t) i].proc.delayMs;
+            s.maxDelayName = processor.system.nameOf (i);
+        }
+    s.recheckMs = processor.pref ("recheckDelay");
+    s.farIsRoom = processor.plan.lengthM > 1.0;
+    s.farM = s.farIsRoom ? processor.plan.lengthM : 30.0;
+    s.feet = settings.distanceUnit.load() == 0;
+    s.fahrenheit = settings.temperatureUnit.load() == 1;
+    condPanel.setState (s);
 }
 
 void LiveAlignEditor::trackChanges()

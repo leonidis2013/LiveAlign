@@ -15,12 +15,12 @@
 
 namespace la
 {
-enum class PrefCat { Audio = 0, Measurement, Display, Units, Tuning, Generator, Monitoring, Reports, Updates };
-constexpr int kNumPrefCats = 9;
+enum class PrefCat { Audio = 0, Measurement, Display, Units, Tuning, Generator, Monitoring, Reports, Sensor, Updates };
+constexpr int kNumPrefCats = 10;
 inline const char* prefCatName (int c)
 {
     static const char* n[] = { "Audio", "Measurement", "Display", "Units and environment", "Tuning defaults", "Generator and safety",
-                               "Monitoring", "Reports and files", "Updates" };
+                               "Monitoring", "Reports and files", "Room sensor (MQTT)", "Updates" };
     return n[juce::jlimit (0, kNumPrefCats - 1, c)];
 }
 

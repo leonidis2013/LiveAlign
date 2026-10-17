@@ -202,6 +202,8 @@ private:
             case PrefCat::Generator: return "The test signal: where it starts, how loud it may ever get and how gently it comes in.";
             case PrefCat::Monitoring: return "Defaults for new sessions' event level, and how the feedback watch and the delay tracking behave.";
             case PrefCat::Reports: return "What the reports look like, and where files go.";
+            case PrefCat::Sensor: return "A temperature and humidity sensor on your network, through an MQTT broker (Home Assistant, Zigbee2MQTT). "
+                                         "Its reading is shown on Monitoring and captured on Venue, Details for tuning.";
             case PrefCat::Updates:
             default: return "LiveAlign asks GitHub for the latest release. Nothing is sent but the request.";
         }
@@ -307,6 +309,7 @@ private:
     void build()
     {
         content.rows.clear();
+        climateStatus = nullptr;
         content.owned.clear();
         content.twoColumns = false;
         content.status.clear();
@@ -417,6 +420,9 @@ private:
                 row ("Distance unit", combo ({ "Feet", "Metres" }, settings.distanceUnit.load(), [this] (int i) { settings.distanceUnit = i; }));
                 break;
             }
+            case PrefCat::Sensor:
+                climateRows();
+                break;
             case PrefCat::Tuning:
                 content.twoColumns = true;
                 prefRows (PrefCat::Tuning, true);
@@ -536,6 +542,7 @@ private:
                 for (const auto& d : prefs::all()) if ((int) d.cat == cat) ap.reset (d.key);
                 changedPrefs();
                 break;
+            case PrefCat::Sensor: break;   // the connection is yours: Reset leaves it alone
             case PrefCat::Updates:
             default: updates.setAutoCheck (true); break;
         }
@@ -568,7 +575,81 @@ private:
         }
     }
 
-    void timerCallback() override { refreshUpdate(); }
+    void timerCallback() override
+    {
+        refreshUpdate();
+        if (climateStatus != nullptr)
+        {
+            auto& f = proc.climate;
+            juce::String t = f.status();
+            const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+            const float tc = f.tempC.load(), rh = f.humidity.load();
+            if (std::isfinite (tc) || std::isfinite (rh))
+            {
+                t << "  |  ";
+                if (std::isfinite (tc)) t << (settings.temperatureUnit.load() == 1 ? juce::String (tc * 9.0f / 5.0f + 32.0f, 1) + deg + "F" : juce::String (tc, 1) + deg + "C");
+                if (std::isfinite (tc) && std::isfinite (rh)) t << ", ";
+                if (std::isfinite (rh)) t << juce::String (juce::roundToInt (rh)) << " %";
+                t << " (" << f.ageText() << ")";
+            }
+            if (t != climateStatus->getText()) climateStatus->setText (t, juce::dontSendNotification);
+            climateStatus->setColour (juce::Label::textColourId, f.live() ? pal().good : f.enabled() ? pal().warn : pal().textDim);
+        }
+    }
+
+    // Live temperature and humidity over MQTT: the broker, the two topics, and how it is doing.
+    void climateRows()
+    {
+        heading ("Connection");
+        auto save = [this] (const char* key, const juce::String& v) { UserPrefs::set (key, v); proc.configureClimate(); };
+        auto& on = make<juce::ToggleButton>();
+        on.setButtonText ("Connect to a sensor");
+        on.setToggleState (UserPrefs::get ("mqttOn", "0") == "1", juce::dontSendNotification);
+        on.onClick = [this, &on, save] { save ("mqttOn", on.getToggleState() ? "1" : "0"); };
+        row ("Room sensor", on, "A temperature and humidity sensor, through an MQTT broker (Home Assistant's Mosquitto, Zigbee2MQTT)");
+        auto text = [this, save] (const char* key, const char* def, const juce::String& hint, bool secret = false) -> juce::TextEditor&
+        {
+            auto& e = make<juce::TextEditor>();
+            e.setFont (font (13.0f));
+            e.setText (UserPrefs::get (key, def), juce::dontSendNotification);
+            e.setTextToShowWhenEmpty (hint, pal().textFaint);
+            if (secret) e.setPasswordCharacter ((juce::juce_wchar) 0x2022);
+            auto* ep = &e;
+            const juce::String k (key);
+            // saved when the field is left or Return is pressed, not on every key (each save reconnects)
+            e.onReturnKey = [ep, k, save] { save (k.toRawUTF8(), ep->getText().trim()); };
+            e.onFocusLost = [ep, k, save] { if (ep->getText().trim() != UserPrefs::get (k)) save (k.toRawUTF8(), ep->getText().trim()); };
+            return e;
+        };
+        auto& host = text ("mqttHost", "", "homeassistant.local or 192.168.1.10");
+        auto& port = text ("mqttPort", "1883", "1883");
+        port.setInputRestrictions (5, "0123456789");
+        row ("Broker", host, "The MQTT broker's name or address on this network (plain MQTT, no TLS)", &port);
+        auto& user = text ("mqttUser", "", "User name (if the broker needs one)");
+        auto& pass = text ("mqttPass", "", "Password", true);
+        row ("Login", user, "Home Assistant: a Home Assistant user, or the Mosquitto add-on's login. Saved on this computer only, not in venue files", &pass);
+        heading ("Topics");
+        auto& tt = text ("mqttTempTopic", "", "zigbee2mqtt/FOH sensor");
+        auto& tk = text ("mqttTempKey", "temperature", "JSON key (temperature)");
+        row ("Temperature topic", tt, "The topic the sensor publishes on. A plain number, or JSON read by the key (a.b for nested)", &tk);
+        const bool f = UserPrefs::get ("mqttTempUnit", settings.temperatureUnit.load() == 1 ? "F" : "C") == "F";
+        const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+        row ("Sensor's unit", combo ({ deg + "C  Celsius", deg + "F  Fahrenheit" }, f ? 1 : 0, [save] (int i) { save ("mqttTempUnit", i == 1 ? "F" : "C"); }),
+             "The unit the sensor sends the temperature in");
+        auto& ht = text ("mqttHumTopic", "", "Same topic, or its own");
+        auto& hk = text ("mqttHumKey", "humidity", "JSON key (humidity)");
+        row ("Humidity topic", ht, "Relative humidity in %", &hk);
+        heading ("Status");
+        auto& st = make<juce::Label>();
+        st.setFont (font (12.0f));
+        climateStatus = &st;
+        auto& again = make<juce::TextButton>();
+        again.setButtonText ("Reconnect");
+        again.onClick = [this] { proc.climate.stop(); proc.configureClimate(); };
+        row ("Status", st, "A reading older than ten minutes is shown as stale and is not captured", &again);
+        timerCallback();
+    }
+    juce::Label* climateStatus = nullptr;
 
     LiveAlignProcessor& proc;
     Settings& settings;

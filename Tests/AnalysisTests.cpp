@@ -245,6 +245,12 @@ static void testDelayFinder()
     std::vector<float> silence (ref.size(), 0.0f);
     auto rn = findDelay (ref.data(), silence.data(), (int) ref.size(), fs, 0.0);
     check (! rn.valid, "Delay: nothing found in silence");
+
+    // several mics at once (Find delay): the same answers as one at a time, the silent one still not found
+    const auto many = findDelays (ref.data(), { mic.data(), inv.data(), silence.data() }, (int) ref.size(), fs, fs * 0.05);
+    check (many.size() == 3 && std::abs (many[0].samples - r.samples) < 1e-6 && many[0].valid == r.valid,
+           "Delay: several mics at once match one at a time", many.size() == 3 ? many[0].samples : NAN, r.samples);
+    check (many.size() == 3 && many[1].inverted && ! many[2].valid, "Delay: several mics keep polarity and the silent one");
 }
 
 static void testWeightingAndSpl()

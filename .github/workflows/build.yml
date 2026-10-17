@@ -14,7 +14,7 @@ jobs:
     name: Linux checks (tests, screenshot run, pluginval)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Measurement engine tests (with address and undefined-behaviour sanitizers)
         run: |
@@ -24,11 +24,11 @@ jobs:
       - name: Linux build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache xvfb libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+          sudo apt-get install -y ninja-build ccache xvfb mosquitto mosquitto-clients libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libxss-dev libxkbcommon-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev fonts-dejavu-core
 
       # JUCE and the compiled objects are kept between runs: an unchanged file is not compiled again
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             build/_deps
@@ -52,8 +52,15 @@ jobs:
         run: |
           grep -E "error:|fatal error" build.log | sort -u | head -40 | while IFS= read -r line; do echo "::error::${line//%/%25}"; done
 
+      # with a real MQTT broker (Mosquitto) for the live temperature and humidity: Home Assistant style retained states
       - name: Tuning logic tests
-        run: ./build/AppTests_artefacts/Release/AppTests
+        run: |
+          printf "listener 18883 127.0.0.1\nallow_anonymous true\n" > mosq.conf
+          mosquitto -c mosq.conf -d
+          sleep 1
+          mosquitto_pub -p 18883 -r -t homeassistant/sensor/foh/temperature -m 70.7
+          mosquitto_pub -p 18883 -r -t homeassistant/sensor/foh/humidity -m 38
+          LA_MQTT_TEST_PORT=18883 ./build/AppTests_artefacts/Release/AppTests
 
       # The whole tuning flow on a simulated PA and room: every page, the reports, and pass / fail checks along the
       # way (it fails the build when one fails). Text that does not fit is listed.
@@ -64,7 +71,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1920x1200x24" ./build/LiveAlignPreview shots 2>&1 | tee shots/preview.log
           grep -E "^(CHECK|OVERFLOW|RESULT)" shots/preview.log | sed -e 's/^CHECK FAIL/::error::CHECK FAIL/' -e 's/^OVERFLOW/::warning::OVERFLOW/' || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: LiveAlign-screenshots
@@ -94,10 +101,10 @@ jobs:
           - name: macOS
             os: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # JUCE, fetched (and its build tools built) once and kept between runs
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: build/_deps
           key: deps-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt') }}
@@ -174,7 +181,7 @@ jobs:
           done
           unzip -l LiveAlign-*-VST3.zip | tail -n 12
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: LiveAlign-${{ matrix.name }}
           path: LiveAlign-*.zip
@@ -185,9 +192,9 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

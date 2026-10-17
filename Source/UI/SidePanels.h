@@ -7,6 +7,7 @@
 #include "../TraceStore.h"
 #include "../Analysis/TargetCurves.h"
 #include "../Monitoring.h"
+#include "../Analysis/AirAbsorption.h"
 
 namespace la::ui
 {
@@ -473,6 +474,115 @@ private:
     bool valid = false;
     juce::String refText, suggestion;
     int heldBand = -1, held = 0;
+};
+
+//==============================================================================
+// Room conditions from the room sensor (MQTT), and what they do to the sound against the conditions the system was
+// tuned in: the delays (the speed of sound) and the top end at the back of the room (the air's absorption, ISO 9613-1).
+class ConditionsPanel : public juce::Component
+{
+public:
+    struct State
+    {
+        bool live = false, connected = false;
+        juce::String status, age;
+        float tC = NAN, rh = NAN;                 // the sensor
+        double refC = NAN, refRh = NAN;           // the tuning's conditions (else the session's)
+        juce::String refLabel;                    // "when tuned (Oct 16)" / "this session"
+        double maxDelayMs = 0.0;
+        juce::String maxDelayName;
+        double recheckMs = 0.5;                   // the quick re-check's delay tolerance
+        double farM = 30.0;                       // the back of the room
+        bool farIsRoom = false, feet = true, fahrenheit = true;
+    };
+
+    void setState (const State& s) { st = s; repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        auto r = getLocalBounds().toFloat();
+        drawPanel (g, r, "Room conditions (sensor)");
+        const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+        auto c = r.reduced (12.0f, 0.0f).withTrimmedTop (30.0f).withTrimmedBottom (6.0f);
+        g.setFont (font (10.5f));
+        g.setColour (st.live ? p.textDim : p.warn);
+        g.drawText (st.live ? st.age : (st.connected ? "no reading yet" : "not connected"), r.reduced (12.0f, 0.0f).withHeight (28.0f), juce::Justification::centredRight, true);
+        if (! st.live)
+        {
+            g.setColour (p.textDim);
+            g.setFont (font (11.0f));
+            g.drawFittedText ((st.status.isNotEmpty() ? st.status + ". " : juce::String()) + "The sensor is set up in Settings, Room sensor.", c.toNearestInt(),
+                              juce::Justification::topLeft, 3);
+            return;
+        }
+        const bool haveT = std::isfinite (st.tC), haveH = std::isfinite (st.rh);
+        auto temp = [&] (double tc, int d) { return juce::String (st.fahrenheit ? tc * 9.0 / 5.0 + 32.0 : tc, d) + deg + (st.fahrenheit ? "F" : "C"); };
+
+        // the reading in the title row (with its age), what it is compared with on the first line
+        {
+            juce::String now;
+            if (haveT) now << temp (st.tC, 1);
+            if (haveT && haveH) now << ", ";
+            if (haveH) now << juce::roundToInt (st.rh) << " %";
+            g.setColour (p.text);
+            g.setFont (monoFont (13.0f, true));
+            g.drawText (now, r.reduced (12.0f, 0.0f).withHeight (28.0f).withTrimmedLeft (150.0f).withTrimmedRight (56.0f), juce::Justification::centredRight, true);
+        }
+        const double tc = haveT ? (double) st.tC : st.refC, rh = haveH ? (double) st.rh : st.refRh;
+        const bool haveRef = std::isfinite (st.refC);
+        juce::String refText;
+        if (haveRef)
+        {
+            refText = st.refLabel + " " + temp (st.refC, 0);
+            if (std::isfinite (st.refRh)) refText << ", " << juce::roundToInt (st.refRh) << " %";
+            refText << ". ";
+        }
+
+        auto line = [&] (const juce::String& t, juce::Colour col)
+        {
+            g.setColour (col);
+            g.setFont (font (11.0f));
+            g.drawFittedText (t, c.removeFromTop (28.0f).toNearestInt(), juce::Justification::topLeft, 2, 0.85f);
+            c.removeFromTop (2.0f);
+        };
+
+        // the delays: set for the speed of sound when tuned, the sound is now faster or slower
+        const double c0 = air::speedOfSound (haveRef ? st.refC : tc), c1 = air::speedOfSound (tc);
+        const juce::String speed = st.feet ? juce::String (juce::roundToInt (c1 * 3.28084)) + " ft/s" : juce::String (juce::roundToInt (c1)) + " m/s";
+        const double dSpeed = st.feet ? (c1 - c0) * 3.28084 : c1 - c0;
+        if (st.maxDelayMs > 0.05 && haveRef && haveT)
+        {
+            const double drift = air::delayDriftMs (st.maxDelayMs, st.refC, tc);
+            const bool off = std::abs (drift) >= st.recheckMs * 0.5;
+            line (refText + "Delays (" + st.maxDelayName + " " + juce::String (st.maxDelayMs, 1) + " ms): "
+                      + (std::abs (drift) < 0.01 ? juce::String ("still right.")
+                                                 : juce::String (std::abs (drift), 2) + " ms too " + (drift > 0.0 ? "short" : "long")
+                                                       + (off ? ", worth the quick re-check." : ", within the tuning."))
+                      + " Sound at " + speed + " (" + (dSpeed >= 0.0 ? "+" : "") + juce::String (juce::roundToInt (dSpeed)) + ").",
+                  off ? p.warn : p.textDim);
+        }
+        else line (refText + "Sound at " + speed + "; no delays set, nothing to drift.", p.textDim);
+
+        // the top end at the back: the air takes more off in dry or cold air
+        if (haveRef)
+        {
+            const double refH = std::isfinite (st.refRh) ? st.refRh : rh;
+            const double a8 = air::absorptionDbPerM (8000.0, tc, rh) * st.farM, a8r = air::absorptionDbPerM (8000.0, st.refC, refH) * st.farM;
+            const double a16 = air::absorptionDbPerM (16000.0, tc, rh) * st.farM, a16r = air::absorptionDbPerM (16000.0, st.refC, refH) * st.farM;
+            const double d8 = a8 - a8r, d16 = a16 - a16r;   // positive: duller than when tuned
+            const auto far = st.feet ? juce::String (juce::roundToInt (st.farM * 3.28084)) + " ft" : juce::String (juce::roundToInt (st.farM)) + " m";
+            juce::String t = "Air at " + far + (st.farIsRoom ? "" : " (typical)") + ": 8 kHz " + juce::String (-a8, 1) + " dB, 16 kHz " + juce::String (-a16, 1) + " dB";
+            const bool notable = std::abs (d8) >= 1.0;
+            if (std::abs (d8) < 0.3 && std::abs (d16) < 1.0) t << ", as when tuned.";
+            else t << ", " << juce::String (std::abs (d8), 1) << " dB " << (d8 > 0.0 ? "duller" : "brighter") << " at 8k than tuned"
+                   << (notable ? (d8 > 0.0 ? ": far seats lose air." : ": far seats brighter.") : ".");
+            line (t, notable ? p.warn : p.textDim);
+        }
+    }
+
+private:
+    State st;
 };
 
 class TracesPanel : public juce::Component

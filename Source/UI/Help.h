@@ -44,6 +44,7 @@ inline const std::vector<Term>& glossary()
         { "Level balance", "Each speaker's level against the others where the audience hears them: left and right equal, fills a little under the mains, the sub as the target asks." },
         { "Limiter", "A ceiling in the processor or amp that protects the speakers. The threshold is its setting (dBu or dBFS)." },
         { "Loopback", "A cable from an interface output straight back to an input, carrying the signal that feeds the PA. The reference every mic is compared with, and the interface's own delay." },
+        { "MQTT", "A small messaging protocol home-automation sensors publish on (Home Assistant's Mosquitto broker, Zigbee2MQTT). With a room sensor set up (Settings, Room sensor), Venue captures its temperature and humidity for tuning, and Monitoring shows them live with their effect on the delays and the top end at the back." },
         { "NC, NR", "Noise criterion (ANSI S12.2) and noise rating (ISO 1996): one number for the background noise in a room (air handling, traffic), from its octave bands. Under 30 is quiet; over 40 starts to mask speech." },
         { "Phase", "Where in its cycle a frequency arrives. Two speakers that add up in phase reinforce; out of phase they cancel." },
         { "Pink noise", "Noise with equal energy in every octave: it sounds even, and it is the usual test signal for system tuning (IEC 60268-1 describes it as the programme simulation noise for loudspeaker testing)." },
@@ -77,7 +78,7 @@ inline juce::StringArray termsFor (int page)
     switch ((Page) page)
     {
         case Page::Mics: return { "Calibration file", "Reference", "Loopback", "SPL", "dBFS", "NC, NR" };
-        case Page::Venue: return { "Speed of sound", "Absorption (air)", "Target curve", "Headroom", "Coverage" };
+        case Page::Venue: return { "Speed of sound", "Absorption (air)", "MQTT", "Target curve", "Headroom", "Coverage" };
         case Page::Speakers: return { "Directivity (Q)", "Polarity", "Critical distance" };
         case Page::Plan: return { "Coverage" };
         case Page::Response: return { "Transfer function", "Polarity", "Phase", "Coherence", "Calibration file" };

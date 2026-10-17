@@ -3,7 +3,7 @@
 
 // Tests for LiveAlign's tuning logic (with JUCE's core): level balance, the processor sheet, the quick re-check's
 // record, preferences and venue overrides, the Room EQ allowance, aim and coverage, gain and headroom, seat-to-seat
-// variance, the change history, the air, and the venue list. Built with LA_BUILD_TESTS (target AppTests).
+// variance, the change history, the air, the venue list and the MQTT climate feed (against a tiny broker here). Built with LA_BUILD_TESTS (target AppTests).
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -16,6 +16,7 @@
 #include "ShowChecks.h"
 #include "VenueLibrary.h"
 #include "Analysis/AirAbsorption.h"
+#include "ClimateFeed.h"
 
 using namespace la;
 
@@ -361,6 +362,127 @@ static void venueListTests()
     dir.deleteRecursively();
 }
 
+// A broker just big enough for the feed: accepts one client, answers CONNECT with the given return code, then
+// SUBSCRIBE, then publishes the given messages.
+struct FakeBroker : juce::Thread
+{
+    int port = 0, connackCode = 0;
+    std::vector<std::pair<juce::String, juce::String>> publish;
+    juce::String gotUser;
+    juce::StreamingSocket listener;
+    FakeBroker() : juce::Thread ("fake broker") {}
+    ~FakeBroker() override { listener.close(); stopThread (3000); }
+    bool open()
+    {
+        for (int p = 18830; p < 18930; ++p) if (listener.createListener (p, "127.0.0.1")) { port = p; return true; }
+        return false;
+    }
+    static bool readPacket (juce::StreamingSocket& s, juce::uint8& type, juce::MemoryBlock& body)
+    {
+        if (s.read (&type, 1, true) != 1) return false;
+        size_t len = 0; int shift = 0;
+        for (int i = 0; i < 4; ++i) { juce::uint8 b = 0; if (s.read (&b, 1, true) != 1) return false; len |= (size_t) (b & 0x7f) << shift; shift += 7; if (! (b & 0x80)) break; }
+        body.setSize (len);
+        return len == 0 || s.read (body.getData(), (int) len, true) == (int) len;
+    }
+    void run() override
+    {
+        std::unique_ptr<juce::StreamingSocket> c (listener.waitForNextConnection());
+        if (c == nullptr) return;
+        juce::uint8 t = 0; juce::MemoryBlock b;
+        if (! readPacket (*c, t, b) || t != 0x10) return;
+        // the user name follows the client id when the flag is set
+        const auto* d = static_cast<const juce::uint8*> (b.getData());
+        if (b.getSize() > 12 && (d[7] & 0x80))
+        {
+            size_t at = 10;
+            const size_t idLen = ((size_t) d[at] << 8) | d[at + 1]; at += 2 + idLen;
+            const size_t uLen = ((size_t) d[at] << 8) | d[at + 1];
+            gotUser = juce::String::fromUTF8 ((const char*) d + at + 2, (int) uLen);
+        }
+        const juce::uint8 ack[] = { 0x20, 0x02, 0x00, (juce::uint8) connackCode };
+        c->write (ack, 4);
+        if (connackCode != 0) { juce::Thread::sleep (200); return; }
+        if (! readPacket (*c, t, b) || t != 0x82) return;
+        const juce::uint8 suback[] = { 0x90, 0x03, 0x00, 0x01, 0x00 };
+        c->write (suback, 5);
+        for (const auto& m : publish)
+        {
+            juce::MemoryBlock v;
+            mqtt::putString (v, m.first);
+            v.append (m.second.toRawUTF8(), strlen (m.second.toRawUTF8()));
+            const auto pk = mqtt::packet (0x30, v);
+            c->write (pk.getData(), (int) pk.getSize());
+        }
+        while (! threadShouldExit() && c->waitUntilReady (true, 100) >= 0) {}
+    }
+};
+
+static void climateTests()
+{
+    check (mqtt::topicMatches ("zigbee2mqtt/foh", "zigbee2mqtt/foh") && ! mqtt::topicMatches ("zigbee2mqtt/foh", "zigbee2mqtt/stage"),
+           "mqtt: exact topics");
+    check (mqtt::topicMatches ("homeassistant/sensor/+/state", "homeassistant/sensor/foh_temp/state") && mqtt::topicMatches ("home/#", "home/a/b")
+               && ! mqtt::topicMatches ("home/+", "home/a/b"),
+           "mqtt: + and # wildcards");
+    check (std::abs (mqtt::readNumber ("21.4", {}) - 21.4) < 1e-9 && std::abs (mqtt::readNumber ("\"71.6\"", {}) - 71.6) < 1e-9
+               && std::abs (mqtt::readNumber (juce::String (juce::CharPointer_UTF8 ("22.5 \xc2\xb0" "C")), {}) - 22.5) < 1e-9,
+           "mqtt: plain number payloads");
+    check (std::abs (mqtt::readNumber ("{\"temperature\":21.7,\"humidity\":44}", "temperature") - 21.7) < 1e-9
+               && std::abs (mqtt::readNumber ("{\"climate\":{\"rh\":\"51\"}}", "climate.rh") - 51.0) < 1e-9,
+           "mqtt: JSON payloads by key and dotted path");
+    check (std::isnan (mqtt::readNumber ("unavailable", {})) && std::isnan (mqtt::readNumber ("{\"battery\":90}", "temperature"))
+               && std::isnan (mqtt::readNumber ("", {})),
+           "mqtt: no number, no reading");
+
+    // the whole thing against a broker: a Zigbee2MQTT-style JSON message in Fahrenheit
+    {
+        FakeBroker broker;
+        if (! broker.open()) { check (false, "mqtt: a local port for the test broker"); return; }
+        broker.publish = { { "zigbee2mqtt/FOH", "{\"temperature\":71.6,\"humidity\":40,\"battery\":97}" }, { "other/topic", "99" } };
+        broker.startThread();
+        ClimateFeed feed;
+        ClimateFeed::Config c;
+        c.enabled = true; c.host = "127.0.0.1"; c.port = broker.port; c.user = "tuner"; c.pass = "secret";
+        c.tempTopic = "zigbee2mqtt/FOH"; c.humTopic = "zigbee2mqtt/FOH"; c.fahrenheit = true;
+        feed.configure (c);
+        for (int i = 0; i < 100 && feed.serial.load() == 0; ++i) juce::Thread::sleep (50);
+        check (feed.serial.load() > 0, "mqtt: a reading arrives from the broker");
+        check (std::abs (feed.tempC.load() - 22.0f) < 0.01f, "mqtt: temperature converted from Fahrenheit", feed.tempC.load(), 22.0);
+        check (std::abs (feed.humidity.load() - 40.0f) < 0.01f, "mqtt: humidity from the same JSON message", feed.humidity.load(), 40.0);
+        check (feed.live() && feed.status().contains ("Connected"), "mqtt: live and connected");
+        check (broker.gotUser == "tuner", "mqtt: logs in with the user name");
+        feed.stop();
+        check (! feed.connected.load(), "mqtt: stops cleanly");
+    }
+    // a broker that turns the login down: said so plainly, nothing live
+    {
+        FakeBroker broker;
+        if (! broker.open()) return;
+        broker.connackCode = 4;
+        broker.startThread();
+        ClimateFeed feed;
+        ClimateFeed::Config c;
+        c.enabled = true; c.host = "127.0.0.1"; c.port = broker.port; c.user = "x"; c.pass = "wrong"; c.tempTopic = "t";
+        feed.configure (c);
+        for (int i = 0; i < 60 && ! feed.status().contains ("refused"); ++i) juce::Thread::sleep (50);
+        check (feed.status().contains ("user name or password") && ! feed.live(), "mqtt: a refused login is reported", 0, 0);
+    }
+    // A real broker (CI runs Mosquitto on this port, with Home Assistant style retained states published first)
+    if (const char* p = std::getenv ("LA_MQTT_TEST_PORT"))
+    {
+        ClimateFeed feed;
+        ClimateFeed::Config c;
+        c.enabled = true; c.host = "127.0.0.1"; c.port = juce::String (p).getIntValue();
+        c.tempTopic = "homeassistant/sensor/+/temperature"; c.humTopic = "homeassistant/sensor/foh/humidity"; c.fahrenheit = true;
+        feed.configure (c);
+        for (int i = 0; i < 100 && (std::isnan (feed.tempC.load()) || std::isnan (feed.humidity.load())); ++i) juce::Thread::sleep (50);
+        check (std::abs (feed.tempC.load() - 21.5f) < 0.01f, "mqtt (Mosquitto): retained temperature, wildcard topic", feed.tempC.load(), 21.5);
+        check (std::abs (feed.humidity.load() - 38.0f) < 0.01f, "mqtt (Mosquitto): retained humidity", feed.humidity.load(), 38.0);
+        feed.stop();
+    }
+}
+
 int main()
 {
     // a private home for the preferences file
@@ -378,6 +500,7 @@ int main()
     historyTests();
     airTests();
     venueListTests();
+    climateTests();
     home.deleteRecursively();
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

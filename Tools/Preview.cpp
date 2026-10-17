@@ -882,6 +882,50 @@ public:
                     shot ("settings-measurement");
                     std::printf ("settings: venue overrides=%s\n", proc.venuePrefs.describe().joinIntoString ("; ").toRawUTF8());
                     proc.venuePrefs.reset ("eqClose");
+                    editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Units);
+                    next (85);
+                }
+                break;
+            case 85:
+                if (after (6))
+                {
+                    shot ("settings-units");
+                    // a room sensor (MQTT) with a reading: nothing changes until it is captured
+                    climateWas = { proc.settings.temperatureC.load(), proc.settings.humidity.load() };
+                    proc.climate.simulateForPreview (24.0f, 31.0f);
+                    editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Sensor);
+                    next (86);
+                }
+                break;
+            case 86:
+                if (after (20))
+                {
+                    shot ("settings-sensor");
+                    check (std::abs (proc.settings.temperatureC.load() - climateWas.first) < 1e-6f,
+                           "room sensor: a reading changes nothing by itself");
+                    editor->venuePageForPreview().captureFromSensor();
+                    check (std::abs (proc.settings.temperatureC.load() - 24.0f) < 0.01f && std::abs (proc.settings.humidity.load() - 31.0f) < 0.01f,
+                           "room sensor: Capture takes its temperature and humidity for the session");
+                    editor->showPage ((int) P::Venue);
+                    next (87);
+                }
+                break;
+            case 87:
+                if (after (8))
+                {
+                    shot ("venue-sensor");
+                    // back to the tuned conditions; the sensor now reads warmer and drier than the tuning
+                    proc.setConditions (climateWas.first, climateWas.second);
+                    proc.climate.simulateForPreview (29.0f, 22.0f);
+                    editor->showPage ((int) P::Monitor);
+                    next (88);
+                }
+                break;
+            case 88:
+                if (after (40))
+                {
+                    shot ("monitor-conditions");
+                    proc.climate.configure ({});   // no sensor for the rest of the run
                     editor->showPage ((int) P::Home);
                     next (17);
                 }
@@ -1142,6 +1186,7 @@ public:
     std::array<Reverb, 3> reverbs;
     double ringHz = 0.0, subGain = 1.0, simMs = 0.0;
     bool stopNow = false;
+    std::pair<float, float> climateWas { 20.0f, 50.0f };
 
     // A processor filter as biquads: Butterworth of the slope's order, Linkwitz-Riley as two Butterworths of half.
     void addFilters (std::vector<Biquad>& chain, const la::xo::Filter& f, bool highPass)

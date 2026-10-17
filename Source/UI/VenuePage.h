@@ -50,17 +50,22 @@ public:
             s.setTooltip (tip);
             addAndMakeVisible (s);
         };
-        slider (tempSlider, "The air temperature in the room now: sets the speed of sound (delays into distances) and the air absorption");
+        slider (tempSlider, "The air temperature in the room now: sets the speed of sound (delays into distances) and the air absorption. "
+                            "With a room sensor (Settings, Room sensor), Capture takes its reading");
+        captureButton.setTooltip ("Take the room sensor's temperature and humidity as this session's conditions (Cmd/Ctrl+Z undoes it)");
+        captureButton.onClick = [this] { captureFromSensor(); };
+        addChildComponent (captureButton);
         tempSlider.onValueChange = [this]
         {
             const double v = tempSlider.getValue();
             proc.setConditions ((float) (fahrenheit() ? (v - 32.0) * 5.0 / 9.0 : v), proc.settings.humidity.load());
+            capturedNote.clear();
             changed();
         };
         slider (humiditySlider, "The relative humidity in the room now: dry air takes more of the high end off at the back");
         humiditySlider.setRange (5.0, 100.0, 1.0);
         humiditySlider.setTextValueSuffix (" %");
-        humiditySlider.onValueChange = [this] { proc.setConditions (proc.settings.temperatureC.load(), (float) humiditySlider.getValue()); changed(); };
+        humiditySlider.onValueChange = [this] { proc.setConditions (proc.settings.temperatureC.load(), (float) humiditySlider.getValue()); capturedNote.clear(); changed(); };
         recheckButton.setTooltip ("The quick re-check: each speaker close up, the level at FOH and the delays, against the tuning");
         recheckButton.onClick = [this] { if (onRecheck) onRecheck(); };
         addChildComponent (recheckButton);
@@ -74,6 +79,18 @@ public:
         prefBox (coverageBox, "coverageTol", "How evenly each speaker should cover its area (Aim and coverage)");
         refresh();
         startTimerHz (2);
+    }
+
+    // The room sensor's reading becomes this session's conditions (an edit: undo takes it back).
+    void captureFromSensor()
+    {
+        auto& f = proc.climate;
+        if (! f.live()) return;
+        const float t = f.tempC.load(), h = f.humidity.load();
+        proc.setConditions (std::isfinite (t) ? t : proc.settings.temperatureC.load(), std::isfinite (h) ? h : proc.settings.humidity.load());
+        capturedNote = "Captured from the sensor at " + juce::Time::getCurrentTime().formatted ("%H:%M");
+        refresh();
+        changed();
     }
 
     void refresh()
@@ -96,6 +113,7 @@ public:
         curveBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, proc.room.target), juce::dontSendNotification);
         for (auto* b : { &levelBox, &headroomBox, &coverageBox }) syncPrefBox (*b);
         recheckButton.setVisible (driftWorthRecheck());
+        syncCapture();
         resized();
         repaint();
     }
@@ -195,10 +213,11 @@ public:
             roomInfoArea = c.removeFromTop (40);
         }
         {
+            captureButton.setBounds (condCard.getRight() - 14 - 170, condCard.getY() + 6, 170, 24);
             auto c = condCard.reduced (14, 0).withTrimmedTop (36);
             field (c, "Temperature", tempSlider);
             field (c, "Humidity", humiditySlider);
-            condInfoArea = c.removeFromTop (54);
+            condInfoArea = c.removeFromTop (72);
             c.removeFromTop (4);
             driftArea = c.removeFromTop (48);
             recheckButton.setBounds (c.removeFromTop (28).withWidth (170));
@@ -220,11 +239,34 @@ private:
     void timerCallback() override
     {
         if (! isShowing()) return;
+        syncCapture();
         const bool w = driftWorthRecheck();
         if (recheckButton.isVisible() != w) recheckButton.setVisible (w);
         repaint();
     }
     bool driftWorthRecheck() const { bool w = false; driftText (proc, w); return w; }
+
+    // The room sensor's button: shown when one is set up, its reading on it, usable when the reading is fresh.
+    void syncCapture()
+    {
+        auto& f = proc.climate;
+        const bool on = f.enabled();
+        if (captureButton.isVisible() != on) captureButton.setVisible (on);
+        if (! on) return;
+        juce::String t;
+        if (f.live())
+        {
+            const auto deg = juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+            const float tc = f.tempC.load(), rh = f.humidity.load();
+            t = "Capture ";
+            if (std::isfinite (tc)) t << juce::roundToInt (fahrenheit() ? tc * 9.0f / 5.0f + 32.0f : tc) << deg << (fahrenheit() ? "F" : "C");
+            if (std::isfinite (tc) && std::isfinite (rh)) t << ", ";
+            if (std::isfinite (rh)) t << juce::roundToInt (rh) << " %";
+        }
+        else t = f.connected.load() ? "Sensor: no reading yet" : "Sensor: not connected";
+        if (captureButton.getButtonText() != t) captureButton.setButtonText (t);
+        captureButton.setEnabled (f.live());
+    }
 
     void readSizes()
     {
@@ -257,7 +299,8 @@ private:
         const double far = farMetres();
         const double a8 = air::absorptionDbPerM (8000.0, t, rh) * far, a4 = air::absorptionDbPerM (4000.0, t, rh) * far,
                      a16 = air::absorptionDbPerM (16000.0, t, rh) * far;
-        juce::String s = "Speed of sound " + (f ? juce::String (juce::roundToInt (c * 3.28084)) + " ft/s" : juce::String (juce::roundToInt (c)) + " m/s") + ". ";
+        juce::String s = capturedNote.isNotEmpty() ? capturedNote + ". " : juce::String();
+        s << "Speed of sound " + (f ? juce::String (juce::roundToInt (c * 3.28084)) + " ft/s" : juce::String (juce::roundToInt (c)) + " m/s") + ". ";
         s << "At " << (f ? juce::String (juce::roundToInt (far * 3.28084)) + " ft" : juce::String (juce::roundToInt (far)) + " m")
           << (proc.plan.lengthM > 1.0 ? " (the back of the room)" : "") << " the air takes " << juce::String (a4, 1) << " dB off 4 kHz, "
           << juce::String (a8, 1) << " dB off 8 kHz and " << juce::String (a16, 1) << " dB off 16 kHz";
@@ -299,6 +342,8 @@ private:
     juce::TextEditor nameEditor, notesEditor, sizeEditors[4];
     juce::ComboBox useBox, curveBox, levelBox, headroomBox, coverageBox;
     juce::Slider tempSlider, humiditySlider;
+    juce::TextButton captureButton;
+    juce::String capturedNote;   // when the conditions were last captured from the sensor
     juce::TextButton recheckButton { "Quick re-check..." };
     juce::Rectangle<int> venueCard, roomCard, condCard, targetCard, roomInfoArea, condInfoArea, driftArea, targetNote;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;

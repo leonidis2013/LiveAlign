@@ -25,6 +25,7 @@ LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
     if (wrapperType != wrapperType_Standalone) setMonitorMode (true);   // the VST3 only monitors
     applyAppPrefs();
     settings.genLevelDb = (float) la::AppPrefs::get().value ("genStartDb");
+    configureClimate();
     savedProjectText = createProjectXml()->toString();
     changedCheckedAt = 0;
 }

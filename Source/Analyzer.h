@@ -432,10 +432,15 @@ private:
             const auto r = lastSamples (rawRef, rawLen);
             DelayReport rep;
             rep.micCount = count;
+            // the reference's spectrum once, every mic against it
+            std::vector<std::vector<float>> micData;
+            std::vector<const float*> micPtrs;
+            for (int m = 0; m < count; ++m) micData.push_back (lastSamples (chains[(size_t) m].raw, rawLen));
+            for (const auto& md : micData) micPtrs.push_back (md.data());
+            const auto all = findDelays (r.data(), micPtrs, rawLen, rawLen / 2, 0.0);
             for (int m = 0; m < count; ++m)
             {
-                const auto mic = lastSamples (chains[(size_t) m].raw, rawLen);
-                const auto res = findDelay (r.data(), mic.data(), rawLen, rawLen / 2, 0.0);
+                const auto& res = all[(size_t) m];
                 rep.valid[(size_t) m] = res.valid;
                 rep.ms[(size_t) m] = res.samples * 1000.0 / sr;
                 rep.inverted[(size_t) m] = res.inverted;
