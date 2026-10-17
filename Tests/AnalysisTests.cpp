@@ -440,6 +440,21 @@ static void testCrossover()
     check (r.valid, "Crossover found");
     check (r.filter.freq >= 60.0 && r.filter.freq <= 160.0, "Crossover frequency in the overlap", r.filter.freq, 100.0);
     near (r.gainLowDb, -6.0, 1.5, "Sub level matched to the top");
+
+    // a sub with a protective high-pass at 35 Hz: its level is read where it plays fully, not where it rolls off
+    {
+        Response sub2 = sub;
+        const Filter prot { Butterworth, 24, 35.0 };
+        for (size_t i = 0; i < grid.size(); ++i) sub2.h[i] *= response (prot, true, grid[i]);
+        const auto r2 = optimise (top, sub2, caps, opt);
+        near (r2.gainLowDb, -6.0, 1.5, "Sub level matched even with a protective high-pass");
+        // an amp 20 dB down: matched as far as it goes, and said so
+        Response quiet = sub;
+        for (auto& v : quiet.h) v *= 0.1;   // -20 dB: the sub now 14 dB under the top
+        for (auto& v : quiet.h) v *= 0.5;   // -26 dB in all: 20 dB under the top
+        const auto r3 = optimise (top, quiet, caps, opt);
+        check (r3.note.find ("more than the 15 dB") != std::string::npos, "A level gap over 15 dB is reported");
+    }
     check (r.costDb < 1.0, "Summed response close to flat", r.costDb, 0.5);
     check (r.efficiency > 0.85, "Summation efficiency high", r.efficiency, 0.95);
 

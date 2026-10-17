@@ -137,6 +137,64 @@ static void sheetTests()
     check (sheet::text (sys, "Venue", "today").contains ("Amp gain: +35 dB"), "sheet: text has the amp gain");
 }
 
+// Groups: Main L, Main R and a centre as one group, two subs as another; the crossover reads each group's average; a
+// processor with a group stage enters each group once and each output's delay and trim.
+static void groupTests()
+{
+    SpeakerSystem sys;
+    sys.sources = { speaker ("Main L", SpeakerRole::Main, SpeakerChannel::Left, 1), speaker ("Main R", SpeakerRole::Main, SpeakerChannel::Right, 2),
+                    speaker ("Centre", SpeakerRole::Main, SpeakerChannel::Centre, 3), speaker ("Sub 1", SpeakerRole::Sub, SpeakerChannel::Mono, 4),
+                    speaker ("Sub 2", SpeakerRole::Sub, SpeakerChannel::Mono, 5), speaker ("Fill", SpeakerRole::Fill, SpeakerChannel::Mono, 6) };
+    sys.sources[1].linkTo = 0;
+    sys.sources[2].linkTo = 0;
+    sys.sources[4].linkTo = 3;
+    check (sys.groupOf (2).size() == 3 && sys.groupOf (2).front() == 0, "groups: the centre is in the mains' group, led by Main L");
+    check (sys.groupName (1) == "Mains" && sys.groupName (4) == "Subs" && sys.groupName (5) == "Fill", "groups: named by role (a lone speaker by its name)");
+    check (sys.groupOutputs (0) == "Outputs 1, 2, 3", "groups: the outputs a group feeds");
+
+    // the group's response: a 6 dB bump on Main R only shows up halved in power (+3.0 dB less ... about +3.97 dB on average)
+    const auto grid = xo::analysisGrid();
+    for (int i : { 0, 1 })
+    {
+        auto& t = sys.sources[(size_t) i].response;
+        for (double f = 20.0; f <= 20000.0; f *= 1.05)
+        {
+            t.freq.push_back (f);
+            t.db.push_back (i == 1 && f > 200.0 && f < 400.0 ? 6.0f : 0.0f);
+            t.phase.push_back (0.0f);
+        }
+        sys.sources[(size_t) i].nearField = true;
+    }
+    int used = 0;
+    const auto g = sys.groupResponse (0, grid, &used);
+    size_t k300 = 0;
+    for (size_t j = 0; j < grid.size(); ++j) if (std::abs (grid[j] - 300.0) < std::abs (grid[k300] - 300.0)) k300 = j;
+    const double db300 = 20.0 * std::log10 (std::abs (g.h[k300]));
+    check (used == 2 && std::abs (db300 - 10.0 * std::log10 ((1.0 + 3.981) / 2.0)) < 0.2, "groups: the crossover reads the members' power average", db300, 3.97);
+
+    // the processor sheet with a group stage
+    sys.sources[0].proc.hp = { xo::LinkwitzRiley, 24, 90.0 };
+    sys.syncLinks();
+    sys.sources[1].proc.delayMs = 1.2;
+    sys.sources[2].trimDb = -2.0;
+    sys.groupStage = true;
+    const auto ls = sheet::lines (sys);
+    check (ls.size() == 8 && ls[0].group && ls[0].spk == 0 && ! ls[1].group && ls[4].group && ls[4].spk == 3 && ! ls[7].group,
+           "sheet: a group stage lists each group, then its outputs", (double) ls.size(), 8);
+    check (sheet::groupRow (sys, 0).hpf.contains ("90 Hz") && sheet::row (sys, 1).hpf == "(group)" && sheet::row (sys, 2).gain.contains ("-2.0 dB trim"),
+           "sheet: the group has the filters, each output its own trim");
+    check (sheet::row (sys, 5).hpf == "off" && ! sheet::row (sys, 5).member, "sheet: a speaker in no group keeps its full line");
+    sheet::tickAll (sys);
+    check (sheet::enteredCount (sys) == sheet::lineCount (sys), "sheet: tick all ticks the group lines too");
+    sys.sources[1].proc.delayMs = 1.5;
+    check (! sheet::entered (sys, sheet::Line { false, 1 }) && sheet::entered (sys, sheet::Line { true, 0 }), "sheet: an output's delay unticks only that output");
+    sys.sources[0].proc.hp.freq = 100.0;
+    sys.syncLinks();
+    check (! sheet::entered (sys, sheet::Line { true, 0 }) && sheet::entered (sys, sheet::Line { false, 2 }), "sheet: a group change unticks the group line only");
+    sys.groupStage = false;
+    check (sheet::lineCount (sys) == 6 && sheet::row (sys, 1).hpf.contains ("100 Hz"), "sheet: one output per speaker gives each its full settings");
+}
+
 static void recheckTests()
 {
     Recheck rc;
@@ -491,6 +549,7 @@ int main()
     setenv ("HOME", home.getFullPathName().toRawUTF8(), 1);
     levelBalanceTests();
     sheetTests();
+    groupTests();
     recheckTests();
     prefsTests();
     allowanceTests();

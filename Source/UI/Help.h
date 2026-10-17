@@ -38,6 +38,7 @@ inline const std::vector<Term>& glossary()
         { "First reflection", "The delay between the direct sound and the first strong reflection (the initial time delay gap). Short gaps add intimacy; very short ones colour the sound." },
         { "Flutter echo", "A rapid ringing between two parallel hard surfaces. A clap in the room shows it." },
         { "Generator", "LiveAlign's test signal: pink noise, a sweep or a sine, out of the outputs you pick. It always starts off, and never goes above the ceiling in Settings." },
+        { "Group", "Speakers of a kind that share one set of settings: Mains (left, centre, right), Subs, Fills, Delays. The group's filters, level, polarity and EQ are set once; each member keeps its own delay and level trim, and is still measured and checked on its own. The crossover reads each side as its group (the members averaged)." },
         { "Headroom", "How far the system can go above the show level before it compresses or limits. Peaks in music need several dB (6 dB is a common aim)." },
         { "Impulse response", "What the mic hears from an instant click through the system and the room: the direct sound, then the reflections and the decay. Everything about the room comes from it." },
         { "LAeq", "The A-weighted sound level averaged over a time (15 minutes, an hour ...), per IEC 61672-1. Most show limits are an LAeq (the WHO and many local rules quote 15 minute or 1 hour LAeq)." },
@@ -79,7 +80,7 @@ inline juce::StringArray termsFor (int page)
     {
         case Page::Mics: return { "Calibration file", "Reference", "Loopback", "SPL", "dBFS", "NC, NR" };
         case Page::Venue: return { "Speed of sound", "Absorption (air)", "MQTT", "Target curve", "Headroom", "Coverage" };
-        case Page::Speakers: return { "Directivity (Q)", "Polarity", "Critical distance" };
+        case Page::Speakers: return { "Group", "Directivity (Q)", "Polarity", "Critical distance" };
         case Page::Plan: return { "Coverage" };
         case Page::Response: return { "Transfer function", "Polarity", "Phase", "Coherence", "Calibration file" };
         case Page::Crossover: return { "Crossover", "Phase", "Polarity", "Delay" };

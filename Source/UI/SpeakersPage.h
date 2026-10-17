@@ -655,8 +655,9 @@ public:
             s->directivityQ = id == 1 ? 0.0 : coverPatterns()[(size_t) (id - 2)].q;
             systemChanged (false);
         };
-        linkBox.setTooltip ("Share the crossover, level and polarity with another speaker, e.g. Main R with Main L. "
-                            "A shared speaker needs no measurement of its own.");
+        linkBox.setTooltip ("Its group: speakers in a group share the crossover, level, polarity and EQ (Main L, Main R and the centre; "
+                            "every sub). Each is still measured and checked on its own, and keeps its own delay and trim. "
+                            "\"Own settings\" takes it out of the group.");
         linkBox.onChange = [this]
         {
             if (auto* s = current())
@@ -1418,7 +1419,8 @@ public:
             line ("Role", speakerRoleNames()[s->role] + ", " + speakerChannelNames()[s->channel]);
             line ("Output", (s->output == 0 ? juce::String ("All outputs") : "Output " + juce::String (s->output))
                                 + (s->count > 1 ? ",  " + juce::String (s->count) + " cabinets" : juce::String()));
-            line ("Settings", sys.master (selected) != selected ? "Same as " + nameOf (sys.master (selected)) : juce::String ("Its own"));
+            line ("Group", sys.inGroup (selected) ? sys.groupName (selected) + (sys.master (selected) == selected ? " (lead)" : ", led by " + nameOf (sys.master (selected)))
+                                                  : juce::String ("None (its own settings)"));
         }
         if (const auto* s = current())
         {
@@ -1478,8 +1480,7 @@ public:
         }
         {
             // the processor sheet, in a line
-            int entered = 0, total = 0;
-            for (int i = 0; i < (int) sys.sources.size(); ++i) { ++total; entered += sys.sources[(size_t) i].sheetEntered == sheetLine (i) ? 1 : 0; }
+            const int entered = sheet::enteredCount (sys), total = sheet::lineCount (sys);
             g.setColour (entered == total ? p.good : p.textDim);
             g.setFont (font (11.5f, entered == total));
             g.drawText (juce::String (entered) + " of " + juce::String (total) + " entered", sheetInfo, juce::Justification::centredRight, true);
@@ -1821,7 +1822,7 @@ private:
                               "A mono sub is fed from both sides (L+R), so it measures with all outputs playing.", r.withHeight (60), juce::Justification::topLeft, 3);
             return;
         }
-        static const char* heads[] = { "OUTPUT", "SPEAKER", "ROLE", "CHANNEL", "CABINETS", "COVERS", "SETTINGS" };
+        static const char* heads[] = { "OUTPUT", "SPEAKER", "ROLE", "CHANNEL", "CABINETS", "COVERS", "GROUP" };
         const int w[] = { 70, 150, 110, 90, 80, 120, 0 };
         auto head = r.removeFromTop (20);
         g.setColour (p.textDim);
@@ -1852,7 +1853,7 @@ private:
             g.drawText (speakerChannelNames()[s.channel], cell.removeFromLeft (w[3]), juce::Justification::centredLeft, true);
             g.drawText (juce::String (s.count), cell.removeFromLeft (w[4]), juce::Justification::centredLeft);
             g.drawText ("Q " + juce::String (juce::roundToInt (s.qFactor())), cell.removeFromLeft (w[5]), juce::Justification::centredLeft);
-            g.drawText (s.linkTo >= 0 ? "Same as " + nameOf (s.linkTo) : juce::String ("Own"), cell, juce::Justification::centredLeft, true);
+            g.drawText (sys.inGroup (i) ? sys.groupName (i) : juce::String ("Own"), cell, juce::Justification::centredLeft, true);
             r.removeFromTop (4);
         }
         r.removeFromTop (10);
@@ -1926,9 +1927,10 @@ private:
             coverBox.setSelectedId (sel, juce::dontSendNotification);
         }
         linkBox.clear (juce::dontSendNotification);
-        linkBox.addItem ("Own settings", 1);
+        linkBox.addItem ("Own settings (no group)", 1);
         for (int i = 0; i < (int) sys.sources.size(); ++i)
-            if (i != selected && sys.sources[(size_t) i].linkTo < 0) linkBox.addItem ("Same as " + nameOf (i), i + 2);
+            if (i != selected && sys.sources[(size_t) i].linkTo < 0)
+                linkBox.addItem ("Group with " + nameOf (i) + (sys.inGroup (i) ? " (" + sys.groupName (i) + ")" : juce::String()), i + 2);
         linkBox.setSelectedId (s->linkTo >= 0 ? s->linkTo + 2 : 1, juce::dontSendNotification);
         outputBox.setSelectedItemIndex (juce::jlimit (0, nOuts, s->output), juce::dontSendNotification);
         offsetSlider.setValue (s->offsetMs, juce::dontSendNotification);
@@ -1941,7 +1943,7 @@ private:
     {
         const int room = SpeakerSystem::kMaxSources - (int) sys.sources.size();
         juce::PopupMenu m;
-        m.addItem (1, "Left / right pair (mains, sharing settings)", room >= 2);
+        m.addItem (1, "Left / right pair (mains, one group)", room >= 2);
         m.addItem (2, "Sub", room >= 1);
         m.addItem (3, "Front fill", room >= 1);
         m.addItem (4, "Delay speaker", room >= 1);
@@ -1963,6 +1965,12 @@ private:
                 }
                 return outs;
             };
+            auto leadOf = [&system] (SpeakerRole role)
+            {
+                for (int k = 0; k < (int) system.sources.size(); ++k)
+                    if (system.sources[(size_t) k].role == (int) role && system.sources[(size_t) k].linkTo < 0) return k;
+                return -1;
+            };
             auto add = [&] (const juce::String& name, SpeakerRole role, SpeakerChannel ch, int link = -1)
             {
                 SpeakerSource s;
@@ -1977,10 +1985,19 @@ private:
             switch (r)
             {
                 case 1: { const int l = add ("Main L", SpeakerRole::Main, SpeakerChannel::Left); add ("Main R", SpeakerRole::Main, SpeakerChannel::Right, l); break; }
-                case 2: system.sources[(size_t) add ("Sub", SpeakerRole::Sub, SpeakerChannel::Mono)].output = 0; break;   // a mono sub is fed from both sides (L+R)
-                case 3: add ("Front fill", SpeakerRole::Fill, SpeakerChannel::Mono); break;
-                case 4: add ("Delay", SpeakerRole::Delay, SpeakerChannel::Mono); break;
-                case 5: add ("Centre", SpeakerRole::Main, SpeakerChannel::Centre); break;
+                // a speaker joins the group of its kind when there is one (its settings shared; "Own settings" splits it off)
+                case 2:
+                {
+                    const int g = leadOf (SpeakerRole::Sub);
+                    const int k = add (g >= 0 ? "Sub " + juce::String (system.sources.size() + 1) : juce::String ("Sub"), SpeakerRole::Sub, SpeakerChannel::Mono, g);
+                    if (g < 0) system.sources[(size_t) k].output = 0;   // a mono sub is fed from both sides (L+R)
+                    break;
+                }
+                case 3: add (leadOf (SpeakerRole::Fill) >= 0 ? "Front fill " + juce::String (system.sources.size() + 1) : juce::String ("Front fill"),
+                             SpeakerRole::Fill, SpeakerChannel::Mono, leadOf (SpeakerRole::Fill)); break;
+                case 4: add (leadOf (SpeakerRole::Delay) >= 0 ? "Delay " + juce::String (system.sources.size() + 1) : juce::String ("Delay"),
+                             SpeakerRole::Delay, SpeakerChannel::Mono, leadOf (SpeakerRole::Delay)); break;
+                case 5: add ("Centre", SpeakerRole::Main, SpeakerChannel::Centre, leadOf (SpeakerRole::Main)); break;
                 default: add ("Speaker " + juce::String (system.sources.size() + 1), SpeakerRole::Other, SpeakerChannel::Mono); break;
             }
             system.ensurePair();
@@ -2121,7 +2138,7 @@ private:
         liveValid = false;
         if (! sys.pairValid()) return;
         const auto grid = xo::analysisGrid();
-        const auto h = sys.rawResponse (sys.xoHigh, grid), l = sys.rawResponse (sys.xoLow, grid);
+        const auto h = sys.groupResponse (sys.xoHigh, grid), l = sys.groupResponse (sys.xoLow, grid);
         if (h.empty() || l.empty()) return;
         const auto& ph = sys.sources[(size_t) sys.xoHigh].proc;
         const auto& pl = sys.sources[(size_t) sys.xoLow].proc;
@@ -2152,8 +2169,14 @@ private:
             return;   // no settings from an upside-down pair
         }
         const auto grid = xo::analysisGrid();
-        auto h = sys.rawResponse (sys.xoHigh, grid), l = sys.rawResponse (sys.xoLow, grid);
+        // each side as its group: the members' responses averaged (Main L and Main R together, every sub)
+        int nh = 0, nl = 0;
+        auto h = sys.groupResponse (sys.xoHigh, grid, &nh), l = sys.groupResponse (sys.xoLow, grid, &nl);
         if (h.empty() || l.empty()) { repaint(); return; }
+        groupNote.clear();
+        if (nh > 1 || nl > 1)
+            groupNote = "From " + (nh > 1 ? sys.groupName (sys.xoHigh) + " (" + juce::String (nh) + " averaged)" : nameOf (sys.xoHigh)) + " and "
+                        + (nl > 1 ? sys.groupName (sys.xoLow) + " (" + juce::String (nl) + " averaged)" : nameOf (sys.xoLow)) + ". ";
         searching = true;
         findButton.setEnabled (false);
         repaint();
@@ -2176,6 +2199,7 @@ private:
         searching = false;
         findButton.setEnabled (true);
         sys.lastResult = r;
+        if (groupNote.isNotEmpty()) sys.lastResult.note = (groupNote + juce::String (r.note)).trim().toStdString();
         if (r.valid && sys.pairValid())
         {
             auto& hi = sys.sources[(size_t) sys.xoHigh].proc;
@@ -3939,6 +3963,7 @@ private:
     bool searching = false, liveValid = false, sawReset = false;
     double liveEff = 0.0, liveDev = 0.0, liveReliable = 1.0;
     juce::String status;
+    juce::String groupNote;   // which groups the last crossover search averaged
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
 };
 } // namespace la::ui

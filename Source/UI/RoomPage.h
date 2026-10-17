@@ -328,7 +328,7 @@ public:
             changed();
         };
         speakerBox.setTooltip ("Where the EQ goes: the whole system (every speaker), the mains, or one speaker. The room is "
-                               "measured as a whole; speakers set Same as another follow it.");
+                               "measured as a whole; the other speakers in a group follow their lead.");
         static const int bandsOpts[] = { 3, 4, 5, 6, 8, 10, 12, 16, 31 };
         for (int b : bandsOpts) bandsBox.addItem (juce::String (b) + " bands", b);
         bandsBox.onChange = [this] { room.maxBands = juce::jmax (1, bandsBox.getSelectedId()); };

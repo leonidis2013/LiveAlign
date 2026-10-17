@@ -394,7 +394,9 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
 
     // where each source is usable: within 6 dB of its own passband (half-octave smoothed)
     const double highRef = passbandDb (high, opt);
-    const double lowRef = medianDb (low, std::max (20.0, opt.fMin / 3.0), std::max (25.0, opt.fMin / 1.2));
+    // the low source's passband: the octave at the bottom of the search range (40 - 80 Hz for a sub), where it plays
+    // fully; lower than that many subs are already rolling off (a protective high-pass), which would read it too quiet
+    const double lowRef = medianDb (low, std::max (25.0, opt.fMin), std::max (35.0, opt.fMin * 2.0));
     const auto hs = detail::smoothedDb (high, 0.5), ls = detail::smoothedDb (low, 0.5);
     double highFrom = f.back(), lowTo = f.front();
     for (size_t i = f.size(); i-- > 0;)
@@ -427,6 +429,10 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
     if (fLo > fHi) { fLo = opt.fMin; fHi = opt.fMax; note = "The speakers' overlap is outside the search range."; }
     const double fMid = std::sqrt (fLo * fHi);
     const double gainDb = opt.matchLevels ? std::clamp (highRef - lowRef, -15.0, 15.0) : 0.0;
+    if (opt.matchLevels && std::abs (highRef - lowRef) > 15.0)
+        note = std::string (note.empty() ? "" : note + " ") + "The two were measured " + std::to_string ((int) std::lround (std::abs (highRef - lowRef)))
+               + " dB apart, more than the 15 dB the level match covers: bring the " + (highRef > lowRef ? "low" : "high")
+               + " speaker's amp up (or the other down) and measure again.";
     const double g = std::pow (10.0, gainDb / 20.0);
     std::vector<double> ref (f.size());
     for (size_t i = 0; i < f.size(); ++i) ref[i] = std::max (std::abs (high.h[i]), std::abs (low.h[i]) * g);

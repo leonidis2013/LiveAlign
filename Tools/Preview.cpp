@@ -796,6 +796,14 @@ public:
                     editor->sheetPageForPreview().setHistoryShown (true);
                     shot ("sheet-history");
                     editor->sheetPageForPreview().setHistoryShown (false);
+                    // a processor with a group stage: the mains' group line, then each output's delay and trim
+                    proc.system.groupStage = true;
+                    editor->sheetPageForPreview().refresh();
+                    shot ("sheet-groups");
+                    check (la::sheet::lineCount (proc.system) == (int) proc.system.sources.size() + 1 && la::sheet::lines (proc.system).front().group,
+                           "processor sheet: a group stage puts the mains' group line first");
+                    proc.system.groupStage = false;
+                    editor->sheetPageForPreview().refresh();
                     editor->sheetPageForPreview().writePdf (dir.getChildFile ("sheet.pdf"));
                     std::printf ("sheet: %d bytes, csv:\n%s", (int) dir.getChildFile ("sheet.pdf").getSize(), la::sheet::csv (proc.system).toRawUTF8());
                     editor->showPage ((int) P::TuningReport);

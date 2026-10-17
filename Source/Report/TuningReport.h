@@ -676,15 +676,16 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
         L.chapter ("Processor sheet");
         L.para ("Every setting to enter, output by output. Filters in dB/octave; gain includes the crossover's level and the level-balance trim.", 9.5f);
         std::vector<juce::StringArray> rows;
-        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        for (const auto& ln : sheet::lines (sys))
         {
-            const auto rw = sheet::row (sys, i);
-            rows.push_back ({ sheet::entered (sys, i) ? "yes" : "no", rw.name, rw.output, rw.hpf, rw.lpf, rw.delay.upToFirstOccurrenceOf ("  (", false, false), rw.polarity, rw.gain });
+            const auto rw = sheet::rowOf (sys, ln);
+            rows.push_back ({ sheet::entered (sys, ln) ? "yes" : "no", (rw.member ? "  " : "") + rw.name, rw.output, rw.hpf, rw.lpf,
+                              rw.delay.upToFirstOccurrenceOf ("  (", false, false), rw.polarity, rw.gain });
         }
         L.table ({ 0.7f, 1.8f, 1.1f, 2.0f, 2.0f, 1.0f, 1.0f, 1.6f }, { "Entered", "Speaker", "Output", "High-pass", "Low-pass", "Delay", "Polarity", "Gain" }, rows, 7.5f);
-        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        for (const auto& ln : sheet::lines (sys))
         {
-            const auto rw = sheet::row (sys, i);
+            const auto rw = sheet::rowOf (sys, ln);
             if (rw.eq == "none") continue;
             L.sub (rw.name + " EQ");
             L.para (rw.eq, 9.0f);

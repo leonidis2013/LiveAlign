@@ -57,9 +57,14 @@ inline juce::String outputWords (const SpeakerSource& s) { return s.output == 0 
 struct Row
 {
     int spk = 0;
+    bool group = false;          // a group's line (processor with a group stage): its filters, level, polarity and EQ
+    bool member = false;         // an output whose filters, level, polarity and EQ come from its group's line
     juce::String name, output, hpf, lpf, delay, polarity, gain, eq;
     juce::String amp, limiter;   // as set (for the record: not part of what is ticked as entered)
 };
+
+// On a processor with a group stage, a speaker in a group takes most of its settings from the group's line.
+inline bool memberLine (const SpeakerSystem& sys, int i) { return sys.groupStage && sys.inGroup (i); }
 
 inline Row row (const SpeakerSystem& sys, int i)
 {
@@ -69,27 +74,91 @@ inline Row row (const SpeakerSystem& sys, int i)
     r.spk = i;
     r.name = sys.nameOf (i) + (s.count > 1 ? " (" + juce::String (s.count) + " cabinets)" : juce::String());
     r.output = outputWords (s);
+    r.delay = delayWords (s.proc.delayMs);
+    r.amp = s.ampGain;
+    r.limiter = s.limiter;
+    if (memberLine (sys, i))
+    {
+        const auto f1 = [] (double v) { return (v >= 0.0 ? "+" : "") + juce::String (v, 1); };
+        r.member = true;
+        r.hpf = r.lpf = r.polarity = "(group)";
+        r.gain = std::abs (s.trimDb) > 0.04 ? f1 (s.trimDb) + " dB trim" : juce::String ("0 dB");
+        r.eq = "none";
+        return r;
+    }
     r.hpf = filterWords (s.proc.hp);
     r.lpf = filterWords (s.proc.lp);
-    r.delay = delayWords (s.proc.delayMs);
     r.polarity = s.proc.invert ? "INVERTED" : "normal";
     r.gain = gainWords (s);
     r.eq = eqWords (s.proc.eq);
-    r.amp = s.ampGain;
-    r.limiter = s.limiter;
     return r;
 }
 
-// Everything on the line: ticked "entered" stays ticked only while this stays the same.
-inline juce::String signature (const SpeakerSystem& sys, int i)
+// A group's line: what is entered once on the group (its lead's settings, which every member shares).
+inline Row groupRow (const SpeakerSystem& sys, int lead)
 {
-    const auto r = row (sys, i);
-    return r.output + "|" + r.hpf + "|" + r.lpf + "|" + r.delay + "|" + r.polarity + "|" + r.gain + "|" + r.eq;
+    Row r;
+    if (lead < 0 || lead >= (int) sys.sources.size()) return r;
+    const auto& s = sys.sources[(size_t) lead];
+    const auto f1 = [] (double v) { return (v >= 0.0 ? "+" : "") + juce::String (v, 1); };
+    r.spk = lead;
+    r.group = true;
+    r.name = sys.groupName (lead) + " group";
+    r.output = sys.groupOutputs (lead);
+    r.hpf = filterWords (s.proc.hp);
+    r.lpf = filterWords (s.proc.lp);
+    r.delay = "on each output";
+    r.polarity = s.proc.invert ? "INVERTED" : "normal";
+    r.gain = f1 (s.proc.gainDb) + " dB";
+    r.eq = eqWords (s.proc.eq);
+    return r;
 }
+
+// The sheet's lines in order. Outputs only: one per speaker. With a group stage: each group's line, then its outputs.
+struct Line { bool group = false; int spk = 0; };
+inline std::vector<Line> lines (const SpeakerSystem& sys)
+{
+    std::vector<Line> out;
+    const int n = (int) sys.sources.size();
+    if (! sys.groupStage) { for (int i = 0; i < n; ++i) out.push_back ({ false, i }); return out; }
+    for (int i = 0; i < n; ++i)
+    {
+        if (sys.master (i) != i) continue;
+        if (sys.inGroup (i))
+        {
+            out.push_back ({ true, i });
+            for (int k : sys.groupOf (i)) out.push_back ({ false, k });
+        }
+        else out.push_back ({ false, i });
+    }
+    for (int i = 0; i < n; ++i)   // anything not reached (a broken link): its own line
+    {
+        bool seen = false;
+        for (const auto& l : out) seen = seen || (! l.group && l.spk == i);
+        if (! seen) out.push_back ({ false, i });
+    }
+    return out;
+}
+inline Row rowOf (const SpeakerSystem& sys, const Line& l) { return l.group ? groupRow (sys, l.spk) : row (sys, l.spk); }
+
+inline juce::String signature (const Row& r) { return r.output + "|" + r.hpf + "|" + r.lpf + "|" + r.delay + "|" + r.polarity + "|" + r.gain + "|" + r.eq; }
+inline juce::String signature (const SpeakerSystem& sys, int i) { return signature (row (sys, i)); }
 
 inline bool entered (const SpeakerSystem& sys, int i)
 {
     return i >= 0 && i < (int) sys.sources.size() && sys.sources[(size_t) i].sheetEntered == signature (sys, i);
+}
+inline bool entered (const SpeakerSystem& sys, const Line& l)
+{
+    if (l.spk < 0 || l.spk >= (int) sys.sources.size()) return false;
+    return l.group ? sys.sources[(size_t) l.spk].groupSheetEntered == signature (groupRow (sys, l.spk)) : entered (sys, l.spk);
+}
+inline void setEntered (SpeakerSystem& sys, const Line& l, bool on)
+{
+    if (l.spk < 0 || l.spk >= (int) sys.sources.size()) return;
+    auto& s = sys.sources[(size_t) l.spk];
+    if (l.group) s.groupSheetEntered = on ? signature (groupRow (sys, l.spk)) : juce::String();
+    else s.sheetEntered = on ? signature (sys, l.spk) : juce::String();
 }
 
 // Has settings to enter (anything but a flat, untouched output).
@@ -97,28 +166,40 @@ inline bool hasSettings (const SpeakerSystem& sys, int i)
 {
     if (i < 0 || i >= (int) sys.sources.size()) return false;
     const auto& s = sys.sources[(size_t) i];
+    if (memberLine (sys, i)) return s.proc.delayMs > 0.005 || std::abs (s.trimDb) > 0.04;
     return s.proc.hp.active() || s.proc.lp.active() || s.proc.delayMs > 0.005 || s.proc.invert || std::abs (s.totalGainDb()) > 0.04 || ! s.proc.eq.empty();
 }
+inline bool hasSettings (const SpeakerSystem& sys, const Line& l)
+{
+    if (! l.group) return hasSettings (sys, l.spk);
+    if (l.spk < 0 || l.spk >= (int) sys.sources.size()) return false;
+    const auto& p = sys.sources[(size_t) l.spk].proc;
+    return p.hp.active() || p.lp.active() || p.invert || std::abs (p.gainDb) > 0.04 || ! p.eq.empty();
+}
 
-// The outputs whose settings changed and are not ticked as entered yet: what to enter before the next measurement.
+// The lines whose settings changed and are not ticked as entered yet: what to enter before the next measurement.
 inline juce::StringArray pending (const SpeakerSystem& sys)
 {
     juce::StringArray out;
-    for (int i = 0; i < (int) sys.sources.size(); ++i)
-        if (sys.master (i) == i && hasSettings (sys, i) && ! entered (sys, i)) out.add (sys.nameOf (i));
+    for (const auto& l : lines (sys))
+    {
+        if (! sys.groupStage && sys.master (l.spk) != l.spk) continue;   // outputs only: a group member follows its lead
+        if (hasSettings (sys, l) && ! entered (sys, l)) out.add (l.group ? groupRow (sys, l.spk).name : sys.nameOf (l.spk));
+    }
     return out;
 }
 
-// Ticks every output as entered (the "They're entered" checkpoint).
+// Ticks every line as entered (the "They're entered" checkpoint).
 inline void tickAll (SpeakerSystem& sys)
 {
-    for (int i = 0; i < (int) sys.sources.size(); ++i) sys.sources[(size_t) i].sheetEntered = signature (sys, i);
+    for (const auto& l : lines (sys)) setEntered (sys, l, true);
 }
 
+inline int lineCount (const SpeakerSystem& sys) { return (int) lines (sys).size(); }
 inline int enteredCount (const SpeakerSystem& sys)
 {
     int n = 0;
-    for (int i = 0; i < (int) sys.sources.size(); ++i) n += entered (sys, i) ? 1 : 0;
+    for (const auto& l : lines (sys)) n += entered (sys, l) ? 1 : 0;
     return n;
 }
 
@@ -131,27 +212,32 @@ inline juce::String csvField (juce::String v)
 inline juce::String csv (const SpeakerSystem& sys)
 {
     juce::String out = "Speaker,Output,High-pass,Low-pass,Delay,Polarity,Gain,EQ,Amp gain,Limiter,Entered\n";
-    for (int i = 0; i < (int) sys.sources.size(); ++i)
+    for (const auto& l : lines (sys))
     {
-        const auto r = row (sys, i);
+        const auto r = rowOf (sys, l);
         out << csvField (r.name) << ',' << csvField (r.output) << ',' << csvField (r.hpf) << ',' << csvField (r.lpf) << ',' << csvField (r.delay) << ','
             << csvField (r.polarity) << ',' << csvField (r.gain) << ',' << csvField (r.eq) << ',' << csvField (r.amp) << ',' << csvField (r.limiter) << ','
-            << (entered (sys, i) ? "yes" : "no") << '\n';
+            << (entered (sys, l) ? "yes" : "no") << '\n';
     }
     return out;
 }
 
 inline juce::String text (const SpeakerSystem& sys, const juce::String& venue, const juce::String& date)
 {
-    juce::String out = "LiveAlign processor settings - " + venue + " - " + date + "\n\n";
-    for (int i = 0; i < (int) sys.sources.size(); ++i)
+    juce::String out = "LiveAlign processor settings - " + venue + " - " + date + "\n";
+    out << (sys.groupStage ? "Processor with a group stage: each group's line once, then each output's delay and trim.\n\n" : "\n");
+    for (const auto& l : lines (sys))
     {
-        const auto r = row (sys, i);
-        out << r.name << "  (" << r.output << ")\n"
-            << "  High-pass: " << r.hpf << "\n  Low-pass: " << r.lpf << "\n  Delay: " << r.delay << "\n  Polarity: " << r.polarity
-            << "\n  Gain: " << r.gain << "\n  EQ: " << r.eq;
-        if (r.amp.isNotEmpty()) out << "\n  Amp gain: " << r.amp;
-        if (r.limiter.isNotEmpty()) out << "\n  Limiter: " << r.limiter;
+        const auto r = rowOf (sys, l);
+        out << (r.member ? "  " : "") << r.name << "  (" << r.output << ")\n";
+        const juce::String in = r.member ? "    " : "  ";
+        if (! r.member) out << in << "High-pass: " << r.hpf << "\n" << in << "Low-pass: " << r.lpf << "\n";
+        if (! r.group) out << in << "Delay: " << r.delay << "\n";
+        if (! r.member) out << in << "Polarity: " << r.polarity << "\n";
+        out << in << "Gain: " << r.gain;
+        if (! r.member) out << "\n" << in << "EQ: " << r.eq;
+        if (r.amp.isNotEmpty()) out << "\n" << in << "Amp gain: " << r.amp;
+        if (r.limiter.isNotEmpty()) out << "\n" << in << "Limiter: " << r.limiter;
         out << "\n\n";
     }
     return out;

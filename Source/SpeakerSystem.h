@@ -124,6 +124,7 @@ struct SpeakerSource
     }
     double qFactor() const { return directivityQ > 0.0 ? directivityQ : typicalQ (role); }
     juce::String sheetEntered;     // the processor sheet line as it was when ticked "entered" (a change unticks it)
+    juce::String groupSheetEntered;   // a group's lead: its group line on a processor with a group stage, as ticked
 
     // As found: the first measurement of this speaker, with the processing it had then (for the before / after view).
     FreqTable asFound;
@@ -233,6 +234,9 @@ struct SpeakerSystem
     bool xoChosen = false;         // the user picked the pair; otherwise it follows the speakers' roles
     int placement = 0;             // speaker response: 0 = close to each speaker, 1 = one spot for all of them
     double xoRelDelayMs = 0.0;     // the crossover's delay of the low speaker against the high one (low minus high)
+    // The processor has a group (matrix) stage: a group's filters, level, polarity and EQ are entered once on the group,
+    // and each output keeps its own delay and trim. Off: every output gets its full settings.
+    bool groupStage = false;
     xo::Capabilities caps;
     xo::Options opt;
     xo::Result lastResult;         // shown until something changes
@@ -275,6 +279,82 @@ struct SpeakerSystem
         auto r = rawResponse (i, grid);
         if (! r.empty()) r = xo::processed (r, sources[(size_t) i].proc);
         return r;
+    }
+
+    // ---- groups: a lead and the speakers set to share its settings (Main L with Main R and the centre ...) ----
+    static const char* rolePlural (int role)
+    {
+        static const char* n[] = { "Mains", "Subs", "Fills", "Delays", "Others" };
+        return n[juce::jlimit (0, 4, role)];
+    }
+    // The members of `i`'s group, its lead first.
+    std::vector<int> groupOf (int i) const
+    {
+        std::vector<int> out;
+        const int lead = master (i);
+        if (lead < 0 || lead >= (int) sources.size()) return out;
+        out.push_back (lead);
+        for (int k = 0; k < (int) sources.size(); ++k) if (k != lead && master (k) == lead) out.push_back (k);
+        return out;
+    }
+    bool inGroup (int i) const { return groupOf (i).size() > 1; }
+    // "Mains", or "Delays (Delay 2)" when another group of the same role exists; a speaker on its own goes by its name.
+    juce::String groupName (int i) const
+    {
+        const int lead = master (i);
+        if (lead < 0 || lead >= (int) sources.size()) return {};
+        if (! inGroup (lead)) return nameOf (lead);
+        int same = 0;
+        for (int k = 0; k < (int) sources.size(); ++k) same += master (k) == k && sources[(size_t) k].role == sources[(size_t) lead].role && inGroup (k) ? 1 : 0;
+        const juce::String base = rolePlural (sources[(size_t) lead].role);
+        return same > 1 ? base + " (" + nameOf (lead) + ")" : base;
+    }
+    // "Outputs 1, 2" for a group's members (All outputs when one of them plays from all).
+    juce::String groupOutputs (int i) const
+    {
+        juce::StringArray o;
+        for (int k : groupOf (i))
+        {
+            const int out = sources[(size_t) k].output;
+            if (out == 0) return "All outputs";
+            o.addIfNotAlreadyThere (juce::String (out));
+        }
+        return (o.size() == 1 ? "Output " : "Outputs ") + o.joinIntoString (", ");
+    }
+
+    // The group's response for the crossover: the members' magnitudes power-averaged (one cabinet's quirk, such as a
+    // wall bump on one side, does not pick the crossover), with the lead's phase and timing (the members are the
+    // same kind of speaker, measured the same way; their timing at a seat is the time alignment's job).
+    xo::Response groupResponse (int i, const std::vector<double>& grid, int* used = nullptr) const
+    {
+        const auto members = groupOf (i);
+        if (used != nullptr) *used = 0;
+        if (members.empty()) return {};
+        int phaseFrom = -1;
+        for (int k : members) if (sources[(size_t) k].hasResponse()) { phaseFrom = k; break; }
+        if (phaseFrom < 0) return {};
+        auto out = rawResponse (phaseFrom, grid);
+        if (out.empty()) return out;
+        std::vector<double> power (out.f.size(), 0.0), coh (out.f.size(), 0.0);
+        int n = 0;
+        for (int k : members)
+        {
+            if (! sources[(size_t) k].hasResponse() || sources[(size_t) k].nearField != sources[(size_t) phaseFrom].nearField) continue;
+            const auto r = rawResponse (k, grid);
+            if (r.f.size() != out.f.size()) continue;
+            for (size_t j = 0; j < r.f.size(); ++j) { power[j] += std::norm (r.h[j]); coh[j] += r.cohAt (j); }
+            ++n;
+        }
+        if (used != nullptr) *used = n;
+        if (n <= 1) return out;
+        out.coh.assign (out.f.size(), 1.0);
+        for (size_t j = 0; j < out.f.size(); ++j)
+        {
+            const double mag = std::sqrt (power[j] / n), m0 = std::abs (out.h[j]);
+            out.h[j] = m0 > 1e-12 ? out.h[j] * (mag / m0) : std::polar (mag, 0.0);
+            out.coh[j] = coh[j] / n;
+        }
+        return out;
     }
 
     // The speaker whose settings `i` follows (itself when it has its own).
@@ -553,6 +633,7 @@ struct SpeakerSystem
         e->setAttribute ("xoChosen", xoChosen);
         e->setAttribute ("placement", placement);
         e->setAttribute ("xoRelDelayMs", xoRelDelayMs);
+        e->setAttribute ("groupStage", groupStage);
         e->setAttribute ("fMin", opt.fMin);
         e->setAttribute ("fMax", opt.fMax);
         juce::String types, slopes;
@@ -630,6 +711,7 @@ struct SpeakerSystem
             if (s.ampGain.isNotEmpty()) c->setAttribute ("ampGain", s.ampGain);
             if (s.limiter.isNotEmpty()) c->setAttribute ("limiter", s.limiter);
             if (s.sheetEntered.isNotEmpty()) c->setAttribute ("sheetEntered", s.sheetEntered);
+            if (s.groupSheetEntered.isNotEmpty()) c->setAttribute ("groupSheetEntered", s.groupSheetEntered);
             if (s.asFound.freq.size() > 2)
             {
                 auto* af = c->createNewChildElement ("AsFound");
@@ -686,6 +768,7 @@ struct SpeakerSystem
         xoChosen = e->getBoolAttribute ("xoChosen", false);   // earlier versions picked the pair by list position
         placement = juce::jlimit (0, 1, e->getIntAttribute ("placement", 1));   // earlier venues measured from one spot
         xoRelDelayMs = e->getDoubleAttribute ("xoRelDelayMs");
+        groupStage = e->getBoolAttribute ("groupStage", false);
         opt.fMin = juce::jlimit (20.0, 2000.0, e->getDoubleAttribute ("fMin", 40.0));
         opt.fMax = juce::jlimit (opt.fMin, 5000.0, e->getDoubleAttribute ("fMax", 250.0));
         const auto types = e->getStringAttribute ("types", "0110"), slopes = e->getStringAttribute ("slopes", "01110101");
@@ -718,6 +801,7 @@ struct SpeakerSystem
             s.ampGain = c->getStringAttribute ("ampGain");
             s.limiter = c->getStringAttribute ("limiter");
             s.sheetEntered = c->getStringAttribute ("sheetEntered");
+            s.groupSheetEntered = c->getStringAttribute ("groupSheetEntered");
             if (const auto* af = c->getChildByName ("AsFound"))
             {
                 s.asFoundWhen = af->getStringAttribute ("when");

@@ -721,10 +721,10 @@ void LiveAlignEditor::updateStatuses()
         else set (Page::Level, StepStatus::InProgress, juce::String (got) + " of " + juce::String (total), levelPage->nextHint(), (float) got / (float) juce::jmax (1, total));
     }
     {
-        const int n = la::sheet::enteredCount (sys);
-        set (Page::Sheet, n == nSrc && nSrc > 0 ? StepStatus::Ready : n > 0 ? StepStatus::InProgress : StepStatus::None,
-             juce::String (n) + " of " + juce::String (nSrc) + " entered", "Tick each output once its settings are in the processor.", (float) n / (float) juce::jmax (1, nSrc));
-        processor.speakers.configured = n == nSrc && nSrc > 0;
+        const int n = la::sheet::enteredCount (sys), nLines = la::sheet::lineCount (sys);
+        set (Page::Sheet, n == nLines && nLines > 0 ? StepStatus::Ready : n > 0 ? StepStatus::InProgress : StepStatus::None,
+             juce::String (n) + " of " + juce::String (nLines) + " entered", "Tick each line once its settings are in the processor.", (float) n / (float) juce::jmax (1, nLines));
+        processor.speakers.configured = n == nLines && nLines > 0;
     }
 
     // ---- monitoring (no ticks: it runs during the event) ----
@@ -771,7 +771,7 @@ void LiveAlignEditor::refreshNext()
     if (! processor.room.tuned && roomPage->nextHint().startsWith ("Listen")) pick (Page::Listening, listeningPage->nextHint().toLowerCase());
     if (! processor.room.tuned) pick (Page::Room, roomPage->nextHint().isNotEmpty() ? roomPage->nextHint().toLowerCase() : juce::String ("EQ toward the target"));
     if (listeningPage->nextHint().isNotEmpty()) pick (Page::Listening, listeningPage->nextHint().toLowerCase());
-    if (la::sheet::enteredCount (sys) < (int) sys.sources.size()) pick (Page::Sheet, "enter the settings and tick them off");
+    if (la::sheet::enteredCount (sys) < la::sheet::lineCount (sys)) pick (Page::Sheet, "enter the settings and tick them off");
     nav.setNext (page, what);
     homePage->setNext (page, what);
 }

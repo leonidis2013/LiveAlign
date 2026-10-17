@@ -33,11 +33,20 @@ public:
         pdfButton.onClick = [this] { if (onExport) onExport (false); };
         allButton.onClick = [this]
         {
-            const bool all = sheet::enteredCount (proc.system) == (int) proc.system.sources.size();
-            for (int i = 0; i < (int) proc.system.sources.size(); ++i)
-                proc.system.sources[(size_t) i].sheetEntered = all ? juce::String() : sheet::signature (proc.system, i);
+            const bool all = allEntered();
+            for (const auto& l : sheet::lines (proc.system)) sheet::setEntered (proc.system, l, ! all);
             changed();
         };
+        stageBox.addItemList ({ "Processor: one output per speaker", "Processor: group stage, then outputs" }, 1);
+        stageBox.setTooltip ("How your processor is laid out. One output per speaker: every output gets its full settings. Group stage "
+                             "(a matrix or group EQ feeding several outputs): each group's filters, level, polarity and EQ are entered once "
+                             "on the group, and each output keeps its own delay and trim. Kept with the venue.");
+        stageBox.onChange = [this]
+        {
+            proc.system.groupStage = stageBox.getSelectedItemIndex() == 1;
+            changed();
+        };
+        addAndMakeVisible (stageBox);
         copyButton.setTooltip ("Copy the settings as text, to paste in your notes or a show file");
         csvButton.setTooltip ("Save the settings as a CSV file (a spreadsheet)");
         pdfButton.setTooltip ("Save the sheet as a PDF to print and take to the processor");
@@ -53,7 +62,9 @@ public:
     void refresh()
     {
         repaint();
-        allButton.setButtonText (sheet::enteredCount (proc.system) == (int) proc.system.sources.size() ? "Untick all" : "Tick all as entered");
+        allButton.setButtonText (allEntered() ? "Untick all" : "Tick all as entered");
+        stageBox.setSelectedItemIndex (proc.system.groupStage ? 1 : 0, juce::dontSendNotification);
+        stageBox.setVisible (! showHistory);
         historyButton.setButtonText (showHistory ? "Back to the settings" : "History (" + juce::String ((int) proc.history.entries.size()) + ")");
         rollBackButton.setVisible (showHistory);
         rollBackButton.setEnabled (selectedEntry >= 0 && selectedEntry < (int) proc.history.entries.size() && proc.history.entries[(size_t) selectedEntry].before != nullptr);
@@ -63,13 +74,13 @@ public:
 
     void setHistoryShown (bool h) { showHistory = h; selectedEntry = h && ! proc.history.entries.empty() ? (int) proc.history.entries.size() - 1 : -1; refresh(); resized(); }
 
-    bool allEntered() const { return ! proc.system.sources.empty() && sheet::enteredCount (proc.system) == (int) proc.system.sources.size(); }
+    bool allEntered() const { return ! proc.system.sources.empty() && sheet::enteredCount (proc.system) == sheet::lineCount (proc.system); }
 
     void paint (juce::Graphics& g) override
     {
         const auto& p = pal();
         if (showHistory) { paintHistory (g); return; }
-        drawPanel (g, card.toFloat(), "Settings to enter, output by output");
+        drawPanel (g, card.toFloat(), proc.system.groupStage ? "Settings to enter, group by group" : "Settings to enter, output by output");
         const auto& sys = proc.system;
         auto r = table;
         static const char* heads[] = { "", "SPEAKER", "OUTPUT", "HIGH-PASS", "LOW-PASS", "DELAY", "POLARITY", "GAIN" };
@@ -82,16 +93,18 @@ public:
         }
         r.removeFromTop (4);
         rows.clear();
-        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        for (const auto& ln : sheet::lines (sys))
         {
-            const auto row = sheet::row (sys, i);
-            const auto* was = wasOf (i);
+            const int i = ln.spk;
+            const auto row = sheet::rowOf (sys, ln);
+            const auto* was = row.member || row.group ? nullptr : wasOf (i);
             const bool eqRow = row.eq != "none" || row.amp.isNotEmpty() || row.limiter.isNotEmpty();
-            auto rr = r.removeFromTop (eqRow ? 60 : 42);
+            auto rr = r.removeFromTop (eqRow ? 60 : (row.member ? 36 : 42));
             if (rr.getBottom() > table.getBottom()) break;
-            rows.push_back (rr);
-            const bool done = sheet::entered (sys, i);
-            g.setColour (done ? p.good.withAlpha (0.10f) : p.panelRaised.withAlpha (0.6f));
+            rows.push_back ({ ln, rr });
+            if (row.member) rr = rr.withTrimmedLeft (22);   // an output under its group
+            const bool done = sheet::entered (sys, ln);
+            g.setColour (done ? p.good.withAlpha (0.10f) : row.group ? p.accent.withAlpha (0.10f) : p.panelRaised.withAlpha (0.6f));
             g.fillRoundedRectangle (rr.toFloat(), 6.0f);
             if (done) { g.setColour (p.good.withAlpha (0.5f)); g.drawRoundedRectangle (rr.toFloat().reduced (0.5f), 6.0f, 1.0f); }
             auto line = rr.removeFromTop (34);
@@ -113,9 +126,9 @@ public:
             }
             auto cell = [&] (int c, const juce::String& v, bool bold, const juce::String& before)
             {
-                auto a = line.removeFromLeft (w[(size_t) c]).reduced (2, 0);
+                auto a = line.removeFromLeft (w[(size_t) c] - (c == 1 && row.member ? 22 : 0)).reduced (2, 0);
                 const bool changedNow = before.isNotEmpty() && before != v;
-                g.setColour (v == "INVERTED" ? p.warn : p.text);
+                g.setColour (v == "INVERTED" ? p.warn : v == "(group)" || v == "on each output" ? p.textFaint : p.text);
                 g.setFont (font (12.5f, bold || changedNow));
                 g.drawText (v, changedNow ? a.withTrimmedBottom (a.getHeight() / 2 - 2) : a, changedNow ? juce::Justification::bottomLeft : juce::Justification::centredLeft, true);
                 if (changedNow)
@@ -125,7 +138,7 @@ public:
                     g.drawText ("was " + before, a.withTrimmedTop (a.getHeight() / 2 + 1), juce::Justification::topLeft, true);
                 }
             };
-            g.setColour (traceColour (i));
+            g.setColour (row.group ? p.accent : traceColour (i));
             g.fillRoundedRectangle (line.getX() + 0.0f, (float) line.getCentreY() - 9.0f, 4.0f, 18.0f, 2.0f);
             line.removeFromLeft (8);
             cell (1, row.name, true, {});
@@ -167,15 +180,18 @@ public:
         juce::StringArray ft;
         for (int i = 0; i < (int) sys.sources.size(); ++i)
             if (sys.sources[(size_t) i].proc.delayMs > 0.005) ft.add (sys.nameOf (i) + " " + juce::String (sys.sources[(size_t) i].proc.delayMs * 1.1255, 2) + " ft");
-        juce::String foot = "Tick each output once its settings are in the processor; a change unticks it. Filters: dB/octave; gain includes the "
-                            "crossover's level and the level-balance trim.";
+        juce::String foot = sys.groupStage
+            ? "Each group's line goes on the processor's group (or matrix) stage once; each output under it gets its own delay and trim. "
+              "Tick each line once it is in; a change unticks it. Filters: dB/octave."
+            : "Tick each output once its settings are in the processor; a change unticks it. Filters: dB/octave; gain includes the "
+              "crossover's level and the level-balance trim.";
         if (! ft.isEmpty()) foot << "  Delays as distance: " << ft.joinIntoString (", ") << ".";
         if (proc.asFound.taken()) foot << "  \"was\" is how they were found (" << proc.asFound.takenOn << ").";
         g.drawFittedText (foot, footArea, juce::Justification::topLeft, 3);
 
         g.setColour (allEntered() ? p.good : p.textDim);
         g.setFont (font (12.5f, true));
-        g.drawText (juce::String (sheet::enteredCount (sys)) + " of " + juce::String ((int) sys.sources.size()) + " outputs entered"
+        g.drawText (juce::String (sheet::enteredCount (sys)) + " of " + juce::String (sheet::lineCount (sys)) + (sys.groupStage ? " lines entered" : " outputs entered")
                         + (note.isNotEmpty() ? "   " + note : juce::String()),
                     statusLine, juce::Justification::centredLeft, true);
     }
@@ -183,6 +199,7 @@ public:
     void resized() override
     {
         card = getLocalBounds();
+        stageBox.setBounds (card.getRight() - 16 - 290, card.getY() + 6, 290, 24);
         auto c = card.reduced (16, 0).withTrimmedTop (38);
         auto bar = c.removeFromBottom (48).withSizeKeepingCentre (c.getWidth(), 32);
         pdfButton.setBounds (bar.removeFromRight (130));
@@ -210,11 +227,10 @@ public:
                 if (rr.contains (e.getPosition())) { selectedEntry = idx; refresh(); return; }
             return;
         }
-        for (int i = 0; i < (int) rows.size() && i < (int) proc.system.sources.size(); ++i)
-            if (rows[(size_t) i].contains (e.getPosition()))
+        for (const auto& [ln, rr] : rows)
+            if (rr.contains (e.getPosition()) && ln.spk >= 0 && ln.spk < (int) proc.system.sources.size())
             {
-                auto& s = proc.system.sources[(size_t) i];
-                s.sheetEntered = sheet::entered (proc.system, i) ? juce::String() : sheet::signature (proc.system, i);
+                sheet::setEntered (proc.system, ln, ! sheet::entered (proc.system, ln));
                 note.clear();
                 changed();
                 return;
@@ -233,16 +249,16 @@ public:
                 "and the level-balance trim.", 10.0f);
         L.y += 8.0f;
         std::vector<juce::StringArray> rowsOut;
-        for (int i = 0; i < (int) proc.system.sources.size(); ++i)
+        for (const auto& ln : sheet::lines (proc.system))
         {
-            const auto r = sheet::row (proc.system, i);
-            rowsOut.push_back ({ juce::String (sheet::entered (proc.system, i) ? "[x]" : "[ ]"), r.name, r.output, r.hpf, r.lpf, r.delay, r.polarity, r.gain });
+            const auto r = sheet::rowOf (proc.system, ln);
+            rowsOut.push_back ({ juce::String (sheet::entered (proc.system, ln) ? "[x]" : "[ ]"), (r.member ? "  " : "") + r.name, r.output, r.hpf, r.lpf, r.delay, r.polarity, r.gain });
         }
         L.table ({ 24.0f, 82.0f, 52.0f, 78.0f, 78.0f, 80.0f, 44.0f, 74.0f }, { "", "Speaker", "Output", "High-pass", "Low-pass", "Delay", "Polarity", "Gain" }, rowsOut, 7.5f);
         L.y += 10.0f;
-        for (int i = 0; i < (int) proc.system.sources.size(); ++i)
+        for (const auto& ln : sheet::lines (proc.system))
         {
-            const auto r = sheet::row (proc.system, i);
+            const auto r = sheet::rowOf (proc.system, ln);
             if (r.eq == "none") continue;
             L.sub (r.name + " EQ");
             L.para (r.eq, 9.5f);
@@ -360,7 +376,8 @@ private:
     int selectedEntry = -1;
     std::vector<std::pair<int, juce::Rectangle<int>>> historyRows;
     juce::Rectangle<int> card, table, footArea, statusLine;
-    std::vector<juce::Rectangle<int>> rows;
+    std::vector<std::pair<sheet::Line, juce::Rectangle<int>>> rows;
+    juce::ComboBox stageBox;
     juce::String note;
 };
 } // namespace la::ui
