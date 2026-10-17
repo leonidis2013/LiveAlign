@@ -890,6 +890,7 @@ public:
 
     PlanCanvas& getCanvas() { return canvas; }
     void setLayer (int l) { layerButtons[juce::jlimit (0, 1, l)].setToggleState (true, juce::dontSendNotification); canvas.setLayer (l); refreshSelection(); }
+    int layer() const { return canvas.getLayer(); }
 
     // After a venue is opened, or speakers or mics changed.
     void refresh()

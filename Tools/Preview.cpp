@@ -951,6 +951,15 @@ public:
                     check (! proc.tuningRoom().meas.empty() && proc.tuningRoomName().isNotEmpty(),
                            "show session: compared with the venue's tuning session");
                     proc.settings.genOn = false;
+                    editor->showPage ((int) P::Plan);
+                    next (91);
+                }
+                break;
+            case 91:
+                if (after (8))
+                {
+                    shot ("plan-show");
+                    check (editor->planPageForPreview().layer() == 1, "show session: the plan opens on the monitoring points");
                     editor->showPage ((int) P::Home);
                     next (90);
                 }
@@ -962,8 +971,9 @@ public:
                     // back to the tuning session for the rest of the run
                     proc.switchSession (0);
                     editor->afterProjectLoadedForPreview();
-                    check (! proc.monitoringSession() && ! proc.settings.genLocked.load() && editor->pageInSession ((int) P::Room),
-                           "tuning session again: the tuning steps are back");
+                    check (! proc.monitoringSession() && ! proc.settings.genLocked.load() && editor->pageInSession ((int) P::Room)
+                               && editor->planPageForPreview().layer() == 0,
+                           "tuning session again: the tuning steps and the tuning points are back");
                     proc.deleteSession (1);
                     editor->afterProjectLoadedForPreview();
                     editor->showPage ((int) P::Home);

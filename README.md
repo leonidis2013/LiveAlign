@@ -89,7 +89,8 @@ one visit, of one of two kinds, chosen when it is made (**New session**):
 - **Tuning:** the tuning steps, with test signals. The menu shows Venue, Mics, Tuning and Reports (the processor sheet
   and the tuning report); Home shows the setup and the ten steps, and the quick re-check.
 - **Show monitoring:** live monitoring only. The menu shows Venue, the mic locker, Monitoring and Reports (the processor
-  sheet and the monitoring report); Home shows the monitor mic and live monitoring. **The generator never plays** in a
+  sheet and the monitoring report); Home shows the monitor mic and live monitoring. The venue plan opens on its
+  monitoring points (a tuning session on its tuning points; the other layer is a click away). **The generator never plays** in a
   show session, so nothing can reach the PA mid-show. Against the tuning and the monitoring report compare with the
   venue's latest tuning session.
 

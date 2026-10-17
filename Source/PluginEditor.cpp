@@ -1336,6 +1336,8 @@ bool LiveAlignEditor::pageInSession (int page) const
 void LiveAlignEditor::applySessionKind()
 {
     for (int i = 0; i < kNumPages; ++i) if (i != (int) Page::Settings) nav.setPageVisible (i, pageInSession (i));
+    // the plan opens on the session's layer: a show's monitoring points, a tuning visit's tuning points (the other is a click away)
+    planPage->setLayer (processor.monitoringSession() ? 1 : 0);
     if (processor.monitoringSession() && settings.genOn.load()) { settings.genOn = false; generator.sync(); }
     if (shownPage >= 0 && ! pageInSession (shownPage)) showPage ((int) Page::Home);
     resized();
