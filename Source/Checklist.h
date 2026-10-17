@@ -210,14 +210,15 @@ struct SessionChecks
 struct SessionInfo
 {
     juce::String id, name, created, notes;
+    int kind = 0;                              // 0 a tuning visit, 1 show monitoring (the menu and the generator follow it)
     std::unique_ptr<juce::XmlElement> body;   // traces, checks, delays (null for the open session)
 
     SessionInfo() = default;
-    SessionInfo (const SessionInfo& o) : id (o.id), name (o.name), created (o.created), notes (o.notes),
+    SessionInfo (const SessionInfo& o) : id (o.id), name (o.name), created (o.created), notes (o.notes), kind (o.kind),
                                          body (o.body != nullptr ? std::make_unique<juce::XmlElement> (*o.body) : nullptr) {}
     SessionInfo& operator= (const SessionInfo& o)
     {
-        id = o.id; name = o.name; created = o.created; notes = o.notes;
+        id = o.id; name = o.name; created = o.created; notes = o.notes; kind = o.kind;
         body = o.body != nullptr ? std::make_unique<juce::XmlElement> (*o.body) : nullptr;
         return *this;
     }

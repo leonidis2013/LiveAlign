@@ -112,7 +112,7 @@ public:
         humiditySlider.setValue (proc.settings.humidity.load(), juce::dontSendNotification);
         curveBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, proc.room.target), juce::dontSendNotification);
         for (auto* b : { &levelBox, &headroomBox, &coverageBox }) syncPrefBox (*b);
-        recheckButton.setVisible (driftWorthRecheck());
+        recheckButton.setVisible (driftWorthRecheck() && ! proc.monitoringSession());   // it plays test signals: a tuning session's
         syncCapture();
         resized();
         repaint();
@@ -241,7 +241,7 @@ private:
         if (! isShowing()) return;
         syncCapture();
         const bool w = driftWorthRecheck();
-        if (recheckButton.isVisible() != w) recheckButton.setVisible (w);
+        if (recheckButton.isVisible() != (w && ! proc.monitoringSession())) recheckButton.setVisible (w && ! proc.monitoringSession());
         repaint();
     }
     bool driftWorthRecheck() const { bool w = false; driftText (proc, w); return w; }

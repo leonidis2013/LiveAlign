@@ -174,7 +174,8 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
         for (const auto& s : p.system.sources) rows.push_back ({ s.name, speakerChannelNames()[s.channel], processingText (s.proc) });
         L.sub ("Speaker processor settings (as set)");
         L.table ({ 1.4f, 0.8f, 4.0f }, { "Speaker", "Channel", "Settings" }, rows, 8.5f);
-        if (p.room.tuned) L.para ("The room was tuned " + p.room.tunedOn + ".", 9.0f, dim);
+        if (p.tuningRoom().tuned) L.para ("The room was tuned " + p.tuningRoom().tunedOn
+                                          + (p.tuningRoomName().isNotEmpty() ? " (" + p.tuningRoomName() + ")" : juce::String()) + ".", 9.0f, dim);
     }
 
     if (has ("plan") && plan.isValid())

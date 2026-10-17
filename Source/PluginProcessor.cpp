@@ -72,7 +72,7 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     gen.setFadeInSeconds (settings.genFadeMs.load() * 0.001);
     gen.setFrequency (settings.genFreq.load());
     gen.setSweepSeconds (settings.genSweepSec.load());
-    gen.setOn (settings.genOn.load());
+    gen.setOn (settings.genOn.load() && ! settings.genLocked.load());
 
     const int count = juce::jlimit (1, la::kMaxMics, settings.micCount.load());
     std::array<int, la::kMaxMics> micCh {};
@@ -698,7 +698,7 @@ void LiveAlignProcessor::loadSessionBody (const juce::XmlElement* b)
     settings.requestResetLeq = true;
 }
 
-void LiveAlignProcessor::newSession (const juce::String& name)
+void LiveAlignProcessor::newSession (const juce::String& name, int kind)
 {
     traces.clearComparisons();
     sessions[(size_t) current].body = sessionBody();
@@ -706,6 +706,7 @@ void LiveAlignProcessor::newSession (const juce::String& name)
     s.id = juce::Uuid().toString();
     s.name = name.isNotEmpty() ? name : "Session " + juce::String (sessions.size() + 1);
     s.created = today();
+    s.kind = juce::jlimit (0, 1, kind);
     // a new visit starts with the same delays (the mics are often in the same places) but no traces or checks
     auto keepDelays = sessionBody();
     sessions.push_back (std::move (s));
@@ -719,6 +720,32 @@ void LiveAlignProcessor::newSession (const juce::String& name)
     if (const auto* d = keepDelays->getChildByName ("Delays"))
         for (int m = 0; m < la::kMaxMics; ++m)
             settings.micDelayMs[m] = (float) d->getDoubleAttribute ("mic" + juce::String (m), 0.0);
+    sessionKindChanged();
+}
+
+// The session's kind sets what may play: a monitoring session never runs the generator. The tuning it is compared with
+// is the venue's latest tuning session that measured the room.
+void LiveAlignProcessor::sessionKindChanged()
+{
+    settings.genLocked = monitoringSession();
+    if (monitoringSession()) settings.genOn = false;
+    tuningRef.reset();
+    if (! monitoringSession()) return;
+    for (int i = (int) sessions.size(); --i >= 0;)
+    {
+        if (i == current || sessions[(size_t) i].kind != 0 || sessions[(size_t) i].body == nullptr) continue;
+        auto r = std::make_unique<la::RoomTuning>();
+        r->load (sessions[(size_t) i].body.get());
+        if (r->meas.empty()) continue;
+        tuningRef = std::move (r);
+        tuningRefName = sessions[(size_t) i].name;
+        break;
+    }
+}
+
+const la::RoomTuning& LiveAlignProcessor::tuningRoom() const
+{
+    return monitoringSession() && tuningRef != nullptr ? *tuningRef : room;
 }
 
 void LiveAlignProcessor::switchSession (int index)
@@ -729,6 +756,7 @@ void LiveAlignProcessor::switchSession (int index)
     current = index;
     loadSessionBody (sessions[(size_t) current].body.get());
     sessions[(size_t) current].body.reset();
+    sessionKindChanged();
 }
 
 void LiveAlignProcessor::deleteSession (int index)
@@ -742,6 +770,7 @@ void LiveAlignProcessor::deleteSession (int index)
     traces.clearComparisons();
     sessions.erase (sessions.begin() + index);
     if (current > index) --current;
+    sessionKindChanged();
 }
 
 void LiveAlignProcessor::renameSession (int index, const juce::String& name)
@@ -808,6 +837,7 @@ void LiveAlignProcessor::resetVenue()
     s.created = today();
     sessions.push_back (std::move (s));
     current = 0;
+    sessionKindChanged();   // a new venue starts with a tuning session
     for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
     if (wasMonitoring) setMonitorMode (true);
 }
@@ -878,6 +908,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
         e->setAttribute ("name", s.name);
         e->setAttribute ("created", s.created);
         e->setAttribute ("notes", s.notes);
+        e->setAttribute ("kind", s.kind == 1 ? "monitoring" : "tuning");
         auto body = (int) i == current ? sessionBody() : (s.body != nullptr ? std::make_unique<juce::XmlElement> (*s.body) : nullptr);
         if (body != nullptr)
             for (auto* child : body->getChildIterator()) e->addChildElement (new juce::XmlElement (*child));
@@ -946,12 +977,23 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
             s.notes = e->getStringAttribute ("notes");
             s.body = std::make_unique<juce::XmlElement> ("Body");
             for (const auto* child : e->getChildIterator()) s.body->addChildElement (new juce::XmlElement (*child));
+            if (e->hasAttribute ("kind")) s.kind = e->getStringAttribute ("kind") == "monitoring" ? 1 : 0;
+            else
+            {
+                // before 0.23 a session was both: one that only logged a show (no room or speaker work) is a monitoring one
+                const auto* log = s.body->getChildByName ("SplLog");
+                const auto* rt = s.body->getChildByName ("RoomTuning");
+                const bool logged = log != nullptr && log->getAllSubText().trim().isNotEmpty();
+                const bool tuned = rt != nullptr && rt->getChildByName ("Measurement") != nullptr;
+                s.kind = logged && ! tuned ? 1 : 0;
+            }
             sessions.push_back (std::move (s));
         }
         if (sessions.empty()) resetVenue();
         current = juce::jlimit (0, (int) sessions.size() - 1, list->getIntAttribute ("current", 0));
         loadSessionBody (sessions[(size_t) current].body.get());
         sessions[(size_t) current].body.reset();
+        sessionKindChanged();
         // venues from before 0.18 kept the deepest cut with Room EQ: it is a venue preference now
         if (! venuePrefs.has ("eqMaxCut") && std::abs (room.maxCutDb - 12.0) > 0.01) venuePrefs.set ("eqMaxCut", room.maxCutDb);
     }

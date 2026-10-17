@@ -285,6 +285,7 @@ public:
         scrollToShow (page);
         repaint();
     }
+    bool pageVisible (int page) const { return page >= 0 && page < kNumPages && visible[page]; }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; rebuildRows(); repaint(); } }
     void setLockerAvailable (bool) {}
     void setSettingsActive (bool a)

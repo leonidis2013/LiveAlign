@@ -162,6 +162,10 @@ public:
     void redo();
     bool canUndo() const { return ! undoStack.empty(); }
     void undoTickForPreview() { trackChanges(); }
+    bool pageInSession (int page) const;
+    void afterProjectLoadedForPreview() { afterProjectLoaded(); }
+    void applySessionKind();
+    void startSession (const juce::String& name, int kind);   // a new session of this kind (0 tuning, 1 monitoring), opened
     bool canRedo() const { return ! redoStack.empty(); }
     void rollBackTo (int historyEntry);
     la::ui::CoveragePage& coveragePageForPreview() { return *coveragePage; }

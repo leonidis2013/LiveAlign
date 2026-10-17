@@ -131,7 +131,14 @@ public:
     juce::String restoreRecovery();   // returns an error message, or empty
     void clearRecovery();
 
-    void newSession (const juce::String& name);
+    void newSession (const juce::String& name, int kind = 0);   // kind: 0 tuning, 1 show monitoring
+    int sessionKind() const { return current >= 0 && current < (int) sessions.size() ? sessions[(size_t) current].kind : 0; }
+    bool monitoringSession() const { return sessionKind() == 1; }
+    // The room tuning a monitoring session compares the show with: the venue's latest tuning session that measured the
+    // room (this session's own room while tuning).
+    const la::RoomTuning& tuningRoom() const;
+    juce::String tuningRoomName() const { return monitoringSession() && tuningRef != nullptr ? tuningRefName : juce::String(); }
+    void sessionKindChanged();
     void switchSession (int index);
     void deleteSession (int index);
     void renameSession (int index, const juce::String& name);
@@ -269,6 +276,8 @@ private:
     struct TuningSlot { int count = 1, selected = 0, input = 0; float delay = 0.0f, offset = 120.0f; bool calibrated = false; } tuningSlot;
 
     std::vector<la::SessionInfo> sessions;
+    std::unique_ptr<la::RoomTuning> tuningRef;   // a monitoring session: the latest tuning session's room
+    juce::String tuningRefName;
     int current = 0;
     juce::String savedProjectText;
     int lastAutosaveHash = 0;

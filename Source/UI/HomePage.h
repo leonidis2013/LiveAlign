@@ -112,6 +112,8 @@ public:
         rescanVenues();
         selected = proc.currentSession();
         updateButtons();
+        recheckButton.setVisible (! proc.monitoringSession());   // it plays test signals: a tuning session's
+        resized();
         repaint();
     }
 
@@ -121,7 +123,7 @@ public:
         drawPanel (g, venueCard.toFloat(), "Venues");
         drawVenueList (g);
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
-        drawPanel (g, stepsCard.toFloat(), "Where this venue stands");
+        drawPanel (g, stepsCard.toFloat(), proc.monitoringSession() ? "This show" : "Where this venue stands");
         // the next thing to do, and what needs attention
         {
             auto b = nextBanner;
@@ -155,7 +157,7 @@ public:
         // sessions list
         g.setColour (p.textDim);
         g.setFont (font (11.0f));
-        g.drawText ("A session is one visit. Mics, positions and the speaker setup belong to the venue and carry over.",
+        g.drawText ("A session is one visit, for tuning or for a show. The venue, mics, points and speakers carry over.",
                     sessionsHint, juce::Justification::centredLeft, true);
         const auto& list = proc.getSessions();
         for (int i = 0; i < (int) list.size() && i < visibleRows(); ++i)
@@ -183,6 +185,20 @@ public:
             g.setFont (font (11.5f));
             g.drawText (s.created + "   " + juce::String (traceCount (idx)) + " traces" + (open ? "   OPEN" : ""),
                         right.withTrimmedRight (8), juce::Justification::centredRight, true);
+            // what the session is for
+            {
+                const auto tag = juce::String (s.kind == 1 ? "SHOW" : "TUNING");
+                const auto tf = font (9.5f, true);
+                const float tw = juce::GlyphArrangement::getStringWidth (tf, tag) + 12.0f;
+                const float nameW = juce::jmin ((float) r.getWidth() - tw - 8.0f, juce::GlyphArrangement::getStringWidth (font (13.0f, open), s.name));
+                auto pill = juce::Rectangle<float> ((float) r.getX() + nameW + 8.0f, (float) r.getCentreY() - 8.0f, tw, 16.0f);
+                const auto c = s.kind == 1 ? p.warn : p.accent;
+                g.setColour (c.withAlpha (0.16f));
+                g.fillRoundedRectangle (pill, 8.0f);
+                g.setColour (c);
+                g.setFont (tf);
+                g.drawText (tag, pill, juce::Justification::centred);
+            }
         }
 
         // the workflow, grouped as in the navigation pane
@@ -307,9 +323,12 @@ public:
             }
             return col;
         };
-        auto restA = column (colA, { -1, (int) Page::Venue, (int) Page::Mics, -3, (int) Page::MonitorMic, (int) Page::Monitor });
-        auto restB = column (colB, { -2, (int) Page::Response, (int) Page::Headroom, (int) Page::Crossover, (int) Page::Level, (int) Page::Coverage, (int) Page::Align,
-                                     (int) Page::Acoustics, (int) Page::Room, (int) Page::Listening, (int) Page::Feedback });
+        // a tuning session: the setup and the tuning steps; a show: the venue, the monitor mic and live monitoring
+        const bool show = proc.monitoringSession();
+        auto restA = show ? column (colA, { -1, (int) Page::Venue }) : column (colA, { -1, (int) Page::Venue, (int) Page::Mics });
+        auto restB = show ? column (colB, { -3, (int) Page::MonitorMic, (int) Page::Monitor })
+                          : column (colB, { -2, (int) Page::Response, (int) Page::Headroom, (int) Page::Crossover, (int) Page::Level, (int) Page::Coverage,
+                                            (int) Page::Align, (int) Page::Acoustics, (int) Page::Room, (int) Page::Listening, (int) Page::Feedback });
         auto bottom = colA.getBottom() > colB.getBottom() ? restA : restB;
         juce::ignoreUnused (bottom);
         // reports along the bottom of both columns
@@ -317,12 +336,10 @@ public:
                                                                  changeLine.getY());
         headings.push_back ({ -4, reports.removeFromTop (headH) });
         auto rr = reports.removeFromTop (rowH);
-        const int third = (rr.getWidth() - 24) / 3;
-        rows.push_back ({ (int) Page::Sheet, rr.removeFromLeft (third) });
+        const int half = (rr.getWidth() - 12) / 2;
+        rows.push_back ({ (int) Page::Sheet, rr.removeFromLeft (half) });
         rr.removeFromLeft (12);
-        rows.push_back ({ (int) Page::TuningReport, rr.removeFromLeft (third) });
-        rr.removeFromLeft (12);
-        rows.push_back ({ (int) Page::MonitorReport, rr });
+        rows.push_back ({ show ? (int) Page::MonitorReport : (int) Page::TuningReport, rr });
         reports.removeFromTop (gap + 6);
         summaryArea = reports;
         for (const auto& row : rows)
@@ -522,6 +539,44 @@ private:
     }
 
     // The open session at a glance: every mic's state, the loopback and the delays.
+    // A show session: the monitor mic, what it is compared with, and the show's level so far.
+    void drawShowSummary (juce::Graphics& g, juce::Rectangle<int> r)
+    {
+        const auto& p = pal();
+        const auto& mm = proc.monitorMic;
+        auto line = [&] (const juce::String& label, const juce::String& value, juce::Colour c)
+        {
+            if (r.getHeight() < 20) return;
+            auto row = r.removeFromTop (22);
+            g.setColour (p.textDim);
+            g.setFont (font (11.5f, true));
+            g.drawText (label, row.removeFromLeft (170).withTrimmedLeft (10), juce::Justification::centredLeft, true);
+            g.setColour (c);
+            g.setFont (font (12.0f));
+            g.drawText (value, row, juce::Justification::centredLeft, true);
+        };
+        const bool calOk = mm.cal.any() || mm.noCalFile;
+        line ("Monitor mic", mm.name + " at " + mm.position + (calOk ? juce::String() : ", calibration file not loaded"), calOk ? p.text : p.warn);
+        line ("Sound level", mm.splCalibrated ? "calibrated" + (mm.splDate.isNotEmpty() ? " (" + mm.splDate + ")" : juce::String()) : juce::String ("not calibrated: levels are relative"), mm.splCalibrated ? p.text : p.warn);
+        const auto ref = proc.tuningRoomName();
+        line ("Compared with", ref.isNotEmpty() ? "the tuning in " + ref : juce::String ("no tuning session with Room EQ measurements yet"), ref.isNotEmpty() ? p.text : p.textDim);
+        const auto& log = proc.splLog;
+        if (log.empty()) line ("The show", "nothing logged yet: open Live monitoring", p.textDim);
+        else
+        {
+            const double mins = (log.end() - log.start()) / 60.0;
+            line ("The show", juce::String (juce::roundToInt (mins)) + " min logged, LAeq " + juce::String (log.leq (false), 1) + " dB, loudest LAF "
+                                  + juce::String (log.maxLaf(), 1) + " dB", p.text);
+            if (log.limitLaeq > 0.0)
+            {
+                const double over = log.minutesOver();
+                line ("Against the limit", over > 0.0 ? juce::String (juce::roundToInt (over)) + " min over " + juce::String (juce::roundToInt (log.limitLaeq)) + " dBA"
+                                                      : juce::String ("within ") + juce::String (juce::roundToInt (log.limitLaeq)) + " dBA", over > 0.0 ? p.warn : p.good);
+            }
+        }
+        line ("Generator", "off for the whole session (a show session never plays test signals)", p.textDim);
+    }
+
     void drawSessionSummary (juce::Graphics& g)
     {
         const auto& p = pal();
@@ -568,6 +623,7 @@ private:
         g.setColour (p.border);
         g.drawHorizontalLine (r.getY(), (float) r.getX(), (float) r.getRight());
         r.removeFromTop (6);
+        if (proc.monitoringSession()) { drawShowSummary (g, r); return; }
 
         const int cols[] = { 26, 150, 110, 90, 150, 110, 100 };
         const char* heads[] = { "", "Mic", "Position", "Input", "Calibration file", "Sound level", "Delay" };

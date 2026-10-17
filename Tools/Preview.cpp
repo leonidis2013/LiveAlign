@@ -934,6 +934,38 @@ public:
                 {
                     shot ("monitor-conditions");
                     proc.climate.configure ({});   // no sensor for the rest of the run
+                    // a show: a monitoring session of its own
+                    editor->startSession ("Show " + LiveAlignProcessor::today(), 1);
+                    next (89);
+                }
+                break;
+            case 89:
+                if (after (30))
+                {
+                    shot ("session-show");
+                    check (proc.monitoringSession() && editor->pageInSession ((int) P::Monitor) && ! editor->pageInSession ((int) P::Room)
+                               && ! editor->pageInSession ((int) P::Mics) && editor->pageInSession ((int) P::Locker),
+                           "show session: the menu has monitoring, not the tuning steps");
+                    proc.settings.genOn = true;
+                    check (proc.settings.genLocked.load(), "show session: the generator is locked off");
+                    check (! proc.tuningRoom().meas.empty() && proc.tuningRoomName().isNotEmpty(),
+                           "show session: compared with the venue's tuning session");
+                    proc.settings.genOn = false;
+                    editor->showPage ((int) P::Home);
+                    next (90);
+                }
+                break;
+            case 90:
+                if (after (10))
+                {
+                    shot ("home-show");
+                    // back to the tuning session for the rest of the run
+                    proc.switchSession (0);
+                    editor->afterProjectLoadedForPreview();
+                    check (! proc.monitoringSession() && ! proc.settings.genLocked.load() && editor->pageInSession ((int) P::Room),
+                           "tuning session again: the tuning steps are back");
+                    proc.deleteSession (1);
+                    editor->afterProjectLoadedForPreview();
                     editor->showPage ((int) P::Home);
                     next (17);
                 }

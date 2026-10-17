@@ -350,7 +350,11 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     setResizable (true, true);
     setResizeLimits (1180, 740, 5120, 2880);
     setSize (1480, 920);
-    showPage (standalone ? settings.currentTab.load() : (int) Page::Monitor);
+    applySessionKind();
+    {
+        const int tab = settings.currentTab.load();
+        showPage (standalone ? (pageInSession (tab) ? tab : (int) Page::Home) : (int) Page::Monitor);
+    }
     updateStatuses();
 
     refreshUpdate();
@@ -754,8 +758,16 @@ void LiveAlignEditor::refreshNext()
 {
     int page = -1;
     juce::String what;
-    auto pick = [&] (Page pg, const juce::String& w) { if (page < 0) { page = (int) pg; what = w; } };
+    auto pick = [&] (Page pg, const juce::String& w) { if (page < 0 && pageInSession ((int) pg)) { page = (int) pg; what = w; } };
     const auto& sys = processor.system;
+    if (processor.monitoringSession())
+    {
+        if (monitorMicPage->nextHint().isNotEmpty()) pick (Page::MonitorMic, monitorMicPage->nextHint().toLowerCase());
+        if (processor.splLog.empty()) pick (Page::Monitor, "start monitoring the show");
+        nav.setNext (page, what);
+        homePage->setNext (page, what);
+        return;
+    }
     if (sys.sources.empty()) pick (Page::Speakers, "add the speakers");
     if (micPage->nextHint().isNotEmpty()) pick (Page::Mics, micPage->nextHint());
     if (processor.positions.isEmpty()) pick (Page::Plan, "add the listening points");
@@ -1269,15 +1281,64 @@ void LiveAlignEditor::newProject()
 
 void LiveAlignEditor::newSession()
 {
-    askText ("New session", "A new visit to " + processor.venueName + ". Mics, positions and the speaker setup carry over.",
-             "Session " + juce::String (processor.getSessions().size() + 1) + "  " + LiveAlignProcessor::today(),
-             [this] (const juce::String& name) { processor.newSession (name); afterProjectLoaded(); });
+    // tuning the room, or monitoring a show: a venue that is already tuned most often comes back for a show
+    const bool tuned = processor.room.tuned || processor.tuningRoomName().isNotEmpty() || processor.monitoringSession();
+    textWindow = std::make_unique<juce::AlertWindow> ("New session",
+        "A new visit to " + processor.venueName + ". The venue, mics, points and speakers carry over.\n\n"
+        "Tuning: the tuning steps, with test signals. Show monitoring: live monitoring only, compared with the venue's tuning; "
+        "the generator never plays. Doing both on one day? Make two sessions.",
+        juce::MessageBoxIconType::NoIcon, this);
+    textWindow->addTextEditor ("text", juce::String (tuned ? "Show " : "Tuning ") + LiveAlignProcessor::today());
+    textWindow->addComboBox ("kind", { "Tuning", "Show monitoring" }, "For");
+    if (auto* c = textWindow->getComboBoxComponent ("kind")) c->setSelectedItemIndex (tuned ? 1 : 0, juce::dontSendNotification);
+    textWindow->addButton ("Create", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    textWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    textWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int result)
+    {
+        if (safe == nullptr || safe->textWindow == nullptr) return;
+        const auto name = safe->textWindow->getTextEditorContents ("text").trim();
+        const int kind = safe->textWindow->getComboBoxComponent ("kind") != nullptr ? safe->textWindow->getComboBoxComponent ("kind")->getSelectedItemIndex() : 0;
+        safe->textWindow->setVisible (false);
+        if (result == 1) safe->startSession (name, kind);
+        safe->repaint();
+    }), false);
+}
+
+void LiveAlignEditor::startSession (const juce::String& name, int kind)
+{
+    processor.newSession (name, kind);
+    afterProjectLoaded();
+    showPage (kind == 1 ? (int) Page::Monitor : (int) Page::Home);
 }
 
 void LiveAlignEditor::afterProjectLoaded()
 {
+    applySessionKind();
     refreshAllPages();
     resetUndo();
+}
+
+// What the open session is for decides what the menu shows: a tuning session the tuning steps, the mics and the
+// tuning report; a monitoring session the monitor mic, live monitoring and its report (and never the generator).
+// Venue, the mic locker and the processor sheet are in both.
+bool LiveAlignEditor::pageInSession (int page) const
+{
+    if (! standalone) return page == (int) Page::Monitor || page == (int) Page::MonitorMic || page == (int) Page::Settings;
+    if (page == (int) Page::Home || page == (int) Page::Settings || page == (int) Page::Venue || page == (int) Page::Speakers
+        || page == (int) Page::Plan || page == (int) Page::Locker || page == (int) Page::Sheet)
+        return true;
+    const bool mon = processor.monitoringSession();
+    const bool monitoringPage = page == (int) Page::Monitor || page == (int) Page::MonitorMic || page == (int) Page::MonitorReport;
+    return mon ? monitoringPage : ! monitoringPage;
+}
+
+void LiveAlignEditor::applySessionKind()
+{
+    for (int i = 0; i < kNumPages; ++i) if (i != (int) Page::Settings) nav.setPageVisible (i, pageInSession (i));
+    if (processor.monitoringSession() && settings.genOn.load()) { settings.genOn = false; generator.sync(); }
+    if (shownPage >= 0 && ! pageInSession (shownPage)) showPage ((int) Page::Home);
+    resized();
 }
 
 void LiveAlignEditor::refreshAllPages()
@@ -1353,6 +1414,7 @@ void LiveAlignEditor::timerCallback()
     if (toastText.isNotEmpty() && la::clock::ms32() > toastUntil) { toastText.clear(); repaint(); }
     if (la::AppPrefs::get().serial != prefsSerial) applyPrefs();
     if (settings.theme.load() != appliedTheme) applyTheme (settings.theme.load());
+    if (settings.genLocked.load() && settings.genOn.load()) { settings.genOn = false; generator.sync(); }   // a monitoring session never plays it
     if (settings.paneCount.load() != laidOutCount || settings.paneLayout.load() != laidOutLayout) layoutPanes();
     for (auto& pane : panes) pane->sync();
 
@@ -1801,7 +1863,7 @@ void LiveAlignEditor::rollBackTo (int i)
 // round), for the comparison with the show.
 void LiveAlignEditor::updateTunedPanel()
 {
-    const auto& room = processor.room;
+    const auto& room = processor.tuningRoom();
     const bool after = room.count (true) > 0;
     const auto& at = processor.monitorMic.position;
     la::FreqTable ref;

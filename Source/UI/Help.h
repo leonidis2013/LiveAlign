@@ -57,6 +57,7 @@ inline const std::vector<Term>& glossary()
         { "RTA", "Real-time analyser: the level of what the mic hears in each band (1/3 octave or finer), with no reference." },
         { "Schroeder frequency", "Below it, single room modes (standing waves) rule: peaks and dips that change from seat to seat. EQ there only helps where most seats agree." },
         { "Seat-to-seat variance", "How much the tonal balance differs from point to point (dB). Under 2 dB is very even; EQ cannot fix differences between seats, aim and coverage can." },
+        { "Session", "One visit to the venue: a tuning session (the tuning steps, with test signals) or a show session (live monitoring only, compared with the venue's latest tuning; the generator never plays). Doing both on one day is two sessions." },
         { "SPL", "Sound pressure level (dB re 20 µPa). A mic calibrated with an acoustic calibrator (IEC 60942 class 1 or 2, usually 94 or 114 dB at 1 kHz) reads true SPL." },
         { "Speed of sound", "About 343 m/s (1125 ft/s) at 20 C, faster when warmer. Delays set at one temperature drift when the room warms up." },
         { "STI", "Speech transmission index (IEC 60268-16), 0 to 1: how well speech gets through the system and the room (with the noise). Above 0.6 is good, under 0.45 poor; emergency and voice-alarm systems usually ask for 0.5 or more (ISO 7240-19, NFPA 72)." },
@@ -108,7 +109,7 @@ inline juce::StringArray howTo (int page)
     switch ((Page) page)
     {
         case Page::Home: return { "Pick a venue from the list, or start a new one.", "Follow NEXT: the navigation marks the step to do now.",
-                                  "A session is one visit; for a system already tuned, the quick re-check finds what has drifted." };
+                                  "A session is one visit, for tuning or for a show (New session asks); the menu shows only that kind's pages. In a tuning session of a system already tuned, the quick re-check finds what has drifted." };
         case Page::Venue: return { "Name the venue and note anything worth remembering.", "Pick what the room is used for and enter its size (for the acoustics).",
                                    "Enter the temperature and humidity of the day.", "Set the targets: the Room EQ curve, the show level at FOH, the headroom." };
         case Page::Speakers: return { "Add the speakers: a left / right pair, subs, fills, delays.", "Give each its output and channel, and how widely it covers.",

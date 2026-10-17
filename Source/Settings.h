@@ -26,6 +26,7 @@ struct Settings
 
     // Signal generator
     std::atomic<bool> genOn { false };
+    std::atomic<bool> genLocked { false };   // a monitoring session: the generator never plays (nothing can reach the PA mid-show)
     std::atomic<int> genType { 0 };          // la::GenType
     std::atomic<float> genLevelDb { -20.0f };
     std::atomic<float> genFreq { 1000.0f };
