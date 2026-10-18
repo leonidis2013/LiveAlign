@@ -536,7 +536,7 @@ private:
         m.addItem (3, "Duplicate...", saved);
         m.addItem (4, "Show in folder", saved);
         m.addSeparator();
-        m.addItem (5, "Delete (to the trash)...", saved);
+        m.addItem (5, saved ? "Delete (to the trash)..." : "Delete (discard this unsaved venue)...", saved || (open && started()));
         juce::Component::SafePointer<HomePage> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options(), [safe, v] (int r)
         {
@@ -545,7 +545,7 @@ private:
             if (r == 2 && safe->onRenameFile) safe->onRenameFile (v);
             if (r == 3 && safe->onDuplicateFile) safe->onDuplicateFile (v);
             if (r == 4) v.file.revealToUser();
-            if (r == 5 && safe->onDeleteFile) safe->onDeleteFile (v.file);
+            if (r == 5 && safe->onDeleteFile) safe->onDeleteFile (v.file);   // an unsaved venue: an empty file, the open one
         });
     }
 
@@ -751,7 +751,7 @@ private:
         openSessionButton.setEnabled (other);
         compareButton.setEnabled (other || proc.traces.hasComparisons());
         compareButton.setButtonText (proc.traces.hasComparisons() ? "Stop compare" : "Compare");
-        deleteButton.setEnabled (n > 1);
+        deleteButton.setEnabled (n > 0);
         speakerChangedButton.setButtonText (proc.speakers.changed ? "Changed: undo" : "Mark as changed");
     }
 

@@ -127,19 +127,33 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     {
         juce::Component::SafePointer<LiveAlignEditor> safe (this);
         const bool open = f == processor.projectFile;
+        const bool unsavedVenue = f == juce::File();   // the open venue, never saved: deleting discards it
+        const auto name = unsavedVenue ? processor.venueName : f.getFileNameWithoutExtension();
         juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::WarningIcon, "Delete venue",
-                                          "Move \"" + f.getFileNameWithoutExtension() + "\" to the trash, with all its sessions?"
-                                              + (open ? juce::String ("\n\nIt stays open here, unsaved, until you save it again or open another venue.") : juce::String()),
+                                          unsavedVenue ? "Discard \"" + name + "\" and all its sessions? It was never saved, so it cannot be brought back."
+                                                       : "Move \"" + name + "\" to the trash, with all its sessions?"
+                                                             + (open ? juce::String ("\n\nIt is the open venue: it closes, and you are back at the start.") : juce::String()),
                                           "Delete", "Cancel", this),
-                                      [safe, f, open] (int r)
+                                      [safe, f, open, unsavedVenue] (int r)
                                       {
                                           if (safe == nullptr || r != 1) return;
-                                          if (! f.moveToTrash()) { safe->showMessage ("Not deleted", "Could not move " + f.getFullPathName() + " to the trash."); return; }
-                                          la::venues::forget (f);
-                                          if (open) safe->processor.projectFile = juce::File();
-                                          safe->unsaved = safe->processor.projectChanged() || open;
+                                          if (! unsavedVenue)
+                                          {
+                                              if (! f.moveToTrash()) { safe->showMessage ("Not deleted", "Could not move " + f.getFullPathName() + " to the trash."); return; }
+                                              la::venues::forget (f);
+                                          }
+                                          if (open)
+                                          {
+                                              // closed: a blank venue in memory, and the app back at its start (Home only)
+                                              safe->processor.newProject();
+                                              safe->processor.venueOpen = false;
+                                              safe->processor.clearRecovery();
+                                              safe->afterProjectLoaded();
+                                              safe->showPage ((int) Page::Home);
+                                          }
                                           safe->updateStatuses();
                                           safe->homePage->rescanVenues();
+                                          safe->homePage->refresh();
                                       });
     };
     homePage->onSave = [this] { saveProject (false); };
@@ -164,8 +178,11 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         if (i < 0 || i >= (int) processor.getSessions().size()) return;
         const auto name = processor.getSessions()[(size_t) i].name;
         juce::Component::SafePointer<LiveAlignEditor> safe (this);
+        const bool only = processor.getSessions().size() == 1;
         juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Delete session",
-                                          "Delete \"" + name + "\" and all its traces and checks?", "Delete", "Cancel", this),
+                                          "Delete \"" + name + "\" and all its traces and checks?"
+                                              + (only ? juce::String ("\n\nIt is the venue's only session: an empty one takes its place.") : juce::String()),
+                                          "Delete", "Cancel", this),
                                       [safe, i] (int r) { if (safe != nullptr && r == 1) { safe->processor.deleteSession (i); safe->afterProjectLoaded(); } });
     };
     addChildComponent (*homePage);

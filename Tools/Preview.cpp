@@ -3,6 +3,7 @@
 
 // Local check only (not part of the release build): drives the processor with a simulated PA, room and three mics,
 // saves screenshots of every page, and round-trips a venue file with two sessions. Build with -DLA_BUILD_PREVIEW=ON.
+#include "../Source/UI/ListenSetup.h"
 #include <array>
 #include <random>
 #include <typeinfo>
@@ -909,6 +910,18 @@ public:
                 if (after (20))
                 {
                     shot ("settings-audio");
+                    {
+                        // the headphones section of the Audio interface window (the app's own window, drawn here on its own)
+                        la::ui::ListenSetup ls (proc);
+                        ls.setSize (540, 190);
+                        juce::Image img (juce::Image::ARGB, 540, 190, true);
+                        {
+                            juce::Graphics g (img);
+                            g.fillAll (juce::Colour (0xff161d22));
+                            ls.paintEntireComponent (g, true);
+                        }
+                        save (img, "audio-window-listen");
+                    }
                     check (proc.settings.listenSource.load() == 1 && editor->listenStripShownForPreview(),
                            "listening: the reference, with its level on the main screen");
                     proc.setListening (0, -1, {});   // off again for the rest of the run
@@ -1029,6 +1042,14 @@ public:
                 sessionRoundTrip();
                 crossoverPairCheck();
                 templateAndRecovery();
+                {
+                    // deleting sessions down to none: the last one is replaced by an empty one of the same kind
+                    while (proc.getSessions().size() > 1) proc.deleteSession ((int) proc.getSessions().size() - 1);
+                    const int kind = proc.sessionKind();
+                    proc.deleteSession (0);
+                    check (proc.getSessions().size() == 1 && proc.sessionKind() == kind && proc.traces.size() == 0 && proc.room.meas.empty(),
+                           "sessions: the only session can be deleted (an empty one takes its place)");
+                }
                 finish();
                 break;
             }

@@ -801,7 +801,17 @@ void LiveAlignProcessor::switchSession (int index)
 
 void LiveAlignProcessor::deleteSession (int index)
 {
-    if (sessions.size() <= 1 || index < 0 || index >= (int) sessions.size()) return;
+    if (index < 0 || index >= (int) sessions.size()) return;
+    if (sessions.size() == 1)
+    {
+        // a venue always has a session: the only one is replaced by an empty one of the same kind
+        newSession ("Session 1", sessions.front().kind);
+        sessions.erase (sessions.begin());
+        current = 0;
+        traces.clearComparisons();
+        sessionKindChanged();
+        return;
+    }
     if (index == current)
     {
         const int next = index == 0 ? 1 : index - 1;

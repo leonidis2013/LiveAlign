@@ -11,6 +11,33 @@
 
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #include "StandaloneHooks.h"
+#include "UI/ListenSetup.h"
+
+namespace la::ui
+{
+// The Audio interface window's content: the device selector, and the headphones under it.
+class AudioWindowContent : public juce::Component
+{
+public:
+    AudioWindowContent (juce::AudioDeviceManager& dm, LiveAlignProcessor* p)
+        : selector (dm, 0, 64, 0, 64, false, false, false, false)
+    {
+        addAndMakeVisible (selector);
+        if (p != nullptr) { listenSetup = std::make_unique<ListenSetup> (*p); addAndMakeVisible (*listenSetup); }
+        setSize (540, listenSetup != nullptr ? 640 : 440);
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        if (listenSetup != nullptr) listenSetup->setBounds (r.removeFromBottom (190));
+        selector.setBounds (r);
+    }
+
+private:
+    juce::AudioDeviceSelectorComponent selector;
+    std::unique_ptr<ListenSetup> listenSetup;
+};
+} // namespace la::ui
 
 class LiveAlignStandaloneApp final : public juce::JUCEApplication
 {
@@ -49,10 +76,10 @@ public:
         // them in stereo pairs, so a mic on input 2 alone could not be picked), and no MIDI or feedback options.
         la::StandaloneHooks::showAudioSettings() = [h]
         {
-            auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (h->deviceManager, 0, 64, 0, 64, false, false, false, false);
-            selector->setSize (520, 420);
+            // the interface, and under it the headphones (what to hear and where: a spare output, or another device)
+            auto content = std::make_unique<la::ui::AudioWindowContent> (h->deviceManager, dynamic_cast<LiveAlignProcessor*> (h->processor.get()));
             juce::DialogWindow::LaunchOptions o;
-            o.content.setOwned (selector.release());
+            o.content.setOwned (content.release());
             o.dialogTitle = "Audio interface";
             o.dialogBackgroundColour = juce::Colour (0xff161d22);
             o.escapeKeyTriggersCloseButton = true;
