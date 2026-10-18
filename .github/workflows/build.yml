@@ -66,10 +66,14 @@ jobs:
       # way (it fails the build when one fails). Text that does not fit is listed.
       - name: Screenshot run with checks
         run: |
-          set -o pipefail
           mkdir -p shots
-          xvfb-run -a -s "-screen 0 1920x1200x24" ./build/LiveAlignPreview shots 2>&1 | tee shots/preview.log
+          rc=0
+          xvfb-run -a -s "-screen 0 1920x1200x24" ./build/LiveAlignPreview shots > shots/preview.log 2>&1 || rc=$?
+          cat shots/preview.log
+          # the failed checks as annotations (readable from the API), and the end of the log if it stopped early
           grep -E "^(CHECK|OVERFLOW|RESULT)" shots/preview.log | sed -e 's/^CHECK FAIL/::error::CHECK FAIL/' -e 's/^OVERFLOW/::warning::OVERFLOW/' || true
+          if ! grep -q "^RESULT" shots/preview.log; then tail -n 8 shots/preview.log | sed 's/^/::error::preview stopped: /'; fi
+          exit $rc
 
       - uses: actions/upload-artifact@v7
         if: always()
