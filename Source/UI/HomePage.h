@@ -110,13 +110,20 @@ public:
     // Reloads the editors after a venue is opened or created.
     void refresh()
     {
+        filterVenues();   // the open venue's row now; the folder follows when the scan is back
         rescanVenues();
         selected = proc.currentSession();
         updateButtons();
-        recheckButton.setVisible (started() && ! proc.monitoringSession());   // it plays test signals: a tuning session's
+        // the quick re-check and Mark as changed are for a system already tuned (and play test signals: a tuning session's)
+        const bool tunedVenue = proc.room.tuned || proc.speakers.configured;
+        recheckButton.setVisible (started() && ! proc.monitoringSession() && tunedVenue);
+        speakerChangedButton.setVisible (started() && ! proc.monitoringSession() && tunedVenue);
         resized();
         repaint();
     }
+
+    // The venue's details, shown on the right once a venue is open (the editor owns them).
+    void setDetails (juce::Component* c) { details = c; if (c != nullptr) addChildComponent (*c); resized(); }
 
     // A venue is open (or this is the VST3, which only monitors): until then Home shows the venues and a way in.
     bool started() const { return proc.venueOpen || ! (proc.isStandalone() || proc.uiAsStandalone); }
@@ -128,7 +135,12 @@ public:
         drawVenueList (g);
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
         if (! started()) { paintStart (g); return; }
-        drawPanel (g, stepsCard.toFloat(), proc.monitoringSession() ? "This show" : "Where this venue stands");
+        {
+            const auto& list = proc.getSessions();
+            const int cur = proc.currentSession();
+            const auto name = cur >= 0 && cur < (int) list.size() ? list[(size_t) cur].name : juce::String ("Session");
+            drawPanel (g, nextCard.toFloat(), name + (proc.monitoringSession() ? "  -  show" : "  -  tuning"));
+        }
         // the next thing to do, and what needs attention
         {
             auto b = nextBanner;
@@ -154,6 +166,7 @@ public:
                 const auto drift = VenueDetailsPage::driftText (proc, worth);
                 if (worth && proc.room.tuned) att.add (drift.upToFirstOccurrenceOf (":", false, false).upToFirstOccurrenceOf (".", false, false) + ": run a quick re-check");
             }
+            if (changedSetup) att.add ("the interface or the mic wiring changed since this session's checks: re-check the mic setup");
             g.setColour (att.isEmpty() ? p.textFaint : p.warn);
             g.setFont (font (11.5f, ! att.isEmpty()));
             g.drawText (att.isEmpty() ? juce::String ("Nothing needs attention.") : "Needs attention: " + att.joinIntoString ("   "), attentionLine, juce::Justification::centredLeft, true);
@@ -206,62 +219,8 @@ public:
             }
         }
 
-        // the workflow, grouped as in the navigation pane
-        for (const auto& h : headings)
-        {
-            g.setColour (p.textFaint);
-            g.setFont (font (10.5f, true));
-            g.drawText (navHeading (h.first), h.second, juce::Justification::centredLeft);
-            g.setColour (p.border);
-            g.drawHorizontalLine (h.second.getCentreY(), (float) h.second.getX() + juce::GlyphArrangement::getStringWidth (font (10.5f, true), navHeading (h.first)) + 8.0f,
-                                  (float) h.second.getRight());
-        }
-        for (const auto& row : rows)
-        {
-            const int i = row.first;
-            auto r = row.second;
-            const auto& st = steps[(size_t) i];
-            const bool over = i == hoverStep;
-            g.setColour (over ? p.panelRaised.brighter (p.dark ? 0.05f : 0.0f) : p.panelRaised);
-            g.fillRoundedRectangle (r.toFloat(), 7.0f);
-            const bool required = (i == (int) Page::Mics || i == (int) Page::Response || i == (int) Page::Crossover || i == (int) Page::Level || i == (int) Page::Room)
-                                  && (st.status == StepStatus::NotStarted || st.status == StepStatus::InProgress);
-            juce::Colour edge = over ? p.accent.withAlpha (0.7f) : p.border;
-            float width = over ? 1.4f : 1.0f;
-            if (i == nextPage) { edge = p.accent; width = 1.8f; }
-            if (st.status == StepStatus::Attention) { edge = p.warn.withAlpha (0.95f); width = 1.6f; }
-            else if (required) { edge = p.warn.withAlpha (over ? 0.85f : 0.55f); width = 1.3f; }
-            else if (st.status == StepStatus::Ready && ! over) { edge = p.good.withAlpha (0.5f); width = 1.2f; }
-            g.setColour (edge);
-            g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 7.0f, width);
-
-            auto icon = pageIcon (i);
-            icon.applyTransform (juce::AffineTransform::translation ((float) r.getX() + 12.0f, (float) r.getCentreY() - 12.0f));
-            g.setColour (p.accent);
-            g.strokePath (icon, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            drawStatusBadge (g, juce::Rectangle<float> (16.0f, 16.0f).withCentre ({ (float) r.getRight() - 18.0f, (float) r.getCentreY() }), st.status, st.fraction);
-
-            auto text = r.withTrimmedLeft (48).withTrimmedRight (i == (int) Page::Venue ? 180 : 36);
-            juce::String name = i == (int) Page::Venue ? "Venue" : i == (int) Page::Mics ? "Mics" : pageName (i);   // the groups, as the navigation names them
-            if (isTuningStep (i)) name = juce::String (tuningStepNumber (i)) + "  " + name;
-            g.setColour (p.text);
-            g.setFont (font (13.5f, true));
-            g.drawText (name, text.removeFromTop (r.getHeight() / 2).withTrimmedTop (3), juce::Justification::bottomLeft, true);
-            g.setColour (st.status == StepStatus::Attention ? p.warn : p.textDim);
-            g.setFont (font (11.5f));
-            g.drawText (st.detail.isNotEmpty() ? st.detail : st.shortText, text.withTrimmedTop (1), juce::Justification::topLeft, true);
-        }
-
-        drawSessionSummary (g);
-
-        if (changedSetup)
-        {
-            g.setColour (p.warn);
-            g.setFont (font (12.0f, true));
-            g.drawText ("The interface or the mic wiring has changed since this session's checks. Re-check the mic setup.",
-                        changeLine, juce::Justification::centredLeft, true);
-        }
     }
+
 
     void resized() override
     {
@@ -300,56 +259,27 @@ public:
         s.removeFromBottom (8);
         listArea = s;
 
-        // steps card: the next step and what needs attention, then two columns, the tuning steps on the right
-        auto st = stepsCard.reduced (16).withTrimmedTop (30);
+        // the right side: the session's next step and what needs attention, then the venue's details (editable)
+        nextCard = stepsCard.removeFromTop (128);
+        stepsCard.removeFromTop (10);
+        if (details != nullptr)
         {
-            auto head = stepsCard.reduced (16, 0).withTrimmedTop (6).withHeight (26);
-            recheckButton.setBounds (head.removeFromRight (190).withSizeKeepingCentre (190, 26).translated (0, 2));
+            details->setBounds (stepsCard);
+            details->setVisible (started());
         }
+        {
+            auto head = nextCard.reduced (16, 0).withTrimmedTop (6).withHeight (26);
+            recheckButton.setBounds (head.removeFromRight (170).withSizeKeepingCentre (170, 26).translated (0, 2));
+            head.removeFromRight (8);
+            speakerChangedButton.setBounds (head.removeFromRight (170).withSizeKeepingCentre (170, 26).translated (0, 2));
+        }
+        auto st = nextCard.reduced (16).withTrimmedTop (28);
         nextBanner = st.removeFromTop (52);
         if (goButton.isVisible()) goButton.setBounds (nextBanner.reduced (10, 0).removeFromRight (190).withSizeKeepingCentre (190, 30));
         st.removeFromTop (4);
         attentionLine = st.removeFromTop (20);
-        st.removeFromTop (4);
-        changeLine = st.removeFromBottom (22);
         rows.clear();
         headings.clear();
-        const int rowH = 40, gap = 4, headH = 22;
-        auto colA = st.removeFromLeft ((st.getWidth() - 12) / 2);
-        st.removeFromLeft (12);
-        auto colB = st;
-        auto column = [&] (juce::Rectangle<int>& col, std::initializer_list<int> order)
-        {
-            for (int k : order)
-            {
-                if (k < 0) { headings.push_back ({ k, col.removeFromTop (headH) }); continue; }
-                rows.push_back ({ k, col.removeFromTop (rowH) });
-                col.removeFromTop (gap);
-            }
-            return col;
-        };
-        // a tuning session: the setup and the tuning steps; a show: the venue, the monitor mic and live monitoring
-        const bool show = proc.monitoringSession();
-        auto restA = show ? column (colA, { -1, (int) Page::Venue }) : column (colA, { -1, (int) Page::Venue, (int) Page::Mics });
-        auto restB = show ? column (colB, { -3, (int) Page::MonitorMic, (int) Page::Monitor })
-                          : column (colB, { -2, (int) Page::Response, (int) Page::Headroom, (int) Page::Crossover, (int) Page::Level, (int) Page::Coverage,
-                                            (int) Page::Align, (int) Page::Acoustics, (int) Page::Room, (int) Page::Listening, (int) Page::Feedback });
-        auto bottom = colA.getBottom() > colB.getBottom() ? restA : restB;
-        juce::ignoreUnused (bottom);
-        // reports along the bottom of both columns
-        auto reports = juce::Rectangle<int>::leftTopRightBottom (stepsCard.getX() + 16, juce::jmax (restA.getY(), restB.getY()), stepsCard.getRight() - 16,
-                                                                 changeLine.getY());
-        headings.push_back ({ -4, reports.removeFromTop (headH) });
-        auto rr = reports.removeFromTop (rowH);
-        const int half = (rr.getWidth() - 12) / 2;
-        rows.push_back ({ (int) Page::Sheet, rr.removeFromLeft (half) });
-        rr.removeFromLeft (12);
-        rows.push_back ({ show ? (int) Page::MonitorReport : (int) Page::TuningReport, rr });
-        reports.removeFromTop (gap + 6);
-        summaryArea = reports;
-        for (const auto& row : rows)
-            if (row.first == (int) Page::Venue)
-                speakerChangedButton.setBounds (row.second.withTrimmedRight (40).removeFromRight (130).withSizeKeepingCentre (130, 26));
         if (! started()) { rows.clear(); headings.clear(); }   // nothing to step through before a venue is open
     }
 
@@ -369,7 +299,14 @@ public:
         }
         int h = -1;
         for (const auto& row : rows) if (row.second.contains (e.getPosition()) && ! speakerChangedButton.getBounds().contains (e.getPosition())) h = row.first;
-        if (h != hoverStep) { hoverStep = h; setMouseCursor (h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); repaint (stepsCard); }
+        if (h != hoverStep)
+        {
+            hoverStep = h;
+            setMouseCursor (h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+            // the step's detail as a tooltip (the chips show its name and state only)
+            if (h >= 0) { const auto& st = steps[(size_t) h]; setTooltip (st.detail.isNotEmpty() ? st.detail : st.shortText); }
+            repaint (stepsCard);
+        }
     }
 
     void mouseExit (const juce::MouseEvent&) override
@@ -470,6 +407,13 @@ private:
     void drawVenueList (juce::Graphics& g)
     {
         const auto& p = pal();
+        // the open venue not saved yet is drawn as it is now (its name, its sessions), not as it was at the last scan
+        if (! shownVenues.empty() && shownVenues.front().file == juce::File() && proc.projectFile == juce::File())
+        {
+            shownVenues.front().name = proc.venueName;
+            shownVenues.front().sessions = (int) proc.getSessions().size();
+            shownVenues.front().tuned = proc.room.tuned ? 1 : 0;
+        }
         if (shownVenues.empty())
         {
             g.setColour (p.textDim);
@@ -555,11 +499,11 @@ private:
     void paintStart (juce::Graphics& g)
     {
         const auto& p = pal();
-        drawPanel (g, stepsCard.toFloat(), "Get started");
+        drawPanel (g, nextCard.getUnion (stepsCard).toFloat(), "Get started");
         g.setColour (p.textDim);
         g.setFont (font (12.0f));
         g.drawFittedText ("Open a venue to see its sessions.", sessionsCard.reduced (16).withTrimmedTop (30).withHeight (40), juce::Justification::topLeft, 2);
-        auto r = stepsCard.reduced (24).withTrimmedTop (34);
+        auto r = nextCard.getUnion (stepsCard).reduced (24).withTrimmedTop (34);
         auto item = [&] (const juce::String& title, const juce::String& text)
         {
             g.setColour (p.text);
@@ -652,6 +596,7 @@ private:
             }
             r.removeFromTop (10);
         }
+        if (! proc.monitoringSession()) return;   // a tuning session: the steps above say it all
         g.setColour (p.accent);
         g.fillRoundedRectangle ((float) r.getX(), (float) r.getY() + 7.0f, 3.0f, 12.0f, 1.5f);
         g.setColour (p.text);
@@ -740,7 +685,7 @@ private:
             const bool on = started();
             for (auto* b : { &newSessionButton, &openSessionButton, &compareButton, &renameButton, &deleteButton, &goButton, &speakerChangedButton })
                 if (! on) b->setVisible (false);
-            if (on) for (auto* b : { &newSessionButton, &openSessionButton, &compareButton, &renameButton, &deleteButton, &speakerChangedButton }) b->setVisible (true);
+            if (on) for (auto* b : { &newSessionButton, &openSessionButton, &compareButton, &renameButton, &deleteButton }) b->setVisible (true);
             if (! on) recheckButton.setVisible (false);
             saveButton.setEnabled (on);
             saveAsButton.setEnabled (on);
@@ -799,7 +744,8 @@ private:
     int nextPage = -1;
     juce::String nextWhat;
     juce::Rectangle<int> summaryArea;
-    juce::Rectangle<int> venueCard, sessionsCard, stepsCard, venueFileLine, sessionsHint, listArea, changeLine;
+    juce::Rectangle<int> venueCard, sessionsCard, stepsCard, nextCard, venueFileLine, sessionsHint, listArea, changeLine;
+    juce::Component* details = nullptr;   // the venue's details, on the right
     std::vector<std::pair<int, juce::Rectangle<int>>> rows, headings;   // (page or heading, bounds)
     std::array<StepInfo, kNumPages> steps {};
     bool changedSetup = false;

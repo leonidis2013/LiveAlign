@@ -7,7 +7,7 @@
 // subscribes to a temperature topic and a humidity topic at QoS 0, and keeps the latest reading of each. The payload
 // can be a plain number ("21.4") or JSON ({"temperature": 21.4, "humidity": 45}), read by a key that may be a dotted
 // path ("climate.temperature"). Plain TCP only (port 1883 on the local network); no TLS.
-// Nothing changes on its own: Venue, Details captures a reading as the session's conditions for tuning (an edit, so it
+// Nothing changes on its own: Home (the venue details) captures a reading as the session's conditions for tuning (an edit, so it
 // can be undone), and Monitoring shows the reading live with what it does to the delays and the top end at the back.
 #include <atomic>
 #include <cmath>

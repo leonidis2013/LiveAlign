@@ -357,7 +357,7 @@ private:
         const auto pm = juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"));
         g.drawFittedText ("Each speaker alone, at the points where it is within 6 dB of the loudest top (its area), against its own loudest point. "
                           "The spec is " + pm + juce::String (tol, 1) + " dB, so the spread from the loudest to the quietest point should stay within "
-                          + juce::String (2.0 * tol, 1) + " dB (Venue, Details, or Settings), the way AVIXA A102.01 rates coverage uniformity. Subs are left out: they cover all round.",
+                          + juce::String (2.0 * tol, 1) + " dB (Home, or Settings), the way AVIXA A102.01 rates coverage uniformity. Subs are left out: they cover all round.",
                           tableArea.removeFromBottom (60), juce::Justification::topLeft, 4);
     }
 

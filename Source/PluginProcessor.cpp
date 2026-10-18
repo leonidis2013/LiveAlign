@@ -878,6 +878,8 @@ void LiveAlignProcessor::resetVenue()
     settings.selectedMic = 0;
     plan = la::VenuePlan::defaults();
     checks = {};
+    settings.temperatureC = 20.0f;   // a new venue: the usual conditions until they are entered or captured
+    settings.humidity = 50.0f;
     room.load (nullptr);   // a new venue: this computer's Room EQ defaults
     traces.clear();
     sessions.clear();

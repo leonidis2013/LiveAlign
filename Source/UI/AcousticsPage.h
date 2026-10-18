@@ -277,7 +277,7 @@ public:
         }
         metricButtons[0].setToggleState (true, juce::dontSendNotification);
         roomLink.setTooltip ("What the room is used for (sets the reverberation time and intelligibility to compare with) and its size. "
-                             "Both are set on Venue, Details.");
+                             "Both are set on Home.");
         roomLink.onClick = [this] { if (onOpenVenue) onOpenVenue(); };
         addAndMakeVisible (roomLink);
         sweepButton.setTooltip ("A 4-second sweep (twice) through the whole system at each ticked point, in the guided pop-up: a long "
@@ -342,7 +342,7 @@ public:
             const bool ft = proc.settings.distanceUnit.load() == 0;
             roomLink.setButtonText (RoomTuning::useNames()[juce::jlimit (0, 3, proc.room.use)] + ", "
                                     + (vol > 0.0 ? juce::String (juce::roundToInt (ft ? vol * 35.3147 : vol)) + (ft ? " cu ft" : " m3") : juce::String ("size not entered"))
-                                    + juce::String (juce::CharPointer_UTF8 ("   \xc2\xb7   Edit on Venue \xe2\x86\x92")));
+                                    + juce::String (juce::CharPointer_UTF8 ("   \xc2\xb7   Edit on Home \xe2\x86\x92")));
         }
         refreshButtons();
         resized();

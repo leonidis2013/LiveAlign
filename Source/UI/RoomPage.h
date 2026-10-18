@@ -276,7 +276,7 @@ public:
     std::function<void()> onChanged;
     std::function<void (GuidedSource&)> onGuided;   // opens the guided pop-up
     std::function<void()> onOpenPlan;                // the points are made on the venue plan
-    std::function<void()> onOpenVenue;               // the target is set on Venue, Details
+    std::function<void()> onOpenVenue;               // the target is set on Home
     std::function<void (const juce::String& title, const juce::String& initial, std::function<void (const juce::String&)>)> askText;
 
     explicit RoomPage (LiveAlignProcessor& p) : proc (p), settings (p.settings), room (p.room), graph (p)
@@ -355,7 +355,7 @@ public:
         };
         for (auto* c : std::initializer_list<juce::Component*> { &targetLink, &speakerBox, &bandsBox, &boostBox, &allowToggle, &suggestButton, &applyButton })
             addAndMakeVisible (*c);
-        targetLink.setTooltip ("The tonal balance Room EQ tunes toward. It is set with the venue's other targets on Venue, Details.");
+        targetLink.setTooltip ("The tonal balance Room EQ tunes toward. It is set with the venue's other targets on Home.");
         targetLink.onClick = [this] { if (onOpenVenue) onOpenVenue(); };
 
         // ---- 3 check ----
@@ -406,7 +406,7 @@ public:
 
         targetBox.setSelectedItemIndex (juce::jlimit (0, targets::count() - 1, room.target), juce::dontSendNotification);
         targetLink.setButtonText (juce::String (targets::list()[(size_t) juce::jlimit (0, targets::count() - 1, room.target)].name)
-                                  + juce::String (juce::CharPointer_UTF8 ("   \xc2\xb7   Edit on Venue \xe2\x86\x92")));
+                                  + juce::String (juce::CharPointer_UTF8 ("   \xc2\xb7   Edit on Home \xe2\x86\x92")));
         speakerBox.clear (juce::dontSendNotification);
         speakerBox.addItem ("Whole system (every speaker)", 1);
         bool anyMain = false;

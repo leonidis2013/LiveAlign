@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// Venue, Details: everything about the place itself, in one spot. Its name and notes, what the room is used for and
+// The venue's details, on Home's right side: everything about the place itself, in one spot. Its name and notes, what the room is used for and
 // how big it is, the conditions of the day (temperature and humidity, per session) and the targets (Room EQ's tonal
 // balance, the show level at FOH and the headroom wanted). The other pages show these read-only, with a link here.
 #include "../PluginProcessor.h"
@@ -89,12 +89,14 @@ public:
         const float t = f.tempC.load(), h = f.humidity.load();
         proc.setConditions (std::isfinite (t) ? t : proc.settings.temperatureC.load(), std::isfinite (h) ? h : proc.settings.humidity.load());
         capturedNote = "Captured from the sensor at " + juce::Time::getCurrentTime().formatted ("%H:%M");
+        capturedFor = sessionId();
         refresh();
         changed();
     }
 
     void refresh()
     {
+        if (capturedFor != sessionId()) capturedNote.clear();   // another venue or session: that capture was not its
         if (! nameEditor.hasKeyboardFocus (true)) nameEditor.setText (proc.venueName, juce::dontSendNotification);
         if (! notesEditor.hasKeyboardFocus (true)) notesEditor.setText (proc.venueNotes, juce::dontSendNotification);
         useBox.setSelectedItemIndex (juce::jlimit (0, RoomTuning::useNames().size() - 1, proc.room.use), juce::dontSendNotification);
@@ -344,6 +346,13 @@ private:
     juce::Slider tempSlider, humiditySlider;
     juce::TextButton captureButton;
     juce::String capturedNote;   // when the conditions were last captured from the sensor
+    juce::String capturedFor;    // ... and for which session
+    juce::String sessionId() const
+    {
+        const auto& l = proc.getSessions();
+        const int c = proc.currentSession();
+        return c >= 0 && c < (int) l.size() ? l[(size_t) c].id : juce::String();
+    }
     juce::TextButton recheckButton { "Quick re-check..." };
     juce::Rectangle<int> venueCard, roomCard, condCard, targetCard, roomInfoArea, condInfoArea, driftArea, targetNote;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;

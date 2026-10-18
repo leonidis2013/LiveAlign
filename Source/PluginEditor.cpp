@@ -261,7 +261,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     venuePage = std::make_unique<VenueDetailsPage> (p);
     venuePage->onChanged = [this] { if (roomPage != nullptr) roomPage->refresh(); acousticsPage->refresh(); updateStatuses(); };
     venuePage->onRecheck = [this] { if (homePage->onRecheck) homePage->onRecheck(); };
-    addChildComponent (*venuePage);
+    homePage->setDetails (venuePage.get());   // the venue's details live on Home's right side
 
     lockerPage = std::make_unique<MicLockerPage> (p);
     lockerPage->onLoadCal = [this] (const juce::String& id, int angle) { loadLockerCal (id, angle); };
@@ -456,6 +456,7 @@ void LiveAlignEditor::applyTheme (int theme)
 
 void LiveAlignEditor::showPage (int page)
 {
+    if (page == (int) Page::Venue) page = (int) Page::Home;   // the venue's details are on Home
     page = standalone ? juce::jlimit (0, kNumPages - 1, page) : page == (int) Page::Settings ? page : (int) Page::Monitor;
     settings.currentTab = page;
     if (shownPage != (int) Page::Settings && shownPage >= 0) lastPage = shownPage;
@@ -483,14 +484,13 @@ void LiveAlignEditor::showPage (int page)
     if (spk) speakerPage->setMode (page == (int) Page::Speakers ? 0 : page == (int) Page::Response ? 1 : page == (int) Page::Crossover ? 2 : 3);
     roomPage->setVisible (page == (int) Page::Room);
     planPage->setVisible (page == (int) Page::Plan);
-    venuePage->setVisible (page == (int) Page::Venue);
     coveragePage->setVisible (page == (int) Page::Coverage);
     headroomPage->setVisible (page == (int) Page::Headroom);
     listeningPage->setVisible (page == (int) Page::Listening);
     if (page == (int) Page::Coverage) coveragePage->refresh();
     if (page == (int) Page::Headroom) headroomPage->refresh();
     if (page == (int) Page::Listening) listeningPage->refresh();
-    if (page == (int) Page::Venue) venuePage->refresh();
+    if (page == (int) Page::Home) venuePage->refresh();
     lockerPage->setVisible (page == (int) Page::Locker);
     settingsPage->setVisible (page == (int) Page::Settings);
     nav.setSettingsActive (page == (int) Page::Settings);
@@ -1300,9 +1300,40 @@ void LiveAlignEditor::openProject()
 
 void LiveAlignEditor::newProject()
 {
+    // a new venue: its name, and what its first session is for (tuning the room, or monitoring a show)
+    textWindow = std::make_unique<juce::AlertWindow> ("New venue",
+        "A blank venue: add the room, the speakers and the points next.\n\n"
+        "Its first session: Tuning (the tuning steps, with test signals) or Show monitoring (live monitoring only; the "
+        "generator never plays). More sessions can be added on Home.",
+        juce::MessageBoxIconType::NoIcon, this);
+    textWindow->addTextEditor ("name", "", "Venue name");
+    textWindow->addComboBox ("kind", { "Tuning", "Show monitoring" }, "First session");
+    if (auto* c = textWindow->getComboBoxComponent ("kind")) c->setSelectedItemIndex (0, juce::dontSendNotification);
+    textWindow->addButton ("Create", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    textWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    textWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int result)
+    {
+        if (safe == nullptr || safe->textWindow == nullptr) return;
+        const auto name = safe->textWindow->getTextEditorContents ("name").trim();
+        auto* c = safe->textWindow->getComboBoxComponent ("kind");
+        const int kind = c != nullptr ? c->getSelectedItemIndex() : 0;
+        safe->textWindow->setVisible (false);
+        if (result != 1) return;
+        safe->startVenue (name, kind);
+    }), false);
+}
+
+void LiveAlignEditor::startVenue (const juce::String& name, int kind)
+{
     processor.newProject();
+    if (name.isNotEmpty()) processor.venueName = name;
+    processor.setFirstSession ((kind == 1 ? "Show " : "Tuning ") + LiveAlignProcessor::today(), kind);
     afterProjectLoaded();
     showPage ((int) Page::Home);
+    processor.markSaved();   // a blank venue has nothing to save yet (after the pages have shown it)
+    unsaved = false;
+    updateStatuses();
 }
 
 void LiveAlignEditor::newSession()
@@ -1352,7 +1383,8 @@ bool LiveAlignEditor::pageInSession (int page) const
 {
     if (! standalone) return page == (int) Page::Monitor || page == (int) Page::MonitorMic || page == (int) Page::Settings;
     if (! processor.venueOpen) return page == (int) Page::Home || page == (int) Page::Settings;   // at start: Home until a venue is open
-    if (page == (int) Page::Home || page == (int) Page::Settings || page == (int) Page::Venue || page == (int) Page::Speakers
+    if (page == (int) Page::Venue) return false;   // on Home now, not a menu item of its own
+    if (page == (int) Page::Home || page == (int) Page::Settings || page == (int) Page::Speakers
         || page == (int) Page::Plan || page == (int) Page::Locker || page == (int) Page::Sheet)
         return true;
     const bool mon = processor.monitoringSession();
@@ -1686,7 +1718,6 @@ void LiveAlignEditor::resized()
     speakerPage->setBounds (r);
     roomPage->setBounds (r);
     planPage->setBounds (r);
-    venuePage->setBounds (r);
     coveragePage->setBounds (r);
     headroomPage->setBounds (r);
     listeningPage->setBounds (r);
@@ -2007,8 +2038,8 @@ void LiveAlignEditor::showTour (int step)
                                                "system is tuned, then monitoring the show. It measures; you enter the settings in your own processor.", {} });
     steps.push_back ({ "The steps", "Top to bottom, the way a system is tuned. Each step shows where it stands; NEXT marks the one to do now. Any step can be "
                                     "done again at any time.", [this] { return nav.getBounds().withTrimmedTop (50).withTrimmedBottom (190); } });
-    steps.push_back ({ "Venue", "The room (what it is used for, its size, the temperature and humidity of the day, the targets), the speakers, and the plan "
-                                "with the points you measure at.", navArea ((int) Page::Venue) });
+    steps.push_back ({ "Venue", "The speakers and the plan with the points you measure at. The room itself (what it is used for, its size, the "
+                                "temperature and humidity of the day, the targets) is on Home, beside the next step.", navArea ((int) Page::Venue) });
     steps.push_back ({ "Mics", "Your measurement mics: inputs, calibration files, the reference (a loopback cable) and the pre-flight checks. The locker keeps "
                                "every mic you own.", navArea ((int) Page::Mics) });
     steps.push_back ({ "Tuning", "Speaker response, gain and headroom, crossover, level balance, aim and coverage, time alignment, room acoustics, Room EQ, the "

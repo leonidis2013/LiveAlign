@@ -167,7 +167,9 @@ public:
     void afterProjectLoadedForPreview() { afterProjectLoaded(); }
     bool listenStripShownForPreview() const { return listenStrip != nullptr && listenStrip->isVisible() && listenStrip->getParentComponent() != nullptr && listenStrip->listening(); }
     void applySessionKind();
-    void startSession (const juce::String& name, int kind);   // a new session of this kind (0 tuning, 1 monitoring), opened
+    void startSession (const juce::String& name, int kind);
+    bool unsavedForPreview() const { return unsaved; }
+    void startVenue (const juce::String& name, int kind);   // a new venue with its first session of this kind   // a new session of this kind (0 tuning, 1 monitoring), opened
     bool canRedo() const { return ! redoStack.empty(); }
     void rollBackTo (int historyEntry);
     la::ui::CoveragePage& coveragePageForPreview() { return *coveragePage; }

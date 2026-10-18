@@ -5,7 +5,7 @@
 #include "../Clock.h"
 // Tuning step 2: Gain and headroom, once every speaker is verified (Speaker response) and before anything is tuned,
 // so the gain structure is set first (and checked again at the end with the EQ in). Pink noise in 3 dB steps through
-// the whole system up to the show level at FOH (Venue, Details) plus the headroom wanted, watching the FOH mic: when the level stops rising with the generator the
+// the whole system up to the show level at FOH (on Home) plus the headroom wanted, watching the FOH mic: when the level stops rising with the generator the
 // system is compressing or limiting, and when the coherence drops it is distorting. Then each speaker alone at the
 // same drive (what it gets in the show): one that compresses first is the weak link. The amp gains and limiter
 // thresholds go on the processor sheet. Loud: hearing protection, and nobody near the speakers.
@@ -490,7 +490,7 @@ private:
         runButton.setEnabled (standalone && (! running() || runOutput == 0));
         eachButton.setEnabled (standalone && measured() && (! running() || runOutput != 0));
         venueButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("Show level  \xe2\x86\x92")));
-        venueButton.setTooltip ("The show level at FOH and the headroom wanted are set on Venue, Details");
+        venueButton.setTooltip ("The show level at FOH and the headroom wanted are set on Home");
     }
 
     LiveAlignProcessor& proc;

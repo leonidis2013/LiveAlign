@@ -97,7 +97,8 @@ inline juce::StringArray termsFor (int page)
         case Page::MonitorMic: return { "Calibration file", "LAeq", "dBA, dBC, dBZ" };
         case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "Coherence", "Standards" };
         case Page::Sheet: return { "Processor sheet", "Delay", "Polarity", "Q", "Limiter" };
-        case Page::Home: case Page::TuningReport: case Page::MonitorReport: case Page::Locker: case Page::Settings:
+        case Page::Home: return { "As found / as left", "Speed of sound", "Absorption (air)", "MQTT", "Target curve", "Headroom", "Coverage" };
+        case Page::TuningReport: case Page::MonitorReport: case Page::Locker: case Page::Settings:
         default: return { "As found / as left" };
     }
 }
@@ -109,7 +110,8 @@ inline juce::StringArray howTo (int page)
     switch ((Page) page)
     {
         case Page::Home: return { "Pick a venue from the list, or start a new one.", "Follow NEXT: the navigation marks the step to do now.",
-                                  "A session is one visit, for tuning or for a show (New session asks); the menu shows only that kind's pages. In a tuning session of a system already tuned, the quick re-check finds what has drifted." };
+                                  "A session is one visit, for tuning or for a show (New session asks); the menu shows only that kind's pages. In a tuning session of a system already tuned, the quick re-check finds what has drifted.",
+                                  "On the right, the venue's details: its name and notes, what the room is used for and its size, the temperature and humidity of the day, the targets." };
         case Page::Venue: return { "Name the venue and note anything worth remembering.", "Pick what the room is used for and enter its size (for the acoustics).",
                                    "Enter the temperature and humidity of the day.", "Set the targets: the Room EQ curve, the show level at FOH, the headroom." };
         case Page::Speakers: return { "Add the speakers: a left / right pair, subs, fills, delays.", "Give each its output and channel, and how widely it covers.",

@@ -198,13 +198,13 @@ private:
             case PrefCat::Audio: return "The interface and the reference the mics are compared against. The mics themselves are set up on Mics.";
             case PrefCat::Measurement: return "How the transfer function and the RTA are worked out. The defaults suit most tuning; the guided steps pick what they need.";
             case PrefCat::Display: return "What the screen shows and how, and the tour of LiveAlign.";
-            case PrefCat::Units: return "Distances and temperatures (the temperature of the day is on Venue, Details).";
+            case PrefCat::Units: return "Distances and temperatures (the temperature of the day is on Home).";
             case PrefCat::Tuning: return "Your defaults for every venue. A venue can keep its own value (This venue): it is saved with the venue and listed in the report.";
             case PrefCat::Generator: return "The test signal: where it starts, how loud it may ever get and how gently it comes in.";
             case PrefCat::Monitoring: return "Defaults for new sessions' event level, and how the feedback watch and the delay tracking behave.";
             case PrefCat::Reports: return "What the reports look like, and where files go.";
             case PrefCat::Sensor: return "A temperature and humidity sensor on your network, through an MQTT broker (Home Assistant, Zigbee2MQTT). "
-                                         "Its reading is shown on Monitoring and captured on Venue, Details for tuning.";
+                                         "Its reading is shown on Monitoring and captured on Home for tuning.";
             case PrefCat::Updates:
             default: return "LiveAlign asks GitHub for the latest release. Nothing is sent but the request.";
         }
@@ -415,7 +415,7 @@ private:
                 row ("Temperature unit", combo ({ deg + "C  Celsius", deg + "F  Fahrenheit" }, settings.temperatureUnit.load(),
                                                 [this] (int i) { settings.temperatureUnit = i; rebuildLater(); }));
                 auto& t = make<juce::Label>();
-                t.setText ("On Venue, Details (each session keeps its own, with the humidity)", juce::dontSendNotification);
+                t.setText ("On Home, in the venue details (each session keeps its own, with the humidity)", juce::dontSendNotification);
                 t.setFont (font (12.0f));
                 t.setColour (juce::Label::textColourId, pal().textDim);
                 row ("Temperature", t, "The air temperature sets the speed of sound, used to turn delays into distances");

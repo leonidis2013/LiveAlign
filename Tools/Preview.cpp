@@ -1050,6 +1050,17 @@ public:
                     check (proc.getSessions().size() == 1 && proc.sessionKind() == kind && proc.traces.size() == 0 && proc.room.meas.empty(),
                            "sessions: the only session can be deleted (an empty one takes its place)");
                 }
+                {
+                    // New venue: named, and its first session of the kind picked (here a show)
+                    editor->startVenue ("Grace Chapel", 1);
+                    editor->showPage ((int) P::Home);
+                    shot ("home-new-show-venue");
+                    check (proc.venueName == "Grace Chapel" && proc.monitoringSession() && proc.getSessions().size() == 1 && ! proc.projectChangedNow()
+                           && std::abs (proc.settings.temperatureC.load() - 20.0f) < 0.01f && ! editor->unsavedForPreview(),
+                           "new venue: named, its first session a show, the usual conditions, nothing unsaved yet");
+                    editor->startVenue ("Grace Chapel", 0);
+                    shot ("home-new-tuning-venue");
+                }
                 finish();
                 break;
             }

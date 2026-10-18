@@ -149,6 +149,16 @@ public:
     const la::RoomTuning& tuningRoom() const;
     juce::String tuningRoomName() const { return monitoringSession() && tuningRef != nullptr ? tuningRefName : juce::String(); }
     void sessionKindChanged();
+    // What is in memory now counts as saved (a blank venue just made: nothing to save yet).
+    void markSaved() { savedProjectText = createProjectXml()->toString(); changedCache = false; changedCheckedAt = la::clock::ms32(); }
+    // A new venue's first (empty) session: its name and what it is for.
+    void setFirstSession (const juce::String& name, int kind)
+    {
+        if (current < 0 || current >= (int) sessions.size()) return;
+        if (name.trim().isNotEmpty()) sessions[(size_t) current].name = name.trim();
+        sessions[(size_t) current].kind = juce::jlimit (0, 1, kind);
+        sessionKindChanged();
+    }
     void switchSession (int index);
     void deleteSession (int index);
     void renameSession (int index, const juce::String& name);
@@ -218,7 +228,7 @@ public:
         checks.tunedHumidity = settings.humidity.load();
         checks.tunedConditionsOn = today();
     }
-    // The conditions of the day were entered (Venue, Details).
+    // The conditions of the day were entered (on Home).
     void setConditions (float tC, float rh)
     {
         settings.temperatureC = juce::jlimit (-20.0f, 50.0f, tC);
