@@ -198,6 +198,15 @@ public:
             proc.settings.targetCurve = 4;
         }
         using P = la::ui::Page;
+        if (ticks == 157)
+        {
+            // at start, before a venue is open: Home only
+            shot ("home-boot");
+            check (! editor->pageInSession ((int) P::Mics) && ! editor->pageInSession ((int) P::Monitor) && editor->pageInSession ((int) P::Home),
+                   "at start: only Home until a venue is open");
+            proc.venueOpen = true;   // the run's venue, as if opened
+            editor->afterProjectLoadedForPreview();
+        }
         if (ticks == 165) shot ("home-start");
         if (ticks == 166) editor->showPage ((int) P::Mics);
         if (ticks == 182) shot ("mic-setup");

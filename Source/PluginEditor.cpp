@@ -75,6 +75,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         });
     };
     homePage->onOpenVenue = [this] { confirmDiscard ([this] { openProject(); }); };
+    homePage->onUseCurrent = [this] { processor.venueOpen = true; afterProjectLoaded(); };
     homePage->onOpenFile = [this] (const juce::File& f)
     {
         confirmDiscard ([this, f]
@@ -754,7 +755,8 @@ void LiveAlignEditor::updateStatuses()
 
     const auto& list = processor.getSessions();
     const int cur = processor.currentSession();
-    nav.setVenue (processor.venueName, cur < (int) list.size() ? list[(size_t) cur].name : juce::String(), unsaved);
+    if (standalone && ! processor.venueOpen) nav.setVenue ("No venue open", "Open one, or start a new one", false);
+    else nav.setVenue (processor.venueName, cur < (int) list.size() ? list[(size_t) cur].name : juce::String(), unsaved);
     refreshNext();
 }
 
@@ -1213,7 +1215,7 @@ void LiveAlignEditor::toggleFullScreen() { if (auto& f = la::StandaloneHooks::to
 
 void LiveAlignEditor::confirmDiscard (std::function<void()> then)
 {
-    if (! processor.projectChangedNow()) { then(); return; }
+    if ((standalone && ! processor.venueOpen) || ! processor.projectChangedNow()) { then(); return; }
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
     juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsYesNoCancel (juce::MessageBoxIconType::QuestionIcon, "Unsaved changes",
                                       "Save the changes to \"" + processor.venueName + "\" first?", "Save", "Don't save", "Cancel", this),
@@ -1232,6 +1234,7 @@ void LiveAlignEditor::confirmDiscard (std::function<void()> then)
 
 void LiveAlignEditor::saveProject (bool askForFile, std::function<void()> then)
 {
+    if (standalone && ! processor.venueOpen) { if (then) then(); return; }   // nothing open to save yet
     if (! askForFile && processor.projectFile != juce::File())
     {
         const auto err = processor.saveProject (processor.projectFile);
@@ -1331,6 +1334,7 @@ void LiveAlignEditor::afterProjectLoaded()
 bool LiveAlignEditor::pageInSession (int page) const
 {
     if (! standalone) return page == (int) Page::Monitor || page == (int) Page::MonitorMic || page == (int) Page::Settings;
+    if (! processor.venueOpen) return page == (int) Page::Home || page == (int) Page::Settings;   // at start: Home until a venue is open
     if (page == (int) Page::Home || page == (int) Page::Settings || page == (int) Page::Venue || page == (int) Page::Speakers
         || page == (int) Page::Plan || page == (int) Page::Locker || page == (int) Page::Sheet)
         return true;
@@ -1530,7 +1534,7 @@ void LiveAlignEditor::timerCallback()
     }
 
     if (tick % 15 == 0 && shownPage != (int) Page::Monitor) refreshNext();
-    if (processor.isStandalone() && tick % juce::jmax (30 * 60, (int) (30 * 60 * la::AppPrefs::get().value ("autosaveMin"))) == 0) processor.autosave();
+    if (processor.isStandalone() && processor.venueOpen && tick % juce::jmax (30 * 60, (int) (30 * 60 * la::AppPrefs::get().value ("autosaveMin"))) == 0) processor.autosave();
     if (tick % 60 == 0 && processor.syncLocker() && shownPage == (int) Page::Mics) micPage->refreshChoices();
 
     if (tick % 15 == 0)

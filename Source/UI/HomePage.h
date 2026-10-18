@@ -30,6 +30,7 @@ public:
     std::function<void (int)> onGoTo, onRenameSession, onDeleteSession;
     // the venue list: open, rename, duplicate or delete a venue file
     std::function<void (const juce::File&)> onOpenFile, onDeleteFile;
+    std::function<void()> onUseCurrent;   // carry on with the venue in memory (the last one used)
     std::function<void (const VenueEntry&)> onRenameFile, onDuplicateFile;
     std::function<void()> onRecheck;
 
@@ -100,7 +101,7 @@ public:
         if (page == nextPage && what == nextWhat) return;
         nextPage = page;
         nextWhat = what;
-        goButton.setVisible (page >= 0);
+        goButton.setVisible (page >= 0 && started());
         goButton.setButtonText (page >= 0 ? juce::String ("Go to ") + pageName (page) : juce::String());
         resized();
         repaint();
@@ -112,10 +113,13 @@ public:
         rescanVenues();
         selected = proc.currentSession();
         updateButtons();
-        recheckButton.setVisible (! proc.monitoringSession());   // it plays test signals: a tuning session's
+        recheckButton.setVisible (started() && ! proc.monitoringSession());   // it plays test signals: a tuning session's
         resized();
         repaint();
     }
+
+    // A venue is open (or this is the VST3, which only monitors): until then Home shows the venues and a way in.
+    bool started() const { return proc.venueOpen || ! (proc.isStandalone() || proc.uiAsStandalone); }
 
     void paint (juce::Graphics& g) override
     {
@@ -123,6 +127,7 @@ public:
         drawPanel (g, venueCard.toFloat(), "Venues");
         drawVenueList (g);
         drawPanel (g, sessionsCard.toFloat(), "Sessions");
+        if (! started()) { paintStart (g); return; }
         drawPanel (g, stepsCard.toFloat(), proc.monitoringSession() ? "This show" : "Where this venue stands");
         // the next thing to do, and what needs attention
         {
@@ -345,6 +350,7 @@ public:
         for (const auto& row : rows)
             if (row.first == (int) Page::Venue)
                 speakerChangedButton.setBounds (row.second.withTrimmedRight (40).removeFromRight (130).withSizeKeepingCentre (130, 26));
+        if (! started()) { rows.clear(); headings.clear(); }   // nothing to step through before a venue is open
     }
 
     void mouseMove (const juce::MouseEvent& e) override
@@ -381,12 +387,14 @@ public:
             const auto& v = shownVenues[(size_t) i];
             const bool menu = e.mods.isPopupMenu() || venueMenuButton (i).contains (e.getPosition());
             if (menu) { showVenueMenu (v); return; }
-            if (v.file != proc.projectFile && onOpenFile) onOpenFile (v.file);
+            // at start the last venue is already in memory (with any unsaved changes): clicking it carries on with it
+            if (v.file == proc.projectFile && ! started()) { if (onUseCurrent) onUseCurrent(); }
+            else if (v.file != proc.projectFile && onOpenFile) onOpenFile (v.file);
             return;
         }
         for (const auto& row : rows)
             if (row.second.contains (e.getPosition())) { if (onGoTo) onGoTo (row.first); return; }
-        for (int i = 0; i < visibleRows(); ++i)
+        for (int i = 0; i < visibleRows() && started(); ++i)
             if (rowBounds (i).contains (e.getPosition()) && i + scroll < (int) proc.getSessions().size())
             {
                 selected = i + scroll;
@@ -434,7 +442,8 @@ private:
         shownVenues.clear();
         const auto q = searchEditor.getText().trim();
         // the open venue first when it has not been saved yet (it is in no folder)
-        if (proc.projectFile == juce::File() && (q.isEmpty() || proc.venueName.containsIgnoreCase (q)))
+        // (at start only when it has changes worth carrying on with: the last session's unsaved venue)
+        if ((started() || proc.projectChanged()) && proc.projectFile == juce::File() && (q.isEmpty() || proc.venueName.containsIgnoreCase (q)))
         {
             VenueEntry e;
             e.name = proc.venueName;
@@ -492,7 +501,9 @@ private:
             auto top = r.removeFromTop (r.getHeight() / 2 + 1);
             g.setColour (p.text);
             g.setFont (font (13.0f, true));
-            g.drawText (v.name + (open ? (unsavedNow ? "   (open, unsaved changes)" : "   (open)") : juce::String()), top.withTrimmedTop (2), juce::Justification::bottomLeft, true);
+            g.drawText (v.name + (open ? (! started() ? juce::String (unsavedNow ? "   (last used, unsaved changes)" : "   (last used)")
+                                                      : (unsavedNow ? "   (open, unsaved changes)" : "   (open)")) : juce::String()),
+                        top.withTrimmedTop (2), juce::Justification::bottomLeft, true);
             juce::StringArray bits;
             bits.add (v.file == juce::File() ? juce::String ("not saved yet") : "saved " + venues::when (v.saved));
             if (v.lastUsed.toMilliseconds() > 0) bits.add ("used " + venues::when (v.lastUsed));
@@ -540,6 +551,35 @@ private:
 
     // The open session at a glance: every mic's state, the loopback and the delays.
     // A show session: the monitor mic, what it is compared with, and the show's level so far.
+    // Before a venue is open: what to do first.
+    void paintStart (juce::Graphics& g)
+    {
+        const auto& p = pal();
+        drawPanel (g, stepsCard.toFloat(), "Get started");
+        g.setColour (p.textDim);
+        g.setFont (font (12.0f));
+        g.drawFittedText ("Open a venue to see its sessions.", sessionsCard.reduced (16).withTrimmedTop (30).withHeight (40), juce::Justification::topLeft, 2);
+        auto r = stepsCard.reduced (24).withTrimmedTop (34);
+        auto item = [&] (const juce::String& title, const juce::String& text)
+        {
+            g.setColour (p.text);
+            g.setFont (font (15.0f, true));
+            g.drawText (title, r.removeFromTop (24), juce::Justification::centredLeft, true);
+            g.setColour (p.textDim);
+            g.setFont (font (12.5f));
+            g.drawFittedText (text, r.removeFromTop (54), juce::Justification::topLeft, 3, 1.0f);
+            r.removeFromTop (6);
+        };
+        item ("Open a venue", "Click one in the list on the left, or Open... for a venue file somewhere else.");
+        item ("Or start a new one", "New venue... starts a blank venue: then add the room, the speakers and the points.");
+        item ("Then pick the session", "Each venue has sessions, one per visit: a tuning session (the tuning steps, with test signals) "
+                                       "or a show session (live monitoring). The rest of LiveAlign appears once a venue is open.");
+        g.setColour (p.textFaint);
+        g.setFont (font (11.5f));
+        g.drawFittedText ("Settings (bottom of the menu) are available now: the audio interface, units, and your defaults.", r.removeFromTop (36),
+                          juce::Justification::topLeft, 2);
+    }
+
     void drawShowSummary (juce::Graphics& g, juce::Rectangle<int> r)
     {
         const auto& p = pal();
@@ -695,6 +735,16 @@ private:
 
     void updateButtons()
     {
+        {
+            // before a venue is open: the venue list and its buttons only
+            const bool on = started();
+            for (auto* b : { &newSessionButton, &openSessionButton, &compareButton, &renameButton, &deleteButton, &goButton, &speakerChangedButton })
+                if (! on) b->setVisible (false);
+            if (on) for (auto* b : { &newSessionButton, &openSessionButton, &compareButton, &renameButton, &deleteButton, &speakerChangedButton }) b->setVisible (true);
+            if (! on) recheckButton.setVisible (false);
+            saveButton.setEnabled (on);
+            saveAsButton.setEnabled (on);
+        }
         const int n = (int) proc.getSessions().size();
         selected = juce::jlimit (0, n - 1, selected);
         const bool other = selected != proc.currentSession();

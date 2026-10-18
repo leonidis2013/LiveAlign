@@ -62,7 +62,9 @@ public:
     void setStateInformation (const void*, int) override;
 
     bool isStandalone() const { return wrapperType == wrapperType_Standalone; }
-    bool uiAsStandalone = false;   // local screenshot tool only: show every page
+    bool uiAsStandalone = false;
+    // A venue was opened, started or restored since the app started: until then the app shows Home only.
+    bool venueOpen = false;   // local screenshot tool only: show every page
     int numInputs() const { return getTotalNumInputChannels(); }
     int numOutputs() const { return getTotalNumOutputChannels(); }
 

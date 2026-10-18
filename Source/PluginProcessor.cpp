@@ -1074,12 +1074,14 @@ juce::String LiveAlignProcessor::openProject (const juce::File& f)
     savedProjectText = createProjectXml()->toString();
     changedCheckedAt = 0;
     la::venues::noteUsed (f);
+    venueOpen = true;
     return {};
 }
 
 void LiveAlignProcessor::newProject()
 {
     resetVenue();
+    venueOpen = true;
     settings.genOn = false;
     settings.requestResetAverages = true;
     settings.requestResetLeq = true;
@@ -1141,6 +1143,7 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     settings.requestResetAverages = true;
     settings.requestResetLeq = true;
     savedProjectText = createProjectXml()->toString();
+    venueOpen = true;
     changedCheckedAt = 0;
 }
 
@@ -1193,6 +1196,7 @@ juce::String LiveAlignProcessor::restoreRecovery()
     projectFile = from.isNotEmpty() && juce::File::isAbsolutePath (from) ? juce::File (from) : juce::File();
     savedProjectText.clear();   // restored work is unsaved until the user saves it
     changedCheckedAt = 0;
+    venueOpen = true;
     return {};
 }
 

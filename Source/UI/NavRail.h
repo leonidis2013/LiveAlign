@@ -392,7 +392,7 @@ public:
         g.drawText (sessionName, v.removeFromTop (16), juce::Justification::centredLeft, true);
         g.setColour (dirty ? p.warn : p.textFaint);
         g.setFont (font (10.5f));
-        g.drawText (dirty ? "Unsaved changes" : "Saved", v.removeFromTop (14), juce::Justification::centredLeft);
+        if (venueName != "No venue open") g.drawText (dirty ? "Unsaved changes" : "Saved", v.removeFromTop (14), juce::Justification::centredLeft);
     }
 
     void resized() override
