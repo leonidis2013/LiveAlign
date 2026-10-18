@@ -5,6 +5,7 @@
 // record, preferences and venue overrides, the Room EQ allowance, aim and coverage, gain and headroom, seat-to-seat
 // variance, the change history, the air, the venue list and the MQTT climate feed (against a tiny broker here). Built with LA_BUILD_TESTS (target AppTests).
 #include <cstdio>
+#include <functional>
 #include <cstdlib>
 #include <string>
 #include <juce_core/juce_core.h>
@@ -20,6 +21,7 @@
 #include "ListenOutput.h"
 #include "InterfaceGuard.h"
 #include "Monitoring.h"
+#include "AudioHealth.h"
 
 using namespace la;
 
@@ -742,6 +744,129 @@ static void showLogTests()
     check (older.points.size() == 2 && ! std::isfinite (older.points[0].tempC), "show log: a log saved before 0.26 loads (no temperature)");
 }
 
+// ---- audio health: simulated faults on two inputs (a mic, the console feed)
+namespace
+{
+struct HealthSim
+{
+    AudioHealth h;
+    double fs = 48000.0, clockFs = 48000.0;   // clockFs: the interface's real rate, against the computer's clock
+    double nowMs = 1.0e6, phase = 0.0, phase2 = 0.0;
+    juce::int64 n = 0;
+    juce::Random rng { 7 };
+    std::vector<float> a, b;
+    double t0Sec = 1792000000.0;
+    int block = 512;
+    std::function<void (std::vector<float>&, juce::int64)> shape;   // changes the mic's block before it is processed
+    HealthSim() { h.prepare (fs, 512); a.resize (512); b.resize (512); }
+    double nowSec() const { return t0Sec + nowMs / 1000.0; }
+
+    // one callback: mic = a sine and a little noise; feed = another sine (slipping a sample every `slipEvery` s)
+    void step (double slipEvery = 0.0, bool deliver = true)
+    {
+        for (int i = 0; i < block; ++i)
+        {
+            a[(size_t) i] = (float) (0.2 * std::sin (phase) + 0.002 * (rng.nextFloat() - 0.5f));
+            phase += 2.0 * juce::MathConstants<double>::pi * 180.0 / fs;
+            if (slipEvery > 0.0 && std::fmod ((double) (n + i), slipEvery * fs) < 1.0) phase2 += 2.0 * juce::MathConstants<double>::pi * 160.0 / fs;   // a sample slips
+            b[(size_t) i] = (float) (0.25 * std::sin (phase2) + 0.001 * (rng.nextFloat() - 0.5f));
+            phase2 += 2.0 * juce::MathConstants<double>::pi * 160.0 / fs;
+        }
+        if (shape) shape (a, n);
+        nowMs += block * 1000.0 / clockFs;
+        if (deliver)
+        {
+            const float* ch[] = { a.data(), b.data() };
+            h.process (ch, 2, block, nowMs + (rng.nextFloat() - 0.5f) * 2.0);   // callbacks a little early or late
+            n += block;
+        }
+    }
+    void run (double seconds, double slipEvery = 0.0)
+    {
+        const int blocks = (int) (seconds * clockFs / block);
+        for (int k = 0; k < blocks; ++k) { step (slipEvery); if (k % 10 == 9) h.poll (nowSec(), -1, nowMs); }
+    }
+};
+} // namespace
+
+static void healthTests()
+{
+    {
+        HealthSim s;
+        s.run (30.0);
+        check (s.h.events().empty(), "audio health: clean audio, nothing found", (double) s.h.events().size(), 0);
+        check (std::abs (s.h.ppm()) < 20.0, "audio health: the rate measured (a clean clock)", s.h.ppm(), 0);
+        // a dropout: 6 callbacks never arrive (the computer missed them)
+        for (int k = 0; k < 6; ++k) s.step (0.0, false);
+        s.run (2.0);
+        check (s.h.count (AudioHealth::Dropout) == 1, "audio health: a dropout found from the sample count", s.h.count (AudioHealth::Dropout), 1);
+        if (! s.h.events().empty()) check (std::abs (s.h.events().back().samples - 6 * 512) < 700, "audio health: about how much went missing", s.h.events().back().samples, 6 * 512);
+        // a gap of digital silence in the mic, and a block repeated on the feed
+        s.step();
+        std::fill (s.a.begin() + 100, s.a.begin() + 300, 0.0f);
+        { const float* ch[] = { s.a.data(), s.b.data() }; s.h.process (ch, 2, s.block, s.nowMs); }
+        s.step();
+        { const float* ch[] = { s.a.data(), s.b.data() }; s.h.process (ch, 2, s.block, s.nowMs); s.n += s.block; s.nowMs += s.block * 1000.0 / s.clockFs; }   // the same blocks again
+        s.run (1.0);
+        check (s.h.count (AudioHealth::ZeroGap) >= 1, "audio health: a gap of digital silence in a live input");
+        bool gapOnMic = false;
+        for (const auto& e : s.h.events()) gapOnMic |= e.kind == AudioHealth::ZeroGap && e.channel == 0 && std::abs (e.samples - 200) <= 2;
+        check (gapOnMic, "audio health: the gap is on the mic, 200 samples");
+        check (s.h.count (AudioHealth::Repeat) >= 1, "audio health: a block repeated exactly");
+        check (s.h.syncInterval (0) == 0.0 && s.h.syncInterval (1) == 0.0, "audio health: no regular clicks without slips");
+    }
+    {
+        // the console feed slips a sample every 3.1 s: its clock is not locked to the interface's
+        HealthSim s;
+        s.run (40.0, 3.1);
+        check (std::abs (s.h.syncInterval (1) - 3.1) < 0.1, "audio health: a click every 3.1 s on the feed (clock not locked)", s.h.syncInterval (1), 3.1);
+        check (s.h.syncInterval (0) == 0.0, "audio health: the mic, on the same interface, is clean");
+        check (s.h.count (AudioHealth::Dropout) == 0, "audio health: a slip is not a dropout");
+    }
+    {
+        // music with sharp hits at random moments (a kick, a dropped stick): clicks, but never at a steady interval
+        HealthSim s;
+        juce::Random r (11);
+        double nextHit = 0.5;
+        int hitLeft = 0;
+        float hitAmp = 0.0f;
+        s.shape = [&] (std::vector<float>& a, juce::int64 start)
+        {
+            for (int i = 0; i < (int) a.size(); ++i)
+            {
+                const double t = (double) (start + i) / s.fs;
+                if (t >= nextHit) { hitLeft = 2400; hitAmp = 0.6f; nextHit = t + 0.25 + r.nextDouble() * 2.5; }
+                if (hitLeft > 0) { a[(size_t) i] += hitAmp * (r.nextFloat() - 0.5f); hitAmp *= 0.998f; --hitLeft; }
+            }
+        };
+        s.run (90.0);
+        check (s.h.recentClicks (0) >= 10, "audio health: the hits do sound like clicks (the test means something)", s.h.recentClicks (0), 10);
+        check (s.h.syncInterval (0) == 0.0 && s.h.count (AudioHealth::Click) == 0, "audio health: random hits are not a clock fault");
+        check (s.h.count (AudioHealth::ZeroGap) == 0 && s.h.count (AudioHealth::Repeat) == 0, "audio health: music is not a gap or a repeat");
+    }
+    {
+        // an interface running 750 ppm fast against the computer's clock
+        HealthSim s;
+        s.clockFs = 48036.0;
+        s.run (60.0);
+        check (std::abs (s.h.ppm() - 750.0) < 40.0, "audio health: the interface's real rate (750 ppm fast)", s.h.ppm(), 750.0);
+        check (s.h.count (AudioHealth::Dropout) == 0, "audio health: a fast clock is not a dropout");
+    }
+    {
+        // stopped for a while (the interface closed, the computer asleep): not a dropout
+        HealthSim s;
+        s.run (5.0);
+        s.nowMs += 4000.0;
+        s.h.poll (s.nowSec(), -1, s.nowMs);
+        check (s.h.isStopped(), "audio health: no audio for a while is seen as stopped");
+        s.run (3.0);
+        check (s.h.count (AudioHealth::Dropout) == 0 && ! s.h.isStopped(), "audio health: a stop is not a dropout", s.h.count (AudioHealth::Dropout), 0);
+        s.h.poll (s.nowSec(), 0, s.nowMs);
+        s.h.poll (s.nowSec(), 2, s.nowMs);
+        check (s.h.count (AudioHealth::DriverOverload) == 2, "audio health: the driver's own overload count");
+    }
+}
+
 int main()
 {
     // a message thread (this one), for the audio device manager's change messages and device list listeners
@@ -766,6 +891,7 @@ int main()
     listenTests();
     interfaceTests();
     showLogTests();
+    healthTests();
     home.deleteRecursively();
     juce::DeletedAtShutdown::deleteAll();
     juce::MessageManager::deleteInstance();

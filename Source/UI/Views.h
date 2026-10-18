@@ -268,6 +268,8 @@ public:
 
     // Draw every mic as its own coloured line (Mic setup page) instead of the selected mic's bars.
     void setShowAllMics (bool b) { showAll = b; repaint(); }
+    // What it shows: 0 the mic, 1 the console feed (the reference, dBFS), 2 both (the feed as a line, levelled to the mic).
+    void setSource (int s) { source = s; repaint(); }
 
     void update (const Snapshot& snap) { data = &snap; repaint(); }
 
@@ -282,7 +284,8 @@ public:
         const double fMax = data != nullptr ? juce::jmin (20000.0, data->sampleRate * 0.45) : 20000.0;
         ax = { 16.0, fMax * 1.12, plot };
 
-        const bool spl = data != nullptr && data->rtaIsSpl;
+        const bool feedOnly = source == 1;
+        const bool spl = ! feedOnly && data != nullptr && data->rtaIsSpl;
         const float top = spl ? 120.0f : 0.0f, bottom = spl ? 20.0f : -100.0f;
         auto y = [&] (float db) { return plot.getY() + (top - juce::jlimit (bottom - 5.0f, top + 5.0f, db)) / (top - bottom) * plot.getHeight(); };
 
@@ -299,7 +302,8 @@ public:
         g.setColour (p.textDim);
         g.setFont (font (11.0f, true));
         const int bands = juce::jmax (1, settings.rtaBands.load());
-        g.drawText ("RTA  1/" + juce::String (bands) + " OCTAVE   " + (spl ? "dB SPL" : "dBFS (not calibrated)"),
+        g.drawText ("RTA  1/" + juce::String (bands) + " OCTAVE   " + (feedOnly ? "CONSOLE FEED   dBFS" : spl ? "dB SPL" : "dBFS (not calibrated)")
+                        + (source == 2 ? "   +  CONSOLE FEED (blue, levelled to the mic)" : ""),
                     plot.translated (8.0f, 4.0f).withHeight (14.0f), juce::Justification::centredLeft);
 
         for (const auto& t : traces.all())
@@ -313,6 +317,8 @@ public:
 
         if (data == nullptr || data->rtaFreq.empty()) return;
         const auto& f = data->rtaFreq;
+        const auto& shown = feedOnly && data->rtaRef.size() == f.size() ? data->rtaRef : data->rtaMic;
+        if (! feedOnly)
         {
             // lined up once with the live RTA (when there is real sound), then it stays put
             float level = 0.0f;
@@ -342,23 +348,32 @@ public:
             for (size_t i = 0; i < f.size(); ++i)
             {
                 const float x0 = ax.x (f[i] / half) + 1.0f, x1 = ax.x (f[i] * half) - 1.0f;
-                const float yy = y (data->rtaMic[i]);
-                juce::ColourGradient grad (p.accent.withAlpha (0.9f), 0.0f, plot.getY(), p.accent.withAlpha (0.35f), 0.0f, plot.getBottom(), false);
+                const float yy = y (shown[i]);
+                const auto bc = feedOnly ? p.inputCol : p.accent;
+                juce::ColourGradient grad (bc.withAlpha (0.9f), 0.0f, plot.getY(), bc.withAlpha (0.35f), 0.0f, plot.getBottom(), false);
                 g.setGradientFill (grad);
                 g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x0, yy, juce::jmax (x0 + 1.0f, x1), plot.getBottom()));
             }
         }
         else
         {
-            strokeTrace (g, tracePath (f.size(), [&] (size_t i) { return ax.x (f[i]); }, [&] (size_t i) { return y (data->rtaMic[i]); },
-                                       [] (size_t) { return true; }), p.accent, 1.8f);
+            strokeTrace (g, tracePath (f.size(), [&] (size_t i) { return ax.x (f[i]); }, [&] (size_t i) { return y (shown[i]); },
+                                       [] (size_t) { return true; }), feedOnly ? p.inputCol : p.accent, 1.8f);
         }
 
-        if (settings.rtaShowRef.load())
+        if (source == 2 && data->rtaRef.size() == f.size())
+        {
+            // the console feed's shape against the mic's: levelled where both have the most (500 Hz - 2 kHz)
+            float lm = 0.0f, lr = 0.0f;
+            const float shift = bandAverage (f, data->rtaMic, 500.0, 2000.0, lm) && bandAverage (f, data->rtaRef, 500.0, 2000.0, lr) ? lm - lr : 0.0f;
+            strokeTrace (g, tracePath (f.size(), [&] (size_t i) { return ax.x (f[i]); }, [&] (size_t i) { return y (data->rtaRef[i] + shift); },
+                                       [] (size_t) { return true; }), p.inputCol.withAlpha (0.9f), 1.6f);
+        }
+        else if (settings.rtaShowRef.load() && ! feedOnly)
             strokeTrace (g, tracePath (f.size(), [&] (size_t i) { return ax.x (f[i]); }, [&] (size_t i) { return y (data->rtaRef[i]); },
                                        [] (size_t) { return true; }), p.inputCol.withAlpha (0.85f), 1.4f);
 
-        if (settings.rtaPeakHold.load())
+        if (settings.rtaPeakHold.load() && ! feedOnly)
             strokeTrace (g, tracePath (f.size(), [&] (size_t i) { return ax.x (f[i]); }, [&] (size_t i) { return y (data->rtaPeak[i]); },
                                        [] (size_t) { return true; }), p.warn.withAlpha (0.85f), 1.2f);
 
@@ -366,7 +381,7 @@ public:
         {
             const size_t i = nearestByFreq (f, ax.freqAt (hover->x));
             const juce::String unit = spl ? " dB SPL" : " dBFS";
-            drawReadout (g, plot, *hover, freqLabel (nominalFrequency (f[i])) + " Hz   " + juce::String (data->rtaMic[i], 1) + unit);
+            drawReadout (g, plot, *hover, freqLabel (nominalFrequency (f[i])) + " Hz   " + juce::String (shown[i], 1) + unit);
         }
         drawFeedbackMarks (g, ax, plot);
     }
@@ -381,6 +396,7 @@ private:
     juce::Rectangle<float> plot;
     FreqAxis ax;
     bool showAll = false;
+    int source = 0;
     std::optional<juce::Point<float>> hover;
 };
 
@@ -513,6 +529,9 @@ class WaterfallView : public juce::Component
 public:
     explicit WaterfallView (Settings& s) : settings (s) {}
 
+    // What it shows: 0 the mic, 1 the console feed (the reference), 2 both side by side.
+    void setSource (int s) { source = s; repaint(); }
+
     void update (const Snapshot& snap)
     {
         data = &snap;
@@ -525,6 +544,14 @@ public:
         for (float v : snap.wfLine) loudest = juce::jmax (loudest, v);
         if (loudest < -190.0f) return;
         rows[(size_t) head] = snap.wfLine;
+        if (snap.wfRefLine.size() == snap.wfLine.size())
+        {
+            refRows[(size_t) head] = snap.wfRefLine;
+            float rk = -200.0f;
+            for (float v : snap.wfRefLine) rk = juce::jmax (rk, v);
+            if (rk > -190.0f) refTop = juce::jmax (rk, refTop - 0.05f);
+        }
+        else std::fill (refRows[(size_t) head].begin(), refRows[(size_t) head].end(), -200.0f);
         head = (head + 1) % kRows;
         filled = juce::jmin (kRows, filled + 1);
         stamps[(size_t) ((head + kRows - 1) % kRows)] = la::clock::ms32();
@@ -542,7 +569,7 @@ public:
         r.removeFromTop (22.0f);
         r.removeFromLeft (44.0f);
         r.removeFromRight (56.0f);
-        const auto plot = r.withTrimmedBottom (16.0f);
+        const auto full = r.withTrimmedBottom (16.0f);
 
         static const float secondsOpts[] = { 10.0f, 30.0f, 60.0f };
         static const float rangeOpts[] = { 40.0f, 60.0f, 80.0f };
@@ -552,71 +579,98 @@ public:
         g.setColour (p.textDim);
         g.setFont (font (11.0f, true));
         g.drawText ("WATERFALL   " + juce::String ((int) span) + " s   " + juce::String ((int) range) + " dB range"
+                        + (source == 1 ? "   CONSOLE FEED" : source == 2 ? "   MIC  |  CONSOLE FEED" : "")
                         + (settings.running.load() ? juce::String() : juce::String ("   FROZEN")),
                     getLocalBounds().toFloat().reduced (14.0f, 8.0f).withHeight (16.0f), juce::Justification::centredLeft);
 
         const double fMax = data != nullptr && ! data->wfFreq.empty() ? data->wfFreq.back() : 20000.0;
-        ax = { 20.0, fMax, plot };
-        drawFreqGrid (g, ax, plot, juce::Rectangle<float> (plot.getX(), plot.getBottom() + 2.0f, plot.getWidth(), 14.0f));
-
-        if (filled == 0 || data == nullptr || data->wfFreq.size() != (size_t) bands)
+        // the plots: one, or the mic and the console feed side by side
+        juce::Rectangle<float> plots[2];
+        int layers = 1;
+        if (source == 2)
         {
-            drawWaiting (g, plot, "Waiting for signal", "The waterfall scrolls as the mic picks up sound.");
-            return;
+            auto both = full;
+            plots[0] = both.removeFromLeft ((both.getWidth() - 70.0f) / 2.0f);
+            both.removeFromLeft (70.0f);
+            plots[1] = both;
+            layers = 2;
         }
+        else plots[0] = full;
 
         // time axis
         g.setFont (font (10.5f));
         for (float t = 0.0f; t <= span + 0.01f; t += span / 5.0f)
         {
-            const float y = plot.getY() + t / span * plot.getHeight();
+            const float y = full.getY() + t / span * full.getHeight();
             g.setColour (p.textDim);
             g.drawText (t < 0.01f ? juce::String ("now") : "-" + juce::String ((int) t) + " s",
-                        juce::Rectangle<float> (plot.getX() - 44.0f, y - 7.0f, 40.0f, 14.0f), juce::Justification::centredRight);
+                        juce::Rectangle<float> (full.getX() - 44.0f, y - 7.0f, 40.0f, 14.0f), juce::Justification::centredRight);
         }
 
-        // rows, newest at the top; each row placed by its age. Rasterised once per frame into an image the size of the
-        // plot (a pixel row per screen row) rather than thousands of rectangles on every repaint.
+        const bool waiting = filled == 0 || data == nullptr || data->wfFreq.size() != (size_t) bands;
         const auto now = la::clock::ms32();
-        const float floorDb = top - range;
-        const auto& f = data->wfFreq;
-        const int w = juce::jmax (1, (int) plot.getWidth()), h = juce::jmax (1, (int) plot.getHeight());
-        const CacheKey key { head, span, range, top, w, h, bands, settings.running.load() ? 0u : now };
-        if (! (key == cacheKey) || ! cache.isValid())
+        for (int L = 0; L < layers; ++L)
         {
-            cacheKey = key;
-            renderRows (plot, span, floorDb, range, now, w, h);
-        }
-        g.drawImageAt (cache, (int) plot.getX(), (int) plot.getY());
-
-        // colour scale
-        auto scale = juce::Rectangle<float> (plot.getRight() + 14.0f, plot.getY(), 10.0f, plot.getHeight());
-        for (int i = 0; i < (int) scale.getHeight(); ++i)
-        {
-            g.setColour (colourFor (1.0f - (float) i / scale.getHeight()));
-            g.fillRect (scale.getX(), scale.getY() + (float) i, scale.getWidth(), 1.0f);
-        }
-        const bool spl = data->splIsSpl;
-        g.setColour (p.textDim);
-        g.drawText (juce::String (juce::roundToInt (top)), juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getY() - 2.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
-        g.drawText (juce::String (juce::roundToInt (floorDb)), juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getBottom() - 10.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
-        g.drawText (spl ? "dB" : "dBFS", juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getCentreY() - 6.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
-
-        if (hover.has_value() && plot.contains (*hover))
-        {
-            const double fq = ax.freqAt (hover->x);
-            const float age = (hover->y - plot.getY()) / plot.getHeight() * span;
-            const size_t bi = nearestByFreq (f, fq);
-            float level = -200.0f;
-            for (int k = 0; k < filled; ++k)
+            const bool feed = source == 1 || L == 1;
+            const auto plot = plots[L];
+            ax = { 20.0, fMax, plot };
+            drawFreqGrid (g, ax, plot, juce::Rectangle<float> (plot.getX(), plot.getBottom() + 2.0f, plot.getWidth(), 14.0f));
+            if (waiting)
             {
-                const int idx = (head - 1 - k + kRows * 2) % kRows;
-                if ((float) (now - stamps[(size_t) idx]) / 1000.0f >= age) { level = rows[(size_t) idx][bi]; break; }
+                drawWaiting (g, plot, "Waiting for signal", feed ? "The waterfall scrolls with the console feed." : "The waterfall scrolls as the mic picks up sound.");
+                continue;
             }
-            drawReadout (g, plot, *hover, freqLabel (f[bi]) + " Hz   " + juce::String (age, 1) + " s ago   "
-                                               + (level > -150.0f ? juce::String (level, 1) + (spl ? " dB" : " dBFS") : juce::String ("-")));
+            const float layerTop = feed ? refTop : top;
+            const float floorDb = layerTop - range;
+            const int w = juce::jmax (1, (int) plot.getWidth()), h = juce::jmax (1, (int) plot.getHeight());
+            auto& img = feed ? refCache : cache;
+            auto& ck = feed ? refCacheKey : cacheKey;
+            const CacheKey key { head, span, range, layerTop, w, h, bands, settings.running.load() ? 0u : now };
+            if (! (key == ck) || ! img.isValid())
+            {
+                ck = key;
+                renderRows (feed ? refRows : rows, img, plot, span, floorDb, range, now, w, h);
+            }
+            g.drawImageAt (img, (int) plot.getX(), (int) plot.getY());
+
+            // colour scale
+            auto scale = juce::Rectangle<float> (plot.getRight() + 14.0f, plot.getY(), 10.0f, plot.getHeight());
+            for (int i = 0; i < (int) scale.getHeight(); ++i)
+            {
+                g.setColour (colourFor (1.0f - (float) i / scale.getHeight()));
+                g.fillRect (scale.getX(), scale.getY() + (float) i, scale.getWidth(), 1.0f);
+            }
+            const bool spl = ! feed && data->splIsSpl;
+            g.setColour (p.textDim);
+            g.setFont (font (10.5f));
+            g.drawText (juce::String (juce::roundToInt (layerTop)), juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getY() - 2.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+            g.drawText (juce::String (juce::roundToInt (floorDb)), juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getBottom() - 10.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+            g.drawText (spl ? "dB" : "dBFS", juce::Rectangle<float> (scale.getRight() + 2.0f, scale.getCentreY() - 6.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+            if (layers == 2)
+            {
+                g.setColour (p.text);
+                g.setFont (font (10.5f, true));
+                g.drawText (feed ? "CONSOLE FEED" : "MIC", plot.reduced (6.0f, 4.0f).withHeight (13.0f), juce::Justification::topRight);
+            }
+
+            if (hover.has_value() && plot.contains (*hover))
+            {
+                const auto& f = data->wfFreq;
+                const double fq = ax.freqAt (hover->x);
+                const float age = (hover->y - plot.getY()) / plot.getHeight() * span;
+                const size_t bi = nearestByFreq (f, fq);
+                float level = -200.0f;
+                const auto& rr = feed ? refRows : rows;
+                for (int k = 0; k < filled; ++k)
+                {
+                    const int idx = (head - 1 - k + kRows * 2) % kRows;
+                    if ((float) (now - stamps[(size_t) idx]) / 1000.0f >= age) { level = rr[(size_t) idx][bi]; break; }
+                }
+                drawReadout (g, plot, *hover, freqLabel (f[bi]) + " Hz   " + juce::String (age, 1) + " s ago   "
+                                                   + (level > -150.0f ? juce::String (level, 1) + (spl ? " dB" : " dBFS") : juce::String ("-")));
+            }
+            if (! feed) drawFeedbackMarks (g, ax, plot);
         }
-        drawFeedbackMarks (g, ax, plot);
     }
 
     void mouseMove (const juce::MouseEvent& e) override { hover = e.position; repaint(); }
@@ -630,6 +684,7 @@ private:
     {
         bands = n;
         rows.assign ((size_t) kRows, std::vector<float> ((size_t) n, -200.0f));
+        refRows.assign ((size_t) kRows, std::vector<float> ((size_t) n, -200.0f));
         stamps.assign ((size_t) kRows, 0);
         head = filled = 0;
     }
@@ -654,10 +709,11 @@ private:
         }
     };
 
-    void renderRows (juce::Rectangle<float> plot, float span, float floorDb, float range, juce::uint32 now, int w, int h)
+    void renderRows (const std::vector<std::vector<float>>& rowsIn, juce::Image& img, juce::Rectangle<float> plot, float span, float floorDb, float range,
+                     juce::uint32 now, int w, int h)
     {
-        if (cache.getWidth() != w || cache.getHeight() != h) cache = juce::Image (juce::Image::ARGB, w, h, true);
-        else cache.clear (cache.getBounds(), juce::Colours::transparentBlack);
+        if (img.getWidth() != w || img.getHeight() != h) img = juce::Image (juce::Image::ARGB, w, h, true);
+        else img.clear (img.getBounds(), juce::Colours::transparentBlack);
         const auto& f = data->wfFreq;
         // band edges in image pixels
         std::vector<int> xs ((size_t) bands + 1);
@@ -671,7 +727,7 @@ private:
         static constexpr int kSteps = 64;
         std::array<juce::PixelARGB, kSteps + 1> lut;
         for (int i = 0; i <= kSteps; ++i) lut[(size_t) i] = colourFor ((float) i / kSteps).getPixelARGB();
-        const juce::Image::BitmapData bd (cache, juce::Image::BitmapData::writeOnly);
+        const juce::Image::BitmapData bd (img, juce::Image::BitmapData::writeOnly);
         const float pxPerSec = (float) h / span;
         int yDone = 0;   // image rows painted so far (top down)
         for (int k = 0; k < filled && yDone < h; ++k)
@@ -687,7 +743,7 @@ private:
             const int y0 = juce::jmax (yDone, juce::roundToInt (age * pxPerSec));
             const int y1 = juce::jmin (h, juce::roundToInt (juce::jmin (span, ageOlder) * pxPerSec) + 1);
             if (y1 <= y0) continue;
-            const auto& row = rows[(size_t) idx];
+            const auto& row = rowsIn[(size_t) idx];
             for (int y = y0; y < y1; ++y)
             {
                 auto* line = bd.getLinePointer (y);
@@ -706,13 +762,14 @@ private:
     Settings& settings;
     const Snapshot* data = nullptr;
     FreqAxis ax;
-    juce::Image cache;
-    CacheKey cacheKey;
-    std::vector<std::vector<float>> rows;
+    juce::Image cache, refCache;
+    CacheKey cacheKey, refCacheKey;
+    std::vector<std::vector<float>> rows, refRows;   // the mic's, the console feed's (recorded together)
     std::vector<juce::uint32> stamps;
     int bands = 0, head = 0, filled = 0;
     juce::uint64 lastFrame = 0;
-    float top = -40.0f;
+    float top = -40.0f, refTop = -40.0f;
+    int source = 0;
     std::optional<juce::Point<float>> hover;
 };
 } // namespace la::ui

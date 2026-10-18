@@ -22,6 +22,8 @@ inline const std::vector<Term>& glossary()
         { "C50", "Clarity for speech: the sound energy in the first 50 ms against the rest (dB, ISO 3382-1). Above 0 dB speech is clear; below -3 dB it starts to blur." },
         { "C80", "Clarity for music: the first 80 ms against the rest (dB, ISO 3382-1). About -2 to +4 dB suits most music." },
         { "Calibration file", "A mic's own frequency response, measured by its maker, that LiveAlign takes out of every measurement. A 0 degree file is for a mic aimed at the speaker, a 90 degree file for one pointing up." },
+        { "Dropout", "Audio that never arrived: the computer, the driver or the USB missed its moment, and a few milliseconds are lost (a click or a crackle). Found by counting the samples against the computer's clock. Try another USB port (no hub), a bigger buffer, or closing other programs." },
+        { "Clock sync", "Every digital device has a clock. Two linked digitally (a console's AES, ADAT or Dante feed into an interface) must run on one of them, or a sample slips every few seconds: a click at a steady interval. Lock one to the other (word clock, or the interface set to follow its digital input). An analog cable carries no clock, so it cannot happen there." },
         { "Coherence", "How much of what the mic hears is the signal you are playing (1) rather than noise or the room (0). Below about 0.6 a reading is not to be trusted, so it is greyed out." },
         { "Compression", "When a system is pushed, the amps or limiters stop the level rising as fast as the signal: 3 dB more in gives less than 3 dB more out. Gain and headroom looks for it." },
         { "Coverage", "How evenly a speaker reaches the seats it is meant for. The spec (plus or minus 3 dB by default) is how much the level may vary across its area; AVIXA A102.01 (Audio Coverage Uniformity) rates a system the same way." },
@@ -95,7 +97,7 @@ inline juce::StringArray termsFor (int page)
         case Page::Listening: return { "EQ (parametric)", "Target curve" };
         case Page::Feedback: return { "Waterfall", "EQ (parametric)", "Q" };
         case Page::MonitorMic: return { "Calibration file", "LAeq", "dBA, dBC, dBZ" };
-        case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "Coherence", "Standards" };
+        case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "Coherence", "Dropout", "Clock sync", "Standards" };
         case Page::Sheet: return { "Processor sheet", "Delay", "Polarity", "Q", "Limiter" };
         case Page::Home: return { "As found / as left", "Speed of sound", "Absorption (air)", "MQTT", "Target curve", "Headroom", "Coverage" };
         case Page::TuningReport: case Page::MonitorReport: case Page::Locker: case Page::Settings:
@@ -143,7 +145,8 @@ inline juce::StringArray howTo (int page)
         case Page::Monitor: return { "The graphs show the programme at the monitor mic; each picks its view (RTA, Transfer, Impulse, Waterfall, Level: the sound level over time).",
                                      "The event panel logs the level against the limit; Mark part names each part of the event as it starts (Worship, Sermon ...).",
                                      "Against the tuning shows how the show differs from the tuning.",
-                                     "The show log (a row per minute, a summary per part) is in the monitoring report and exports as CSV from Reports." };
+                                     "The show log (a row per minute, a summary per part) is in the monitoring report and exports as CSV from Reports.",
+                                     "Audio health (Inputs): dropouts, gaps and a clock not locked are found without playing anything. The RTA and waterfall can show the console feed too: a fault there but not on the mic is before the interface." };
         case Page::Sheet: return { "Enter each output's settings in the processor.", "Tick it once it is in.", "History lists every change; roll back to any of them." };
         case Page::TuningReport: return { "Pick the sections, then save the PDF." };
         case Page::MonitorReport: return { "Pick the sections, then save the PDF.", "Export the show log (CSV) for a spreadsheet: a row per minute, and a file with a row per part." };

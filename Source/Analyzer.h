@@ -61,6 +61,7 @@ struct Snapshot
     // Waterfall: the newest unaveraged spectrum of the selected mic (or the average) on a 1/24-octave grid.
     std::vector<double> wfFreq;
     std::vector<float> wfLine;
+    std::vector<float> wfRefLine;  // the same for the reference (the console feed), dBFS
     juce::uint64 wfFrame = 0;     // changes when there is a new spectrum frame
 };
 
@@ -561,6 +562,9 @@ private:
             const double n = (double) (last - first + 1);
             for (size_t i = 0; i < sum.size(); ++i) s.wfLine[i] = (float) powerToDbfs (sum[i] / n);
             s.wfFrame = (juce::uint64) chains[(size_t) first].rta.frameCount();
+            PowerSpectrum::bands (rtaRef.lastFrame(), rtaRef.binHz(), wfGrid, 1.0 / 24.0, p);
+            s.wfRefLine.resize (p.size());
+            for (size_t i = 0; i < p.size(); ++i) s.wfRefLine[i] = (float) powerToDbfs (p[i]);
         }
 
         // Impulse response: show from -5 ms

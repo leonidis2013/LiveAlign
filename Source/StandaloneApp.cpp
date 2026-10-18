@@ -132,6 +132,7 @@ public:
         interfaceGuard = std::make_unique<la::InterfaceGuard> (h->deviceManager, appProperties.getUserSettings()->getXmlValue ("audioSetup"),
                                                                    h->processor->getTotalNumInputChannels(), h->processor->getTotalNumOutputChannels(),
                                                                    [this] { return audioWindow != nullptr; });
+        la::StandaloneHooks::driverOverloads() = [h]() -> int { return h->deviceManager.getXRunCount(); };
         la::StandaloneHooks::interfaceLost() = [this]() -> juce::String { return interfaceGuard != nullptr ? interfaceGuard->lostName() : juce::String(); };
 
         mainWindow = std::make_unique<juce::StandaloneFilterWindow> (
@@ -159,6 +160,7 @@ public:
         la::StandaloneHooks::toggleFullScreen() = nullptr;
         la::StandaloneHooks::isFullScreen() = nullptr;
         la::StandaloneHooks::interfaceLost() = nullptr;
+        la::StandaloneHooks::driverOverloads() = nullptr;
         // the interface is gone: keep it as the choice for next time (not what JUCE opened, or nothing)
         auto keep = interfaceGuard != nullptr ? interfaceGuard->savedChoice() : nullptr;
         interfaceGuard = nullptr;

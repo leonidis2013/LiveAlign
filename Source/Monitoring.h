@@ -102,9 +102,11 @@ struct SplLog
     struct Point { double t; float la, lc, laMax; float tempC = NAN, rh = NAN; };   // t: seconds since 1970; LAeq, LCeq over the interval; max LAF
     struct Part { double t; juce::String name; };       // a part of the event starts at t (and runs to the next)
     struct Hit { double t; float freq, cutDb; };         // the feedback watch caught a ring
+    struct Glitch { double t; juce::String what; };     // the audio health found something ("dropout", "Mic 1: gap")
     std::vector<Point> points;
     std::vector<Part> parts;
     std::vector<Hit> hits;
+    std::vector<Glitch> glitches;
     double limitLaeq = 0.0;        // the limit over `limitMinutes` (0 = none), A or C weighted (`limitC`)
     int limitMinutes = 15;
     bool limitC = false;           // the limit is an LCeq (bass included) rather than an LAeq
@@ -134,6 +136,7 @@ struct SplLog
 
     void markPart (double t, const juce::String& name) { if (name.trim().isNotEmpty()) parts.push_back ({ t, name.trim() }); }
     void addHit (double t, float freq, float cutDb) { hits.push_back ({ t, freq, cutDb }); }
+    void addGlitch (double t, const juce::String& what) { if (glitches.size() < 5000) glitches.push_back ({ t, what }); }
     juce::String partAt (double t) const
     {
         juce::String n;
@@ -197,6 +200,7 @@ struct SplLog
         double rolling = NAN;                    // the rolling Leq (limit window) at the minute's end
         bool over = false;
         juce::String feedback;                   // "377 Hz, 4.2 kHz"
+        juce::String audio;                      // the audio health's findings ("dropout", "Console feed: regular clicks")
         float tempC = NAN, rh = NAN;
         juce::String part;
     };
@@ -231,6 +235,9 @@ struct SplLog
             juce::StringArray f;
             for (const auto& h : hits) if (h.t >= r.t && h.t < r.t + 60.0) f.addIfNotAlreadyThere (freqText (h.freq));
             r.feedback = f.joinIntoString (", ");
+            juce::StringArray gl;
+            for (const auto& gg : glitches) if (gg.t >= r.t && gg.t < r.t + 60.0) gl.addIfNotAlreadyThere (gg.what);
+            r.audio = gl.joinIntoString (", ");
             r.part = partAt (r.t + 59.0);
             rows.push_back (r);
         }
@@ -282,14 +289,14 @@ struct SplLog
         auto num = [] (double v, int d = 1) { return std::isfinite (v) ? juce::String (v, d) : juce::String(); };
         juce::String s;
         s << "Date,Time,Part,LAeq (dB),LCeq (dB),LC-LA (dB),LAF max (dB)," << juce::String (limitMinutes) << " min " << limitName() << " (dB),Over limit,Feedback,"
-          << (fahrenheit ? "Temperature (F)" : "Temperature (C)") << ",Humidity (%)\r\n";
+          << (fahrenheit ? "Temperature (F)" : "Temperature (C)") << ",Humidity (%),Audio\r\n";
         for (const auto& r : minuteRows())
         {
             const juce::Time tm ((juce::int64) (r.t * 1000.0));
             const double temp = std::isfinite (r.tempC) ? (fahrenheit ? r.tempC * 9.0 / 5.0 + 32.0 : r.tempC) : NAN;
             s << tm.formatted ("%Y-%m-%d") << ',' << tm.formatted ("%H:%M") << ',' << csvText (r.part) << ',' << num (r.la) << ',' << num (r.lc) << ','
               << num (r.lc - r.la) << ',' << num (r.laMax) << ',' << num (r.rolling) << ',' << (r.over ? "over" : "") << ',' << csvText (r.feedback) << ','
-              << num (temp) << ',' << num (r.rh, 0) << "\r\n";
+              << num (temp) << ',' << num (r.rh, 0) << ',' << csvText (r.audio) << "\r\n";
         }
         return s;
     }
@@ -312,7 +319,7 @@ struct SplLog
     static juce::String freqText (double f) { return f >= 1000.0 ? juce::String (f / 1000.0, f >= 10000.0 ? 1 : 2) + " kHz" : juce::String (juce::roundToInt (f)) + " Hz"; }
     static juce::String csvText (const juce::String& v) { return v.containsAnyOf (",\"\n") ? "\"" + v.replace ("\"", "\"\"") + "\"" : v; }
 
-    void clear() { points.clear(); parts.clear(); hits.clear(); pending = 0; ea = ec = 0.0; mx = -200.0f; st = sh = 0.0; nt = nh = 0; }
+    void clear() { points.clear(); parts.clear(); hits.clear(); glitches.clear(); pending = 0; ea = ec = 0.0; mx = -200.0f; st = sh = 0.0; nt = nh = 0; }
 
     void save (juce::XmlElement& parent) const
     {
@@ -335,6 +342,12 @@ struct SplLog
             auto* c = e->createNewChildElement ("Part");
             c->setAttribute ("t", (double) (juce::int64) p.t);
             c->setAttribute ("name", p.name);
+        }
+        for (const auto& gg : glitches)
+        {
+            auto* c = e->createNewChildElement ("Audio");
+            c->setAttribute ("t", (double) (juce::int64) gg.t);
+            c->setAttribute ("what", gg.what);
         }
         for (const auto& h : hits)
         {
@@ -381,6 +394,8 @@ struct SplLog
         }
         for (const auto* c : e->getChildWithTagNameIterator ("Part"))
             parts.push_back ({ c->getDoubleAttribute ("t"), c->getStringAttribute ("name") });
+        for (const auto* c : e->getChildWithTagNameIterator ("Audio"))
+            glitches.push_back ({ c->getDoubleAttribute ("t"), c->getStringAttribute ("what") });
         for (const auto* c : e->getChildWithTagNameIterator ("Feedback"))
             hits.push_back ({ c->getDoubleAttribute ("t"), (float) c->getDoubleAttribute ("freq"), (float) c->getDoubleAttribute ("cut") });
     }

@@ -704,7 +704,10 @@ private:
         {
             const auto d = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : juce::String();
             const bool ok = d.isNotEmpty() && d != "No audio device";
-            cards[0].set (ok ? StepState::Done : StepState::Todo, ok ? d : juce::String ("No audio device is open yet."));
+            // with the audio's health (dropouts, gaps, a clock not locked), watched all the time
+            const auto hl = proc.healthLine ((double) juce::Time::currentTimeMillis() / 1000.0);
+            cards[0].set (ok ? (hl.level > 0 ? StepState::Todo : StepState::Done) : StepState::Todo,
+                          ok ? d + "   |   " + hl.text : juce::String ("No audio device is open yet."));
         }
         // changed since this session's checks: say what, and which checks to do again
         const auto changes = proc.setupChanges();

@@ -58,6 +58,8 @@ void LiveAlignProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     micMs.fill (0.0);
     refMs = 0.0;
     analyzer.setSampleRate (sampleRate);
+    health.prepare (sampleRate, juce::jmax (4096, 2 * samplesPerBlock));
+    health.setTimingChecks (isStandalone() && ! timingChecksOff);
 }
 
 void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -87,6 +89,17 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     std::array<float, la::kMaxMics> mPeak {};
     float rPeak = 0.0f;
+
+    // audio health: each mic in use and the console feed (an input), the whole block at once
+    {
+        std::array<const float*, la::AudioHealth::kMaxChannels> watch {};
+        int nw = 0;
+        for (int m = 0; m < count && nw < la::AudioHealth::kMaxChannels - 1; ++m)
+            watch[(size_t) nw++] = micCh[(size_t) m] >= 0 && micCh[(size_t) m] < numIn ? buffer.getReadPointer (micCh[(size_t) m]) : nullptr;
+        healthMics.store (nw, std::memory_order_relaxed);
+        if (refSrc >= 2 && refSrc - 2 < numIn) watch[(size_t) nw++] = buffer.getReadPointer (refSrc - 2);
+        health.process (watch.data(), nw, total, juce::Time::getMillisecondCounterHiRes());
+    }
 
     for (int start = 0; start < total; start += chunkMax)
     {
@@ -654,6 +667,80 @@ void LiveAlignProcessor::syncMonitorFromSlot()
     monitorMic.delayMs = settings.micDelayMs[0].load();
     monitorMic.splOffset = settings.micSplOffset[0].load();
     monitorMic.splCalibrated = settings.micSplCalibrated[0].load();
+}
+
+// ---------------------------------------------------------------------------- audio health
+
+LiveAlignProcessor::HealthLine LiveAlignProcessor::healthLine (double nowSec, double delayDriftMsPerMin) const
+{
+    HealthLine h;
+    const auto& ev = health.events();
+    const double recent = nowSec - 600.0;   // what counts now: the last ten minutes
+    auto at = [] (double t) { return juce::Time ((juce::int64) (t * 1000.0)).formatted ("%H:%M"); };
+    auto rateText = [this]
+    {
+        const double r = health.rate();
+        if (r <= 0.0) return juce::String();
+        const double ppm = health.ppm();
+        return juce::String (r, 1) + " Hz (" + (ppm >= 0.0 ? "+" : "") + juce::String (juce::roundToInt (ppm)) + " ppm)";
+    };
+    // the totals since the audio started, for the tooltip
+    {
+        juce::StringArray d;
+        for (int k = la::AudioHealth::Dropout; k <= la::AudioHealth::DriverOverload; ++k)
+        {
+            const int n = health.count (k);
+            if (n > 0) d.add (juce::String (n) + " " + la::AudioHealth::kindName (k) + (n == 1 ? "" : "s"));
+        }
+        h.detail = "Since the audio started: " + (d.isEmpty() ? juce::String ("nothing found") : d.joinIntoString (", ")) + "."
+                   + (rateText().isNotEmpty() ? " The interface's real rate: " + rateText() + "." : juce::String())
+                   + " Watched all the time from what the inputs carry: missing audio (the sample count), digital silence or repeated "
+                     "blocks inside a signal, and clicks at a steady interval (two clocks not locked).";
+    }
+    if (health.isStopped()) { h.text = "Audio: not running"; return h; }
+    // a clock not locked: the worst, and the clearest
+    for (int c = 0; c < la::AudioHealth::kMaxChannels; ++c)
+        if (const double iv = health.syncInterval (c); iv > 0.0)
+        {
+            h.text = healthChannelName (c) + ": a click every " + juce::String (iv, 1) + " s, its clock is not locked to the interface's";
+            h.level = 2;
+            return h;
+        }
+    if (std::abs (delayDriftMsPerMin) >= 0.2)
+    {
+        h.text = "The delay to the console feed is drifting " + juce::String (std::abs (delayDriftMsPerMin), 2) + " ms a minute: the clocks may not be locked";
+        h.level = 2;
+        return h;
+    }
+    int drops = 0, gaps = 0;
+    double lastDrop = 0.0, lastGap = 0.0;
+    juce::String gapWhere;
+    for (const auto& e : ev)
+    {
+        if (e.t < recent) continue;
+        if (e.kind == la::AudioHealth::Dropout || e.kind == la::AudioHealth::DriverOverload) { ++drops; lastDrop = e.t; }
+        if (e.kind == la::AudioHealth::ZeroGap || e.kind == la::AudioHealth::Repeat) { ++gaps; lastGap = e.t; gapWhere = healthChannelName (e.channel); }
+    }
+    if (drops > 0)
+    {
+        h.text = juce::String (drops) + (drops == 1 ? " dropout" : " dropouts") + " in the last 10 min (last " + at (lastDrop) + "): the computer, driver or USB missed audio";
+        h.level = 1;
+        return h;
+    }
+    if (gaps > 0)
+    {
+        h.text = gapWhere + ": " + juce::String (gaps) + (gaps == 1 ? " gap" : " gaps") + " in the audio in the last 10 min (last " + at (lastGap) + "): the interface dropped it";
+        h.level = 1;
+        return h;
+    }
+    if (std::abs (health.ppm()) >= 1000.0)
+    {
+        h.text = "Clock " + rateText() + ": far from " + juce::String (juce::roundToInt (health.nominalRate())) + " Hz, check the sample rate";
+        h.level = 1;
+        return h;
+    }
+    h.text = "Audio clean" + (rateText().isNotEmpty() ? juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + rateText() : juce::String (" so far"));
+    return h;
 }
 
 // ---------------------------------------------------------------------------- listening

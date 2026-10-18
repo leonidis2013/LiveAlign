@@ -13,6 +13,8 @@ struct StandaloneHooks
     static std::function<void()>& toggleFullScreen() { static std::function<void()> f; return f; }
     static std::function<bool()>& isFullScreen() { static std::function<bool()> f; return f; }
     // The audio interface that was chosen but is gone (unplugged, switched off): its name, or empty when all is well.
+    // The driver's own count of missed deadlines (overloads), -1 when it does not keep one.
+    static std::function<int()>& driverOverloads() { static std::function<int()> f; return f; }
     static std::function<juce::String()>& interfaceLost() { static std::function<juce::String()> f; return f; }
 };
 } // namespace la

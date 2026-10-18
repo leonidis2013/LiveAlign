@@ -7,6 +7,7 @@
 // (each part of the event, and a row per minute), the monitoring mic and
 // its calibration with the system as it was set, the venue plan with the monitoring mic (landscape), and the
 // transfer functions and RTA traces captured during the event.
+#include <map>
 #include "TuningReport.h"
 
 namespace la::report
@@ -170,6 +171,17 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
         else
         {
             const bool fahrenheit = p.settings.temperatureUnit.load() == 1;
+            // the audio's health over the event: dropouts, gaps, a clock not locked
+            if (log.glitches.empty())
+                L.para ("Audio health: nothing found. The audio arrived whole and on time all through (no dropouts, gaps or clock slips).", 9.0f, dim);
+            else
+            {
+                juce::StringArray kinds;
+                std::map<juce::String, int> n;
+                for (const auto& gg : log.glitches) ++n[gg.what];
+                for (const auto& [what, k] : n) kinds.add (juce::String (k) + " x " + what);
+                L.para ("Audio health: " + kinds.joinIntoString ("; ") + ". The minutes they happened in are marked in the table below.", 9.0f, warn);
+            }
             const auto parts = log.partSummaries();
             if (! parts.empty())
             {
@@ -185,8 +197,8 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
             else L.para ("No parts were marked (Mark part on Live monitoring names each part as it starts, and they are summed up here).", 9.0f, dim);
             L.sub ("Each minute");
             std::vector<juce::StringArray> rows;
-            bool anyTemp = false;
-            for (const auto& r : log.minuteRows()) anyTemp |= std::isfinite (r.tempC) || std::isfinite (r.rh);
+            bool anyTemp = false, anyAudio = false;
+            for (const auto& r : log.minuteRows()) { anyTemp |= std::isfinite (r.tempC) || std::isfinite (r.rh); anyAudio |= r.audio.isNotEmpty(); }
             for (const auto& r : log.minuteRows())
             {
                 juce::StringArray row { juce::Time ((juce::int64) (r.t * 1000.0)).formatted ("%H:%M"), r.part, n1 (r.la), n1 (r.lc), n1 (r.lc - r.la), n1 (r.laMax),
@@ -194,11 +206,13 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
                 if (anyTemp)
                     row.add ((std::isfinite (r.tempC) ? juce::String (juce::roundToInt (fahrenheit ? r.tempC * 9.0f / 5.0f + 32.0f : r.tempC)) : juce::String ("-"))
                              + " / " + (std::isfinite (r.rh) ? juce::String (juce::roundToInt (r.rh)) + "%" : juce::String ("-")));
+                if (anyAudio) row.add (r.audio.isNotEmpty() ? r.audio : "-");
                 rows.push_back (row);
             }
             juce::StringArray head { "Time", "Part", "LAeq", "LCeq", "LC-LA", "LAF max", juce::String (log.limitMinutes) + " min " + log.limitName(), "Limit", "Feedback" };
             std::vector<float> widths { 0.7f, 1.4f, 0.7f, 0.7f, 0.7f, 0.8f, 0.95f, 0.6f, 1.3f };
             if (anyTemp) { head.add (fahrenheit ? "Temp F / RH" : "Temp C / RH"); widths.push_back (0.95f); }
+            if (anyAudio) { head.add ("Audio"); widths.push_back (1.4f); }
             L.table (widths, head, rows, 7.5f);
             L.para ("Levels in dB (A or C weighted) over each minute; LAF max is the loudest moment in it; the " + juce::String (log.limitMinutes) + "-minute "
                     + log.limitName() + " is at the minute's end." + juce::String (anyTemp ? " Temperature and humidity from the room sensor." : "")

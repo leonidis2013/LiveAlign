@@ -96,12 +96,22 @@ private:
 };
 
 //==============================================================================
-class InputPanel : public juce::Component
+class InputPanel : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     explicit InputPanel (Settings& s) : settings (s) {}
 
     void setMicLabel (const juce::String& l) { if (l != micLabel) { micLabel = l; repaint(); } }
+
+    // The audio's health, on the last line (level: 0 fine, 1 a warning, 2 a fault); the detail is the tooltip.
+    void setHealth (const juce::String& text, int level, const juce::String& detail)
+    {
+        if (text == healthText && level == healthLevel) return;
+        healthText = text;
+        healthLevel = level;
+        setTooltip (detail);
+        repaint();
+    }
 
     void setLevels (float micPeak, float micRmsDb, float refPeak, float refRmsDb)
     {
@@ -119,6 +129,18 @@ public:
         drawMeter (g, r.removeFromTop (26), micLabel, mic, micColour (settings.focusMic()));
         r.removeFromTop (6);
         drawMeter (g, r.removeFromTop (26), "Ref  " + refSourceName (settings.refSource.load()), ref, pal().inputCol);
+        if (healthText.isNotEmpty())
+        {
+            r.removeFromTop (4);
+            const auto& p = pal();
+            auto line = r.removeFromTop (18);
+            g.setColour (healthLevel == 2 ? p.bad : healthLevel == 1 ? p.warn : p.good);
+            g.fillEllipse (line.removeFromLeft (10).toFloat().withSizeKeepingCentre (7.0f, 7.0f));
+            line.removeFromLeft (6);
+            g.setColour (healthLevel == 0 ? p.textDim : healthLevel == 2 ? p.bad : p.warn);
+            g.setFont (font (11.0f, healthLevel > 0));
+            g.drawFittedText (healthText, line, juce::Justification::centredLeft, 1, 0.85f);
+        }
     }
 
 private:
@@ -166,6 +188,8 @@ private:
     Settings& settings;
     Meter mic, ref;
     juce::String micLabel { "Mic 1" };
+    juce::String healthText;
+    int healthLevel = 0;
 };
 
 //==============================================================================
@@ -200,6 +224,30 @@ public:
     }
 
     bool tracking() const { return trackToggle.getToggleState(); }
+
+    // While tracking: how fast the delay to the console feed moves (ms a minute) over the last few minutes, 0 until
+    // there is enough. Temperature moves it a little over an hour; a steady fraction of a millisecond a minute, or a
+    // sawtooth, is two clocks not locked.
+    double driftMsPerMin() const
+    {
+        if (! tracking() || history.size() < 8) return 0.0;
+        const auto end = history.back().first;
+        std::vector<std::pair<double, double>> pts;
+        for (const auto& h : history)
+        {
+            const double ago = (end - h.first).inSeconds();
+            if (ago <= 300.0) pts.push_back ({ -ago / 60.0, h.second });
+        }
+        if (pts.size() < 8 || pts.front().first > -2.0) return 0.0;   // at least two minutes of it
+        // the sawtooth: each jump back is a slip; take the movement between jumps
+        double moved = 0.0, minutes = pts.back().first - pts.front().first;
+        for (size_t i = 1; i < pts.size(); ++i)
+        {
+            const double d = pts[i].second - pts[i - 1].second;
+            if (std::abs (d) < 0.5) moved += d;   // a jump of half a millisecond or more is a slip (or a moved mic): left out
+        }
+        return minutes > 0.0 ? moved / minutes : 0.0;
+    }
 
     void setReport (const DelayReport& r)
     {

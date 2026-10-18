@@ -209,6 +209,7 @@ public:
             proc.venueOpen = true;   // the run's venue, as if opened
             editor->afterProjectLoadedForPreview();
         }
+        if (ticks == 2) { proc.timingChecksOff = true; proc.health.setTimingChecks (false); }   // simulated audio: not real time
         if (ticks == 165) shot ("home-start");
         if (ticks == 166) editor->showPage ((int) P::Mics);
         if (ticks == 182) shot ("mic-setup");
@@ -784,6 +785,8 @@ public:
                                          (float) (21.0 + i / 3600.0), (float) (44.0 - i / 1200.0));
                     }
                     proc.splLog.addHit (t0 + 1500.0, 377.0f, -12.0f);
+                    proc.splLog.addGlitch (t0 + 2950.0, "dropout");
+                    proc.splLog.addGlitch (t0 + 2955.0, "Console feed: regular clicks (clock not locked)");
                     proc.splLog.addHit (t0 + 4400.0, 2100.0f, -9.0f);
                     // the monitor mic's sound level calibration, with the calibrator's level and time
                     proc.monitorMic.splCalibrated = true;
@@ -1015,6 +1018,23 @@ public:
                 if (after (60))
                 {
                     check (editor->lostInterfaceForPreview().isEmpty(), "interface: back, the warning goes");
+                    // the RTA and the waterfall showing the mic and the console feed together
+                    editor->setPaneViews (0, 3, 4);
+                    editor->paneForPreview (0).setSource (2);
+                    editor->paneForPreview (1).setSource (2);
+                    next (95);
+                }
+                break;
+            case 95:
+                if (after (60))
+                {
+                    shot ("monitor-sources");
+                    check (editor->paneForPreview (1).sourceShown() == 2, "sources: the waterfall shows the mic and the console feed");
+                    std::printf ("audio health: %s\n", proc.healthLine ((double) juce::Time::currentTimeMillis() / 1000.0).text.toRawUTF8());
+                    check (proc.healthLine ((double) juce::Time::currentTimeMillis() / 1000.0).text.startsWith ("Audio clean"), "audio health: the simulated audio is clean");
+                    editor->paneForPreview (0).setSource (0);
+                    editor->paneForPreview (1).setSource (0);
+                    editor->setPaneViews (1, 0, 3);
                     proc.settings.paneCount = 1;
                     // a show: a monitoring session of its own
                     editor->startSession ("Show " + LiveAlignProcessor::today(), 1);

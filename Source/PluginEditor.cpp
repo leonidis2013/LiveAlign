@@ -1676,6 +1676,23 @@ void LiveAlignEditor::timerCallback()
     if (processor.isStandalone() && processor.venueOpen && tick % juce::jmax (30 * 60, (int) (30 * 60 * la::AppPrefs::get().value ("autosaveMin"))) == 0) processor.autosave();
     if (tick % 60 == 0 && processor.syncLocker() && shownPage == (int) Page::Mics) micPage->refreshChoices();
 
+    if (tick % 10 == 0)
+    {
+        // audio health: look at the timing and the inputs' findings; what it finds goes in the show log
+        const double nowSec = (double) juce::Time::currentTimeMillis() / 1000.0;
+        processor.health.poll (nowSec, la::StandaloneHooks::driverOverloads() ? la::StandaloneHooks::driverOverloads()() : -1);
+        for (const auto& e : processor.health.takeNew())
+            if (processor.isMonitorMode())
+                processor.splLog.addGlitch (e.t, (e.channel >= 0 ? processor.healthChannelName (e.channel) + ": " : juce::String()) + la::AudioHealth::kindName (e.kind));
+        const auto hl = processor.healthLine (nowSec, delayPanel.driftMsPerMin());
+        inputPanel.setHealth (hl.text, hl.level, hl.detail);
+        if (hl.level != lastHealthLevel)
+        {
+            if (hl.level > lastHealthLevel && hl.level > 0) showToast (hl.text);
+            lastHealthLevel = hl.level;
+        }
+    }
+
     if (tick % 15 == 0)
     {
         // the audio interface gone (unplugged, switched off): say so until it is back
@@ -1860,7 +1877,7 @@ void LiveAlignEditor::resized()
 
     splPanel.setBounds (side.removeFromTop (184));
     side.removeFromTop (8);
-    inputPanel.setBounds (side.removeFromTop (98));
+    inputPanel.setBounds (side.removeFromTop (118));
     side.removeFromTop (8);
     delayPanel.setBounds (side.removeFromTop (160));
     side.removeFromTop (8);

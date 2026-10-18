@@ -172,6 +172,8 @@ public:
     void markPart();
     juce::String lostInterfaceForPreview() const { return lostInterface; }
     void layoutPanesForPreview() { layoutPanes(); }
+    la::ui::MeasurePane& paneForPreview (int i) { return *panes[i]; }
+    const la::ui::InputPanel& inputPanelForPreview() const { return inputPanel; }
     void exportLogCsv();
     juce::String writeLogCsv (const juce::File& f);
     void startVenue (const juce::String& name, int kind);   // a new venue with its first session of this kind   // a new session of this kind (0 tuning, 1 monitoring), opened
@@ -223,6 +225,7 @@ private:
     juce::TextButton runButton, resetButton { "RESET AVG" };
     // the audio interface is gone (standalone): a red line across the top until it is back
     juce::String lostInterface;
+    int lastHealthLevel = 0;
     juce::Rectangle<int> lostArea;
     juce::TextButton lostButton { "Audio interface..." };
     void refreshNext();                     // the next step: marked in the navigation and on Home

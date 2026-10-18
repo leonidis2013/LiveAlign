@@ -17,6 +17,7 @@
 #include "VenuePlan.h"
 #include "RoomTuning.h"
 #include "Monitoring.h"
+#include "AudioHealth.h"
 #include "TuningExtras.h"
 #include "LevelBalance.h"
 #include "ShowChecks.h"
@@ -251,6 +252,13 @@ public:
     la::ChangeLog history;              // every change to the outputs' processing (venue)
     la::Recheck recheck;                // the open session's quick re-check
     la::SplLog splLog;                  // the open session's sound level log (monitoring)
+    la::AudioHealth health;             // is the audio arriving whole and on time (dropouts, gaps, a clock not locked)
+    std::atomic<int> healthMics { 1 };
+    bool timingChecksOff = false;       // the preview's simulated audio does not run in real time  // the inputs health watches: the first `healthMics` are the mics, then the console feed
+    juce::String healthChannelName (int c) const { return c < 0 ? juce::String ("The interface") : c < healthMics.load() ? mics.nameOf (c) : juce::String ("Console feed"); }
+    // One line on the audio's health, for the Inputs panel and the Mics page. level: 0 fine, 1 a warning, 2 a fault.
+    struct HealthLine { juce::String text, detail; int level = 0; };
+    HealthLine healthLine (double nowSec, double delayDriftMsPerMin = 0.0) const;
     la::MonitorMic monitorMic;          // the monitoring mic (venue)
 
     // ---- monitoring mode ----
