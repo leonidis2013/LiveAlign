@@ -9,6 +9,7 @@
 #include <typeinfo>
 #include "../Source/PluginProcessor.h"
 #include "../Source/PluginEditor.h"
+#include "../Source/StandaloneHooks.h"
 #include "../Source/AcousticsSummary.h"
 #include "../Source/UI/SettingsPanel.h"
 #include "../Source/UI/CalibrationPanel.h"
@@ -768,15 +769,27 @@ public:
                     // an event's sound level, as if logged for two hours
                     proc.splLog.clear();
                     proc.splLog.limitLaeq = 96.0;
-                    const double t0 = 1792000000.0;
+                    // (ending now, so the live monitoring that follows carries straight on)
+                    const double t0 = std::floor ((double) juce::Time::currentTimeMillis() / 1000.0 / 60.0) * 60.0 - 7200.0;
                     std::mt19937 lr (5);
                     std::normal_distribution<double> nd (0.0, 1.5);
+                    const char* partNames[] = { "Pre-service", "Worship", "Announcements", "Sermon", "Response" };
+                    const int partAt[] = { 0, 900, 2700, 3300, 6000 };
                     for (int i = 0; i < 7200; ++i)
                     {
                         const double t = t0 + i;
+                        for (int k = 0; k < 5; ++k) if (i == partAt[k]) proc.splLog.markPart (t, partNames[k]);
                         const double base = 88.0 + 6.0 * std::sin (i / 900.0) + (i > 4200 && i < 5400 ? 6.0 : 0.0);
-                        proc.splLog.add (t, (float) (base + nd (lr)), (float) (base + 7.0 + nd (lr)), (float) (base + 6.0 + std::abs (nd (lr)) * 2.0));
+                        proc.splLog.add (t, (float) (base + nd (lr)), (float) (base + 7.0 + nd (lr)), (float) (base + 6.0 + std::abs (nd (lr)) * 2.0),
+                                         (float) (21.0 + i / 3600.0), (float) (44.0 - i / 1200.0));
                     }
+                    proc.splLog.addHit (t0 + 1500.0, 377.0f, -12.0f);
+                    proc.splLog.addHit (t0 + 4400.0, 2100.0f, -9.0f);
+                    // the monitor mic's sound level calibration, with the calibrator's level and time
+                    proc.monitorMic.splCalibrated = true;
+                    proc.monitorMic.splRefDb = 94.0f;
+                    proc.monitorMic.splDate = LiveAlignProcessor::today();
+                    proc.monitorMic.splTime = "09:12";
                     std::printf ("spl log: points=%d LAeq %.1f LCeq %.1f max %.1f over %.0f min\n", (int) proc.splLog.points.size(), proc.splLog.leq (false),
                                  proc.splLog.leq (true), proc.splLog.maxLaf(), proc.splLog.minutesOver());
                     la::Trace t;
@@ -826,6 +839,17 @@ public:
                     editor->exportReportTo (true, dir.getChildFile ("monitoring-report.pdf"));
                     std::printf ("reports: tuning %d bytes, monitoring %d bytes\n", (int) dir.getChildFile ("report.pdf").getSize(), (int) dir.getChildFile ("monitoring-report.pdf").getSize());
                     check (dir.getChildFile ("report.pdf").getSize() > 50000 && dir.getChildFile ("monitoring-report.pdf").getSize() > 20000, "reports: written");
+                    {
+                        const auto csvFile = dir.getChildFile ("show-log.csv");
+                        const auto err = editor->writeLogCsv (csvFile);
+                        juce::StringArray lines;
+                        lines.addLines (csvFile.loadFileAsString().trim());
+                        const auto partsFile = dir.getChildFile ("show-log - parts.csv");
+                        std::printf ("show log csv: %d lines, parts:\n%s", lines.size(), partsFile.loadFileAsString().toRawUTF8());
+                        check (err.isEmpty() && lines.size() == 121 && lines[1].contains ("Pre-service") && partsFile.loadFileAsString().contains ("Sermon"),
+                               "show log: CSV with a row per minute and a file per part");
+                        check (proc.monitorMic.calibrationText (proc.monitorMic.splOffset).contains ("94 dB calibrator"), "monitoring report: the calibrator's level is told");
+                    }
                     {
                         juce::StringArray ids;
                         for (const auto& sec : la::report::tuningSections()) ids.add (sec.id);
@@ -969,6 +993,29 @@ public:
                 {
                     shot ("monitor-conditions");
                     proc.climate.configure ({});   // no sensor for the rest of the run
+                    // the sound level over time as one of the graphs
+                    proc.settings.paneCount = 3;
+                    editor->setPaneViews (1, 0, 4);
+                    editor->layoutPanesForPreview();
+                    // the audio interface unplugged (as the standalone app reports it)
+                    la::StandaloneHooks::interfaceLost() = [] { return juce::String ("Scarlett 18i20 USB"); };
+                    next (93);
+                }
+                break;
+            case 93:
+                if (after (60))
+                {
+                    shot ("monitor-level");
+                    check (editor->lostInterfaceForPreview() == "Scarlett 18i20 USB", "interface: unplugged, the app says so");
+                    la::StandaloneHooks::interfaceLost() = nullptr;
+                    next (94);
+                }
+                break;
+            case 94:
+                if (after (60))
+                {
+                    check (editor->lostInterfaceForPreview().isEmpty(), "interface: back, the warning goes");
+                    proc.settings.paneCount = 1;
                     // a show: a monitoring session of its own
                     editor->startSession ("Show " + LiveAlignProcessor::today(), 1);
                     next (89);

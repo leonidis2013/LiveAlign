@@ -1,22 +1,24 @@
 #pragma once
-// One graph area of the Measure screen. Up to three of these share the screen; each has its own
-// RTA / Transfer / Impulse selector, so any combination can be shown at once.
+// One graph area of Live monitoring. Up to three of these share the screen; each has its own
+// RTA / Transfer / Impulse / Waterfall / Level selector, so any combination can be shown at once.
 #include "Views.h"
+#include "LevelView.h"
 
 namespace la::ui
 {
 class MeasurePane : public juce::Component
 {
 public:
-    MeasurePane (Settings& s, TraceStore& t, int paneIndex)
-        : settings (s), index (paneIndex), transfer (s, t), rta (s, t), impulse (s), waterfall (s)
+    MeasurePane (Settings& s, TraceStore& t, const SplLog& log, int paneIndex)
+        : settings (s), index (paneIndex), transfer (s, t), rta (s, t), impulse (s), waterfall (s), level (log)
     {
         addChildComponent (transfer);
         addChildComponent (rta);
         addChildComponent (impulse);
         addChildComponent (waterfall);
+        addChildComponent (level);
 
-        const char* names[] = { "RTA", "Transfer", "Impulse", "Waterfall" };
+        const char* names[] = { "RTA", "Transfer", "Impulse", "Waterfall", "Level" };
         for (int i = 0; i < kViews; ++i)
         {
             tabs[i].setButtonText (names[i]);
@@ -31,6 +33,7 @@ public:
             tabs[1].setTooltip ("Transfer function: mic against reference (key: 2)");
             tabs[2].setTooltip ("Impulse response: arrival, reflections, polarity (key: 3)");
             tabs[3].setTooltip ("Waterfall: the spectrum over time, to spot feedback building and room ringing (key: 4)");
+            tabs[4].setTooltip ("Level: the sound level over time, against the limit, with the parts of the event (key: 5)");
         }
 
         centreButton.setTooltip ("Put the transfer function on the 0 dB line (or double-click the graph). Drag the graph to shift it.");
@@ -50,6 +53,7 @@ public:
         transfer.setVisible (v == 1);
         impulse.setVisible (v == 2);
         waterfall.setVisible (v == 3);
+        level.setVisible (v == 4);
         centreButton.setVisible (v == 1);
         if (last != nullptr) update (*last);
     }
@@ -61,6 +65,7 @@ public:
         if (shown == 0) rta.update (snap);
         else if (shown == 1) transfer.update (snap);
         else if (shown == 2) impulse.update (snap);
+        else if (shown == 4) level.update (snap);
     }
 
     void setStatus (const juce::String& s) { if (s != status) { status = s; repaint (0, 0, getWidth(), 30); } }
@@ -85,6 +90,7 @@ public:
         rta.setBounds (r);
         impulse.setBounds (r);
         waterfall.setBounds (r);
+        level.setBounds (r);
     }
 
 private:
@@ -96,7 +102,8 @@ private:
     RtaView rta;
     ImpulseView impulse;
     WaterfallView waterfall;
-    static constexpr int kViews = 4;
+    LevelView level;
+    static constexpr int kViews = 5;
     juce::TextButton tabs[kViews], centreButton { "Centre" };
     juce::String status;
 };

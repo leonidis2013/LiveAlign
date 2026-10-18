@@ -18,6 +18,8 @@
 #include "Analysis/AirAbsorption.h"
 #include "ClimateFeed.h"
 #include "ListenOutput.h"
+#include "InterfaceGuard.h"
+#include "Monitoring.h"
 
 using namespace la;
 
@@ -578,8 +580,172 @@ static void listenTests()
     check (std::sqrt (err / juce::jmax (1, errN)) < 0.01, "listen: a sine comes through clean", std::sqrt (err / juce::jmax (1, errN)), 0.0);
 }
 
+// ---- the audio interface kept: a simulated interface that can be unplugged and plugged back in
+namespace
+{
+struct FakeState { juce::StringArray names { "Built-in", "Interface" }; };
+
+class FakeDevice : public juce::AudioIODevice
+{
+public:
+    explicit FakeDevice (const juce::String& n) : juce::AudioIODevice (n, "Fake") {}
+    juce::StringArray getOutputChannelNames() override { return { "1", "2" }; }
+    juce::StringArray getInputChannelNames() override { return { "1", "2" }; }
+    juce::Array<double> getAvailableSampleRates() override { return { 48000.0 }; }
+    juce::Array<int> getAvailableBufferSizes() override { return { 256 }; }
+    int getDefaultBufferSize() override { return 256; }
+    juce::String open (const juce::BigInteger&, const juce::BigInteger&, double, int) override { opened = true; return {}; }
+    void close() override { opened = false; }
+    bool isOpen() override { return opened; }
+    void start (juce::AudioIODeviceCallback*) override { playing = true; }
+    void stop() override { playing = false; }
+    bool isPlaying() override { return playing; }
+    juce::String getLastError() override { return {}; }
+    int getCurrentBufferSizeSamples() override { return 256; }
+    double getCurrentSampleRate() override { return 48000.0; }
+    int getCurrentBitDepth() override { return 24; }
+    juce::BigInteger getActiveOutputChannels() const override { return 3; }
+    juce::BigInteger getActiveInputChannels() const override { return 3; }
+    int getOutputLatencyInSamples() override { return 0; }
+    int getInputLatencyInSamples() override { return 0; }
+private:
+    bool opened = false, playing = false;
+};
+
+class FakeType : public juce::AudioIODeviceType
+{
+public:
+    explicit FakeType (FakeState& s) : juce::AudioIODeviceType ("Fake"), state (s) {}
+    void scanForDevices() override {}
+    juce::StringArray getDeviceNames (bool) const override { return state.names; }
+    int getDefaultDeviceIndex (bool) const override { return 0; }
+    int getIndexOfDevice (juce::AudioIODevice* d, bool) const override { return d != nullptr ? state.names.indexOf (d->getName()) : -1; }
+    bool hasSeparateInputsAndOutputs() const override { return false; }
+    juce::AudioIODevice* createDevice (const juce::String& out, const juce::String& in) override
+    {
+        const auto n = out.isNotEmpty() ? out : in;
+        return state.names.contains (n) ? new FakeDevice (n) : nullptr;
+    }
+    void changed() { callDeviceChangeListeners(); }
+private:
+    FakeState& state;
+};
+
+class FakeManager : public juce::AudioDeviceManager
+{
+public:
+    FakeState state;
+    FakeType* type = nullptr;
+    void createAudioDeviceTypes (juce::OwnedArray<juce::AudioIODeviceType>& types) override { types.add (type = new FakeType (state)); }
+};
+} // namespace
+
+static void interfaceTests()
+{
+    FakeManager dm;
+    dm.initialise (2, 2, nullptr, true);
+    auto setup = dm.getAudioDeviceSetup();
+    setup.outputDeviceName = setup.inputDeviceName = "Interface";
+    dm.setAudioDeviceSetup (setup, true);
+    auto name = [&dm] { return dm.getCurrentAudioDevice() != nullptr ? dm.getCurrentAudioDevice()->getName() : juce::String ("(none)"); };
+    check (name() == "Interface", "interface: the interface is open to start with");
+    bool choosing = false;
+    InterfaceGuard guard (dm, dm.createStateXml(), 2, 2, [&choosing] { return choosing; });
+
+    // unplugged: JUCE falls back to the built-in audio; the guard closes it and says what is gone
+    dm.state.names = { "Built-in" };
+    dm.type->changed();
+    check (name() == "Built-in", "interface: JUCE on its own falls back to another device");
+    guard.check();
+    check (dm.getCurrentAudioDevice() == nullptr, "interface: unplugged, nothing else is opened in its place");
+    check (guard.lostName() == "Interface", "interface: unplugged, its name is reported");
+    check (guard.savedChoice() != nullptr && guard.savedChoice()->getStringAttribute ("audioOutputDeviceName") == "Interface",
+           "interface: the interface stays the saved choice while it is gone");
+    guard.check();
+    check (dm.getCurrentAudioDevice() == nullptr, "interface: still closed when looked at again");
+
+    // plugged back in: opened as it was
+    dm.state.names = { "Built-in", "Interface" };
+    dm.type->changed();
+    guard.check();
+    check (name() == "Interface" && guard.lostName().isEmpty(), "interface: plugged back in, it is opened again");
+
+    // the person picks another device in the Audio interface window: that is the choice now
+    choosing = true;
+    setup = dm.getAudioDeviceSetup();
+    setup.outputDeviceName = setup.inputDeviceName = "Built-in";
+    dm.setAudioDeviceSetup (setup, true);
+    guard.check();
+    choosing = false;
+    dm.state.names = { "Built-in" };
+    dm.type->changed();
+    guard.check();
+    check (name() == "Built-in" && guard.lostName().isEmpty(), "interface: a device picked by hand is kept, the old one unplugged is no matter");
+}
+
+// ---- the show log: a row per minute, the parts, CSV, saved and loaded
+static void showLogTests()
+{
+    SplLog log;
+    log.interval = 5.0;
+    log.limitLaeq = 80.0;
+    log.limitMinutes = 1;
+    const double t0 = 1760000000.0 - std::fmod (1760000000.0, 60.0);   // on a minute
+    log.markPart (t0, "Worship");
+    for (int s = 0; s < 180; ++s)   // three minutes, a reading a second: 70 dB, then 90 dB in the third minute
+    {
+        const float la = s < 120 ? 70.0f : 90.0f;
+        log.add (t0 + s, la, la + 8.0f, la + 5.0f, 20.0f, 45.0f);
+        if (s == 60) log.markPart (t0 + 60.0, "Sermon");
+    }
+    log.addHit (t0 + 130.0, 377.0f, -12.0f);
+    const auto rows = log.minuteRows();
+    check (rows.size() == 3, "show log: a row per minute", (double) rows.size(), 3);
+    if (rows.size() == 3)
+    {
+        check (std::abs (rows[0].la - 70.0f) < 0.05f && std::abs (rows[0].lc - 78.0f) < 0.05f && std::abs (rows[0].laMax - 75.0f) < 0.05f,
+               "show log: a minute's LAeq, LCeq and LAF max", rows[0].la, 70.0);
+        check (rows[0].part == "Worship" && rows[1].part == "Sermon" && rows[2].part == "Sermon", "show log: each minute's part");
+        check (rows[2].over && ! rows[0].over, "show log: over the limit only in the loud minute");
+        check (rows[2].feedback == "377 Hz" && rows[0].feedback.isEmpty(), "show log: the feedback caught in its minute");
+        check (std::abs (rows[1].tempC - 20.0f) < 0.05f && std::abs (rows[1].rh - 45.0f) < 0.5f, "show log: the room sensor's reading");
+    }
+    const auto parts = log.partSummaries();
+    check (parts.size() == 2 && parts[0].name == "Worship" && parts[1].name == "Sermon", "show log: a summary per part");
+    if (parts.size() == 2)
+    {
+        const double sermon = 10.0 * std::log10 ((std::pow (10.0, 7.0) + std::pow (10.0, 9.0)) / 2.0);
+        check (std::abs (parts[0].la - 70.0) < 0.05 && std::abs (parts[1].la - sermon) < 0.1, "show log: a part's LAeq is its energy average", parts[1].la, sermon);
+        check (parts[1].hits == 1 && parts[0].hits == 0, "show log: feedback counted in its part");
+        check (parts[1].minutesOver > 0.5 && parts[0].minutesOver == 0.0, "show log: minutes over the limit per part", parts[1].minutesOver, 1.0);
+    }
+    const auto csv = log.minutesCsv (true);
+    juce::StringArray lines;
+    lines.addLines (csv.trim());
+    check (lines.size() == 4 && lines[0].startsWith ("Date,Time,Part,LAeq") && lines[0].contains ("Temperature (F)"), "show log: CSV header and a line per minute",
+           (double) lines.size(), 4);
+    check (lines.size() == 4 && lines[3].contains (",Sermon,90.0,98.0,8.0,95.0,") && lines[3].contains (",over,377 Hz,68.0,45"), "show log: CSV values (F)");
+    check (log.partsCsv().contains ("Sermon,") && log.partsCsv().contains ("Worship,"), "show log: parts CSV");
+    juce::XmlElement x ("Session");
+    log.save (x);
+    SplLog back;
+    back.load (&x);
+    check (back.points.size() == log.points.size() && back.parts.size() == 2 && back.hits.size() == 1 && back.parts[1].name == "Sermon"
+               && std::abs (back.points[3].tempC - 20.0f) < 0.05f, "show log: saved and loaded with its parts, feedback and conditions");
+    check (back.minuteRows().size() == 3 && back.minuteRows()[2].feedback == "377 Hz", "show log: the table is the same after loading");
+    juce::XmlElement old ("Session");
+    auto* e = old.createNewChildElement ("SplLog");
+    e->setAttribute ("interval", 5.0);
+    e->addTextElement ("1760000000 70.0 78.0 75.0\n1760000005 71.0 79.0 76.0\n");
+    SplLog older;
+    older.load (&old);
+    check (older.points.size() == 2 && ! std::isfinite (older.points[0].tempC), "show log: a log saved before 0.26 loads (no temperature)");
+}
+
 int main()
 {
+    // a message thread (this one), for the audio device manager's change messages and device list listeners
+    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
     // a private home for the preferences file
     const auto home = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("la-tests-home");
     home.createDirectory();
@@ -598,7 +764,11 @@ int main()
     venueListTests();
     climateTests();
     listenTests();
+    interfaceTests();
+    showLogTests();
     home.deleteRecursively();
+    juce::DeletedAtShutdown::deleteAll();
+    juce::MessageManager::deleteInstance();
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

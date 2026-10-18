@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// The live monitoring report: a PDF of an event monitored with LiveAlign. A cover with the contents, then: the sound
-// level over the event (LAeq, LCeq, the rolling LAeq against the limit, the loudest moments), the monitoring mic and
+// The live monitoring report: a PDF of an event monitored with LiveAlign. A cover with the contents and the mic, then:
+// the sound level over the event (LAeq, LCeq, the rolling LAeq against the limit, the loudest moments), the show log
+// (each part of the event, and a row per minute), the monitoring mic and
 // its calibration with the system as it was set, the venue plan with the monitoring mic (landscape), and the
 // transfer functions and RTA traces captured during the event.
 #include "TuningReport.h"
@@ -15,6 +16,7 @@ inline const std::vector<MonitoringSection>& monitorSections()
 {
     static const std::vector<MonitoringSection> s {
         { "level", "Sound level", "LAeq and LCeq over the event, the rolling LAeq against the limit, the loudest moments" },
+        { "log", "Show log", "A summary per part of the event, and a row per minute: levels, the limit, feedback, temperature" },
         { "setup", "Monitoring mic and system", "The monitoring mic, its calibration and delay, the target and the speaker settings" },
         { "plan", "Venue plan", "Where the monitoring mic was (a landscape page)" },
         { "traces", "Captured traces", "Transfer functions and RTA captured during the event" } };
@@ -108,11 +110,17 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
     auto has = [&opt] (const char* id) { return included (opt.skip, id); };
     auto n1 = [] (double v) { return std::isfinite (v) ? juce::String (v, 1) : juce::String ("-"); };
 
-    L.y = cover (L, "LIVE MONITORING REPORT", p.venueName, sessionName + "   -   " + LiveAlignProcessor::today());
+    // the event's date (when it was logged), unless the session's name already says it
+    const auto eventDate = log.empty() ? LiveAlignProcessor::today() : juce::Time ((juce::int64) (log.start() * 1000.0)).formatted ("%d %b %Y");
+    L.y = cover (L, "LIVE MONITORING REPORT", p.venueName, sessionName.contains (eventDate) ? sessionName : sessionName + "   -   " + eventDate);
+    const auto* lockerMic = p.locker.find (mm.lockerId);
+    const float offsetNow = p.isMonitorMode() ? p.settings.micSplOffset[0].load() : mm.splOffset;
     {
         std::vector<std::pair<juce::String, juce::String>> kv;
         if (opt.author.isNotEmpty()) kv.push_back ({ "Prepared by", opt.author });
         kv.push_back ({ "Monitoring mic", mm.name + (mm.position.isNotEmpty() ? " at " + mm.position : juce::String()) });
+        if (lockerMic != nullptr && lockerMic->modelSerial().isNotEmpty()) kv.push_back ({ "Model / serial", lockerMic->modelSerial() });
+        kv.push_back ({ "Sound level calibration", mm.calibrationText (offsetNow) });
         if (! log.empty())
             kv.push_back ({ "Logged", juce::Time ((juce::int64) (log.start() * 1000.0)).formatted ("%d %b %Y %H:%M") + " - "
                                           + juce::Time ((juce::int64) (log.end() * 1000.0)).formatted ("%H:%M") });
@@ -155,25 +163,68 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
         }
     }
 
+    if (has ("log"))
+    {
+        L.chapter ("Show log");
+        if (log.empty()) L.para ("Nothing was logged in this session.", 9.5f, dim);
+        else
+        {
+            const bool fahrenheit = p.settings.temperatureUnit.load() == 1;
+            const auto parts = log.partSummaries();
+            if (! parts.empty())
+            {
+                L.sub ("Each part of the event");
+                std::vector<juce::StringArray> rows;
+                for (const auto& pt : parts)
+                    rows.push_back ({ pt.name, juce::Time ((juce::int64) (pt.from * 1000.0)).formatted ("%H:%M") + " - " + juce::Time ((juce::int64) (pt.to * 1000.0)).formatted ("%H:%M"),
+                                      n1 (pt.la), n1 (pt.lc), n1 (pt.lc - pt.la), n1 (pt.laMax), n1 (pt.peakRolling),
+                                      log.limitLaeq > 0.0 ? juce::String (juce::roundToInt (pt.minutesOver)) + " min" : juce::String ("-"), juce::String (pt.hits) });
+                L.table ({ 1.6f, 1.3f, 0.75f, 0.75f, 0.75f, 0.85f, 0.95f, 0.85f, 0.75f },
+                         { "Part", "Time", "LAeq", "LCeq", "LC-LA", "LAF max", juce::String (log.limitMinutes) + " min max", "Over limit", "Rings" }, rows, 8.0f);
+            }
+            else L.para ("No parts were marked (Mark part on Live monitoring names each part as it starts, and they are summed up here).", 9.0f, dim);
+            L.sub ("Each minute");
+            std::vector<juce::StringArray> rows;
+            bool anyTemp = false;
+            for (const auto& r : log.minuteRows()) anyTemp |= std::isfinite (r.tempC) || std::isfinite (r.rh);
+            for (const auto& r : log.minuteRows())
+            {
+                juce::StringArray row { juce::Time ((juce::int64) (r.t * 1000.0)).formatted ("%H:%M"), r.part, n1 (r.la), n1 (r.lc), n1 (r.lc - r.la), n1 (r.laMax),
+                                        n1 (r.rolling), r.over ? "over" : "", r.feedback.isNotEmpty() ? r.feedback : "-" };
+                if (anyTemp)
+                    row.add ((std::isfinite (r.tempC) ? juce::String (juce::roundToInt (fahrenheit ? r.tempC * 9.0f / 5.0f + 32.0f : r.tempC)) : juce::String ("-"))
+                             + " / " + (std::isfinite (r.rh) ? juce::String (juce::roundToInt (r.rh)) + "%" : juce::String ("-")));
+                rows.push_back (row);
+            }
+            juce::StringArray head { "Time", "Part", "LAeq", "LCeq", "LC-LA", "LAF max", juce::String (log.limitMinutes) + " min " + log.limitName(), "Limit", "Feedback" };
+            std::vector<float> widths { 0.7f, 1.4f, 0.7f, 0.7f, 0.7f, 0.8f, 0.95f, 0.6f, 1.3f };
+            if (anyTemp) { head.add (fahrenheit ? "Temp F / RH" : "Temp C / RH"); widths.push_back (0.95f); }
+            L.table (widths, head, rows, 7.5f);
+            L.para ("Levels in dB (A or C weighted) over each minute; LAF max is the loudest moment in it; the " + juce::String (log.limitMinutes) + "-minute "
+                    + log.limitName() + " is at the minute's end." + juce::String (anyTemp ? " Temperature and humidity from the room sensor." : "")
+                    + " The same table is exported as CSV from Reports, Monitoring report.", 8.0f, dim);
+        }
+    }
+
     if (has ("setup"))
     {
         L.chapter ("Monitoring mic and system");
         std::vector<std::pair<juce::String, juce::String>> kv;
         kv.push_back ({ "Mic", mm.name });
-        if (const auto* e = p.locker.find (mm.lockerId)) if (e->modelSerial().isNotEmpty()) kv.push_back ({ "Model / serial", e->modelSerial() });
+        if (lockerMic != nullptr && lockerMic->modelSerial().isNotEmpty()) kv.push_back ({ "Model / serial", lockerMic->modelSerial() });
         kv.push_back ({ "Position", mm.position.isNotEmpty() ? mm.position : juce::String ("-") });
         kv.push_back ({ "Input", "Input " + juce::String (mm.input + 1) });
         kv.push_back ({ "Calibration files", mm.cal.any() ? mm.cal.names() : mm.noCalFile ? juce::String ("none (flat)") : juce::String ("not loaded") });
         kv.push_back ({ "Aim", calAimText (mm.aim) });
-        kv.push_back ({ "Sound level", mm.splCalibrated ? juce::String (mm.splOffset, 2) + " dB SPL at 0 dBFS" + (mm.splDate.isNotEmpty() ? " (" + mm.splDate + ")" : juce::String())
-                                                       : juce::String ("not calibrated") });
+        kv.push_back ({ "Sound level calibration", mm.calibrationText (offsetNow) });
         kv.push_back ({ "Delay", juce::String (mm.delayMs, 2) + " ms" });
         if (p.settings.targetCurve.load() > 0) kv.push_back ({ "Target", targets::list()[(size_t) p.settings.targetCurve.load()].name });
         L.keyValues (kv);
         std::vector<juce::StringArray> rows;
         for (const auto& s : p.system.sources) rows.push_back ({ s.name, speakerChannelNames()[s.channel], processingText (s.proc) });
         L.sub ("Speaker processor settings (as set)");
-        L.table ({ 1.4f, 0.8f, 4.0f }, { "Speaker", "Channel", "Settings" }, rows, 8.5f);
+        if (rows.empty()) L.para ("No speakers are set up for this venue.", 9.0f, dim);
+        else L.table ({ 1.4f, 0.8f, 4.0f }, { "Speaker", "Channel", "Settings" }, rows, 8.5f);
         if (p.tuningRoom().tuned) L.para ("The room was tuned " + p.tuningRoom().tunedOn
                                           + (p.tuningRoomName().isNotEmpty() ? " (" + p.tuningRoomName() + ")" : juce::String()) + ".", 9.0f, dim);
     }

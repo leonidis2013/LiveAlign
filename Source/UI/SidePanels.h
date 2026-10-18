@@ -264,9 +264,9 @@ public:
             }
             else
             {
+                // (no polarity here: while monitoring the programme it says nothing about the system)
                 status = "Found " + juce::String (report.ms[(size_t) m], 2) + " ms (" + juce::String (juce::roundToInt (report.confidenceDb[(size_t) m])) + " dB clear)";
-                if (report.inverted[(size_t) m]) { status << "  POLARITY INVERTED"; col = p.bad; }
-                else col = p.good;
+                col = p.good;
             }
             if (report.micCount > 1) status << "   " << found << "/" << report.micCount << " mics";
         }
@@ -298,12 +298,30 @@ private:
 class EventPanel : public juce::Component
 {
 public:
+    std::function<void()> onMark;   // mark the start of a part of the event (Worship, Sermon ...)
+
+    EventPanel()
+    {
+        markButton.setTooltip ("Mark where a part of the event starts (Worship, Sermon ...): the log and the report sum up each part");
+        markButton.onClick = [this] { if (onMark) onMark(); };
+        addAndMakeVisible (markButton);
+    }
+
+    void resized() override
+    {
+        auto top = getLocalBounds().reduced (12, 0).removeFromTop (30).withTrimmedTop (4);
+        markButton.setBounds (top.removeFromRight (90).withSizeKeepingCentre (90, 22));
+    }
+
     void setLog (const SplLog& l)
     {
         const auto rolling = l.rollingLaeq();
         const double now = rolling.empty() ? NAN : rolling.back();
-        if (l.points.size() == shownPoints && std::abs (l.limitLaeq - shownLimit) < 0.01 && name == l.limitName()) return;
+        if (l.points.size() == shownPoints && std::abs (l.limitLaeq - shownLimit) < 0.01 && name == l.limitName() && l.parts.size() == shownParts) return;
         shownPoints = l.points.size();
+        shownParts = l.parts.size();
+        part = l.parts.empty() ? juce::String() : l.parts.back().name;
+        partSince = l.parts.empty() ? juce::String() : juce::Time ((juce::int64) (l.parts.back().t * 1000.0)).formatted ("%H:%M");
         shownLimit = l.limitLaeq;
         leq = l.leq (false);
         roll = now;
@@ -357,9 +375,16 @@ public:
                                       + (over > 0.0 ? ", over for " + juce::String (juce::roundToInt (over)) + " min" : juce::String())
                                 : juce::String (minutes) + " min " + name + " " + juce::String (roll, 1) + " (no limit set)",
                     c.removeFromTop (16.0f), juce::Justification::centredLeft, true);
+        c.removeFromTop (2.0f);
+        g.setColour (part.isNotEmpty() ? p.text : p.textFaint);
+        g.drawText (part.isNotEmpty() ? "Now: " + part + " (since " + partSince + ")" : juce::String ("No part marked yet"), c.removeFromTop (16.0f),
+                    juce::Justification::centredLeft, true);
     }
 
 private:
+    juce::TextButton markButton { "Mark part" };
+    juce::String part, partSince;
+    size_t shownParts = (size_t) -1;
     size_t shownPoints = (size_t) -1;
     double shownLimit = -1.0, leq = NAN, roll = NAN, limit = 0.0, over = 0.0, interval = 5.0;
     int minutes = 15;
@@ -785,10 +810,12 @@ class FeedbackWatchPanel : public juce::Component
 public:
     struct Hit { double freq = 0.0, prominenceDb = 0.0, cutDb = 0.0; juce::String time; };
     std::function<void()> onClear;
+    std::function<void (bool)> onWatchChanged;
 
     FeedbackWatchPanel()
     {
         watchToggle.setButtonText ("Watch");
+        watchToggle.onClick = [this] { if (onWatchChanged) onWatchChanged (watching()); repaint(); };
         watchToggle.setTooltip ("Watch the monitoring mic for frequencies starting to ring");
         watchToggle.setToggleState (true, juce::dontSendNotification);
         addAndMakeVisible (watchToggle);

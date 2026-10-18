@@ -22,7 +22,8 @@ struct LockerMic
     bool noCalFile = false;        // this mic has no file (treated as flat)
     bool hasSpl = false;           // sound level calibrated at least once
     float splOffset = 120.0f;      // dB SPL at 0 dBFS, with the interface gain used then
-    juce::String splDate, savedOn;
+    juce::String splDate, savedOn, splTime;   // splTime: "HH:MM" of the sound level calibration
+    float splRefDb = 0.0f;         // the calibrator's level then (94, 114 dB SPL; 0 = not recorded)
 
     // What to call it: the name given, else model and serial number.
     juce::String label() const
@@ -94,6 +95,8 @@ public:
             m.hasSpl = e->getBoolAttribute ("hasSpl");
             m.splOffset = (float) e->getDoubleAttribute ("splOffset", 120.0);
             m.splDate = e->getStringAttribute ("splDate");
+            m.splTime = e->getStringAttribute ("splTime");
+            m.splRefDb = (float) e->getDoubleAttribute ("splRefDb", 0.0);
             m.savedOn = e->getStringAttribute ("savedOn");
             for (const auto* c : e->getChildWithTagNameIterator ("Calibration"))
             {
@@ -123,6 +126,8 @@ public:
             e->setAttribute ("hasSpl", m.hasSpl);
             e->setAttribute ("splOffset", m.splOffset);
             e->setAttribute ("splDate", m.splDate);
+            e->setAttribute ("splTime", m.splTime);
+            e->setAttribute ("splRefDb", m.splRefDb);
             e->setAttribute ("savedOn", m.savedOn);
             for (int a = 0; a < kCalSlots; ++a)
             {

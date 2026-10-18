@@ -392,7 +392,7 @@ private:
                 heading ("Screen");
                 row ("Graphs", combo ({ "1 graph", "2 graphs", "3 graphs" }, settings.paneCount.load() - 1,
                                       [this] (int i) { settings.paneCount = i + 1; if (onLayoutChanged) onLayoutChanged(); }),
-                     "Live monitoring can show the RTA, transfer function and impulse response together");
+                     "Live monitoring shows up to three graphs at once, each picking its own view: RTA, transfer function, impulse response, waterfall or the sound level over time");
                 row ("Arrangement", combo ({ "Stacked", "Side by side" }, settings.paneLayout.load(), [this] (int i) { settings.paneLayout = i; if (onLayoutChanged) onLayoutChanged(); }));
                 row ("Theme", combo ({ "Dark", "Light" }, settings.theme.load(), [this] (int i)
                 {
@@ -529,7 +529,7 @@ private:
                 settings.rtaBands = 3; settings.rtaSpeed = 1; settings.rtaShowRef = false; settings.rtaPeakHold = false;
                 break;
             case PrefCat::Display:
-                settings.paneCount = 1; settings.paneLayout = 0; settings.irMode = 0; settings.irRange = 1; settings.wfSeconds = 1; settings.wfRange = 1;
+                settings.paneCount = 3; settings.paneLayout = 0; settings.view = (int) View::Transfer; settings.paneView2 = (int) View::Rta; settings.paneView3 = (int) View::Waterfall; settings.irMode = 0; settings.irRange = 1; settings.wfSeconds = 1; settings.wfRange = 1;
                 if (settings.theme.load() != 0) { settings.theme = 0; if (onThemeChanged) onThemeChanged(); }
                 if (onLayoutChanged) onLayoutChanged();
                 break;

@@ -7,7 +7,7 @@
 
 namespace la
 {
-enum class View { Rta = 0, Transfer = 1, Impulse = 2, Waterfall = 3 };
+enum class View { Rta = 0, Transfer = 1, Impulse = 2, Waterfall = 3, Level = 4 };
 
 constexpr int kMaxMics = 8;
 constexpr int kAverageMic = kMaxMics;   // "average of all mics" in the mic picker
@@ -58,9 +58,9 @@ struct Settings
     // Display
     std::atomic<bool> running { true };
     std::atomic<int> view { (int) View::Transfer };   // view of graph 1 (keys 1, 2, 3)
-    std::atomic<int> paneCount { 1 };        // graphs on screen, 1 to 3
+    std::atomic<int> paneCount { 3 };        // graphs on screen, 1 to 3
     std::atomic<int> paneLayout { 0 };       // 0 stacked (rows), 1 side by side (columns)
-    std::atomic<int> paneView2 { (int) View::Rta }, paneView3 { (int) View::Impulse };
+    std::atomic<int> paneView2 { (int) View::Rta }, paneView3 { (int) View::Waterfall };
     std::atomic<int> targetCurve { 0 };      // la::targets index, 0 = none
     // The target is lined up with the live trace once (when it is chosen) and then stays put; Re-level does it again.
     std::atomic<int> targetAnchorMask { 0 };          // bit 0: transfer function, bit 1: RTA
@@ -210,7 +210,7 @@ struct Settings
         rtaSpeed = i ("rtaSpeed", 1, 0, 2);
         rtaShowRef = x.getBoolAttribute ("rtaShowRef", false);
         rtaPeakHold = x.getBoolAttribute ("rtaPeakHold", false);
-        view = i ("view", (int) View::Transfer, 0, 3);
+        view = i ("view", (int) View::Transfer, 0, 4);
         theme = i ("theme", 0, 0, 1);
         temperatureC = f ("temperatureC", 20.0f, -20.0f, 50.0f);
         humidity = f ("humidity", 50.0f, 0.0f, 100.0f);
@@ -219,11 +219,11 @@ struct Settings
         irRange = i ("irRange", 1, 0, 2);
         wfSeconds = i ("wfSeconds", 1, 0, 2);
         wfRange = i ("wfRange", 1, 0, 2);
-        paneCount = i ("paneCount", 1, 1, 3);
+        paneCount = i ("paneCount", 3, 1, 3);
         currentTab = i ("currentTab", 0, 0, 14);
         paneLayout = i ("paneLayout", 0, 0, 1);
-        paneView2 = i ("paneView2", (int) View::Rta, 0, 3);
-        paneView3 = i ("paneView3", (int) View::Impulse, 0, 3);
+        paneView2 = i ("paneView2", (int) View::Rta, 0, 4);
+        paneView3 = i ("paneView3", (int) View::Waterfall, 0, 4);
         targetCurve = i ("targetCurve", 0, 0, 20);
         temperatureUnit = i ("temperatureUnit", 1, 0, 1);
         calibratorDb = f ("calibratorDb", 94.0f, 60.0f, 140.0f);

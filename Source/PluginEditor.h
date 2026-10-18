@@ -169,6 +169,11 @@ public:
     void applySessionKind();
     void startSession (const juce::String& name, int kind);
     bool unsavedForPreview() const { return unsaved; }
+    void markPart();
+    juce::String lostInterfaceForPreview() const { return lostInterface; }
+    void layoutPanesForPreview() { layoutPanes(); }
+    void exportLogCsv();
+    juce::String writeLogCsv (const juce::File& f);
     void startVenue (const juce::String& name, int kind);   // a new venue with its first session of this kind   // a new session of this kind (0 tuning, 1 monitoring), opened
     bool canRedo() const { return ! redoStack.empty(); }
     void rollBackTo (int historyEntry);
@@ -216,6 +221,10 @@ private:
     la::ui::GeneratorStrip generator;
 
     juce::TextButton runButton, resetButton { "RESET AVG" };
+    // the audio interface is gone (standalone): a red line across the top until it is back
+    juce::String lostInterface;
+    juce::Rectangle<int> lostArea;
+    juce::TextButton lostButton { "Audio interface..." };
     void refreshNext();                     // the next step: marked in the navigation and on Home
     void offerRecovery();
     juce::TooltipWindow tooltip { this, 600 };

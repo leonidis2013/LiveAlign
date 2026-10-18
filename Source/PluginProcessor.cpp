@@ -425,7 +425,7 @@ juce::String LiveAlignProcessor::saveMicToLocker (int mic, const juce::String& n
     entry->noCalFile = mics.noCalFile[(size_t) mic];
     entry->hasSpl = settings.micSplCalibrated[mic].load();
     entry->splOffset = settings.micSplOffset[mic].load();
-    if (entry->hasSpl && entry->splDate.isEmpty()) entry->splDate = today();
+    if (entry->hasSpl && entry->splDate.isEmpty()) { entry->splDate = today(); entry->splRefDb = settings.calibratorDb.load(); }
     entry->savedOn = today();
     mics.lockerId[(size_t) mic] = entry->id;
     if (mics.name[(size_t) mic].isEmpty()) mics.name[(size_t) mic] = entry->name;
@@ -497,6 +497,8 @@ bool LiveAlignProcessor::syncLocker()
             e->hasSpl = true;
             e->splOffset = off;
             e->splDate = today();
+            e->splTime = juce::Time::getCurrentTime().formatted ("%H:%M");
+            e->splRefDb = settings.calibratorDb.load();
             changed = true;
         }
         if (mics.name[(size_t) m].isNotEmpty() && mics.name[(size_t) m] != e->label()) { e->name = mics.name[(size_t) m]; changed = true; }
@@ -634,7 +636,14 @@ void LiveAlignProcessor::assignMonitorFromLocker (const juce::String& id)
     monitorMic.name = e->label();
     monitorMic.cal = e->cals;
     monitorMic.noCalFile = e->noCalFile;
-    if (e->hasSpl) { monitorMic.splCalibrated = true; monitorMic.splOffset = e->splOffset; monitorMic.splDate = e->splDate; }
+    if (e->hasSpl)
+    {
+        monitorMic.splCalibrated = true;
+        monitorMic.splOffset = e->splOffset;
+        monitorMic.splDate = e->splDate;
+        monitorMic.splTime = e->splTime;
+        monitorMic.splRefDb = e->splRefDb;
+    }
     monitorMic.configured = true;
     applyMonitorMic();
 }

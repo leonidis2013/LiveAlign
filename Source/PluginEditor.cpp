@@ -257,6 +257,9 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     helpButton.setTooltip ("Help: how to do this step, what anything on the screen is, the glossary, the tour");
     helpButton.onClick = [this] { showHelpMenu(); };
     addAndMakeVisible (helpButton);
+    lostButton.setTooltip ("Pick another audio interface, or check the one that is gone");
+    lostButton.onClick = [] { if (la::StandaloneHooks::showAudioSettings()) la::StandaloneHooks::showAudioSettings()(); };
+    addChildComponent (lostButton);
 
     venuePage = std::make_unique<VenueDetailsPage> (p);
     venuePage->onChanged = [this] { if (roomPage != nullptr) roomPage->refresh(); acousticsPage->refresh(); updateStatuses(); };
@@ -320,12 +323,13 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     addChildComponent (*tuningReportPage);
     monitorReportPage = std::make_unique<ReportPage> (p, true);
     monitorReportPage->onExport = [this] { exportReport (true); };
+    monitorReportPage->onExportCsv = [this] { exportLogCsv(); };
     addChildComponent (*monitorReportPage);
 
     // ---- monitoring page ----
     for (int i = 0; i < 3; ++i)
     {
-        panes[i] = std::make_unique<MeasurePane> (p.settings, p.traces, i);
+        panes[i] = std::make_unique<MeasurePane> (p.settings, p.traces, p.splLog, i);
         addChildComponent (*panes[i]);
     }
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
@@ -349,6 +353,12 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     resetButton.onClick = [this] { settings.requestResetAverages = true; };
     addChildComponent (resetButton);
 
+    eventPanel.onMark = [this] { markPart(); };
+    fbWatch.onWatchChanged = [this] (bool on)
+    {
+        // off: the marks go from the graphs (the list stays, for the record)
+        if (! on) { la::ui::feedbackMarks().clear(); liveFb.reset(); for (auto& pane : panes) pane->repaint(); }
+    };
     fbWatch.onClear = [this] { la::ui::feedbackMarks().clear(); liveFb.reset(); for (auto& pane : panes) pane->repaint(); };
     splPanel.onCalibrate = [this] { openCalibration (processor.isMonitorMode() ? kMonitorMic : settings.focusMic(), &splPanel.calibrateButton()); };
     tracesPanel.onCapture = [this] { capture(); };
@@ -527,6 +537,43 @@ void LiveAlignEditor::showPage (int page)
     updateStatuses();
     resized();
     repaint();
+}
+
+// Marks where a part of the event starts: a menu of the usual parts, the ones used before, or a name typed in.
+void LiveAlignEditor::markPart()
+{
+    juce::StringArray names { "Pre-service", "Worship", "Announcements", "Sermon", "Response", "Offering", "Post-service" };
+    for (const auto& pt : processor.splLog.parts) names.addIfNotAlreadyThere (pt.name);
+    juce::PopupMenu m;
+    m.addSectionHeader ("This part starts now");
+    for (int i = 0; i < names.size(); ++i) m.addItem (i + 1, names[i]);
+    m.addSeparator();
+    m.addItem (1000, "Other...");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&eventPanel), [safe, names] (int r)
+    {
+        if (safe == nullptr || r <= 0) return;
+        const double now = (double) juce::Time::currentTimeMillis() / 1000.0;
+        if (r < 1000)
+        {
+            safe->processor.splLog.markPart (now, names[r - 1]);
+            safe->eventPanel.setLog (safe->processor.splLog);
+            return;
+        }
+        safe->textWindow = std::make_unique<juce::AlertWindow> ("Mark a part", "What starts now?", juce::MessageBoxIconType::NoIcon);
+        safe->textWindow->addTextEditor ("name", {}, "Part");
+        safe->textWindow->addButton ("Mark", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        safe->textWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        safe->textWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe, now] (int res)
+        {
+            if (safe == nullptr || safe->textWindow == nullptr) return;
+            const auto name = safe->textWindow->getTextEditorContents ("name").trim();
+            safe->textWindow.reset();
+            if (res != 1 || name.isEmpty()) return;
+            safe->processor.splLog.markPart (now, name);
+            safe->eventPanel.setLog (safe->processor.splLog);
+        }), false);
+    });
 }
 
 void LiveAlignEditor::setPaneViews (int a, int b, int c)
@@ -892,6 +939,43 @@ void LiveAlignEditor::exportReportTo (bool monitoring, const juce::File& f)
     if (err.isNotEmpty()) showMessage ("Report not saved", err);
 }
 
+// The show log as CSV: a row per minute, and (when parts were marked) "<name> - parts.csv" beside it. Returns an error.
+juce::String LiveAlignEditor::writeLogCsv (const juce::File& f)
+{
+    const auto& log = processor.splLog;
+    if (log.empty()) return "Nothing has been logged in this session yet.";
+    if (! f.replaceWithText (log.minutesCsv (settings.temperatureUnit.load() == 1), false, false, nullptr)) return "Could not write " + f.getFullPathName();
+    if (! log.parts.empty())
+    {
+        const auto pf = f.getSiblingFile (f.getFileNameWithoutExtension() + " - parts.csv");
+        if (! pf.replaceWithText (log.partsCsv(), false, false, nullptr)) return "Could not write " + pf.getFullPathName();
+    }
+    return {};
+}
+
+void LiveAlignEditor::exportLogCsv()
+{
+    processor.syncMonitorFromSlot();
+    if (processor.splLog.empty()) { showMessage ("Nothing to export", "The show log fills while Live monitoring runs."); return; }
+    const auto& sessions = processor.getSessions();
+    const int cur = processor.currentSession();
+    const auto name = juce::File::createLegalFileName (processor.venueName + " - " + (cur < (int) sessions.size() ? sessions[(size_t) cur].name : juce::String ("session"))
+                                                       + " - show log");
+    auto dir = processor.projectFile != juce::File() ? processor.projectFile.getParentDirectory() : homeFolder();
+    chooser = std::make_unique<juce::FileChooser> ("Save the show log", dir.getChildFile (name + ".csv"), "*.csv");
+    juce::Component::SafePointer<LiveAlignEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        auto f = fc.getResult();
+        if (f == juce::File()) return;
+        f = f.withFileExtension ("csv");
+        const auto err = safe->writeLogCsv (f);
+        if (err.isNotEmpty()) safe->showMessage ("Show log not saved", err);
+        else f.revealToUser();
+    });
+}
+
 void LiveAlignEditor::exportReport (bool monitoring)
 {
     const auto& sessions = processor.getSessions();
@@ -994,6 +1078,8 @@ void LiveAlignEditor::openCalibration (int mic, juce::Component* anchor)
         {
             processor.syncMonitorFromSlot();
             processor.monitorMic.splDate = LiveAlignProcessor::today();
+            processor.monitorMic.splTime = juce::Time::getCurrentTime().formatted ("%H:%M");
+            processor.monitorMic.splRefDb = settings.calibratorDb.load();
             processor.monitorMic.configured = true;
             monitorMicPage->refresh();
         };
@@ -1107,9 +1193,10 @@ void LiveAlignEditor::capture()
     for (int i = 0; i < settings.paneCount.load(); ++i)
     {
         const int v = settings.paneViewRef (i).load();
-        wantTf |= v != (int) la::View::Rta;
+        wantTf |= v == (int) la::View::Transfer || v == (int) la::View::Impulse || v == (int) la::View::Waterfall;
         wantRta |= v == (int) la::View::Rta;
     }
+    if (! wantTf && ! wantRta) wantTf = wantRta = true;   // only the sound level shown: capture both
     const auto time = juce::Time::getCurrentTime().formatted ("%H:%M:%S");
     const auto who = settings.selectedMic.load() >= la::kAverageMic && settings.micCount.load() > 1
                          ? juce::String ("Average") : processor.mics.nameOf (settings.focusMic());
@@ -1458,7 +1545,7 @@ bool LiveAlignEditor::keyPressed (const juce::KeyPress& key)
     if (c == 'c') { capture(); return true; }
     if (c == 'd') { settings.requestFindDelay = true; return true; }
     if (c == 'r') { settings.requestResetAverages = true; return true; }
-    if (c >= '1' && c <= '4') { settings.view = (int) (c - '1'); panes[0]->sync(); return true; }
+    if (c >= '1' && c <= '5') { settings.view = (int) (c - '1'); panes[0]->sync(); return true; }
     return false;
 }
 
@@ -1496,6 +1583,7 @@ void LiveAlignEditor::timerCallback()
                 for (const auto& r : liveFb.push (snap.wfFreq, snap.wfLine))
                 {
                     fbWatch.add ({ r.freq, r.prominenceDb, r.cutDb, juce::Time::getCurrentTime().formatted ("%H:%M:%S") });
+                    processor.splLog.addHit ((double) juce::Time::currentTimeMillis() / 1000.0, (float) r.freq, (float) r.cutDb);
                     auto& marks = la::ui::feedbackMarks();
                     marks.push_back (r.freq);
                     if (marks.size() > 6) marks.erase (marks.begin());
@@ -1521,7 +1609,9 @@ void LiveAlignEditor::timerCallback()
         if (now - lastLogSecond >= 1.0)
         {
             lastLogSecond = now;
-            processor.splLog.add (now, snap.splAS, snap.splCS, snap.splAF);
+            const bool sensor = processor.climate.live();   // the room sensor's reading goes in the log (typed-in conditions do not change)
+            processor.splLog.add (now, snap.splAS, snap.splCS, snap.splAF, sensor ? processor.climate.tempC.load() : NAN,
+                                  sensor ? processor.climate.humidity.load() : NAN);
         }
     }
 
@@ -1588,6 +1678,20 @@ void LiveAlignEditor::timerCallback()
 
     if (tick % 15 == 0)
     {
+        // the audio interface gone (unplugged, switched off): say so until it is back
+        const auto lost = la::StandaloneHooks::interfaceLost() ? la::StandaloneHooks::interfaceLost()() : juce::String();
+        if (lost != lostInterface)
+        {
+            if (lost.isNotEmpty()) showToast ("The audio interface is gone: " + lost);
+            else if (lostInterface.isNotEmpty()) showToast (lostInterface + " is back");
+            lostInterface = lost;
+            resized();
+            repaint();
+        }
+    }
+
+    if (tick % 15 == 0)
+    {
         // every half second: has anything changed since the save, and where does each step stand
         unsaved = processor.projectChanged();
         updateStatuses();
@@ -1610,6 +1714,20 @@ void LiveAlignEditor::paint (juce::Graphics& g)
                 t, juce::Justification::topLeft, true);
     g.setColour (p.border);
     g.drawHorizontalLine (titleArea.getBottom() + 6, (float) titleArea.getX(), (float) getWidth() - 12.0f);
+
+    if (! lostArea.isEmpty())
+    {
+        g.setColour (p.bad.withAlpha (0.16f));
+        g.fillRoundedRectangle (lostArea.toFloat(), 6.0f);
+        g.setColour (p.bad);
+        g.drawRoundedRectangle (lostArea.toFloat().reduced (0.5f), 6.0f, 1.2f);
+        auto t = lostArea.reduced (14, 0).withTrimmedRight (160);
+        g.setFont (font (13.0f, true));
+        g.drawText ("Audio interface disconnected: " + lostInterface, t.removeFromLeft (juce::jmin (t.getWidth() / 2, 420)), juce::Justification::centredLeft, true);
+        g.setColour (p.text);
+        g.setFont (font (12.0f));
+        g.drawText ("Nothing is measured or played. LiveAlign opens it again when it is plugged back in.", t, juce::Justification::centredLeft, true);
+    }
 }
 
 void LiveAlignEditor::paintOverChildren (juce::Graphics& g)
@@ -1666,6 +1784,14 @@ void LiveAlignEditor::resized()
     auto r = getLocalBounds();
     nav.setBounds (r.removeFromLeft (NavRail::kWidth));
     r.reduce (12, 10);
+    lostButton.setVisible (lostInterface.isNotEmpty());
+    lostArea = {};
+    if (lostInterface.isNotEmpty())
+    {
+        lostArea = r.removeFromTop (40);
+        lostButton.setBounds (lostArea.reduced (8, 6).removeFromRight (150));
+        r.removeFromTop (8);
+    }
 
     auto header = r.removeFromTop (46);
     r.removeFromTop (14);
@@ -1742,7 +1868,7 @@ void LiveAlignEditor::resized()
     struct Slot { juce::Component* c; int want, min; };
     std::vector<Slot> slots;
     if (condPanel.isVisible()) slots.push_back ({ &condPanel, 96, 96 });
-    slots.push_back ({ &eventPanel, 90, 80 });
+    slots.push_back ({ &eventPanel, 108, 96 });
     slots.push_back ({ &fbWatch, 96, 68 });
     slots.push_back ({ &tunedPanel, 80, 72 });
     int want = 0, min = 0;

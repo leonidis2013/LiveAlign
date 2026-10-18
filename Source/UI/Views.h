@@ -498,7 +498,7 @@ public:
         g.setColour (p.text);
         g.setFont (monoFont (12.0f));
         g.drawText ("Peak " + signedText ((float) peakMs, 2) + " ms after compensation   (arrival " + juce::String (total, 2) + " ms, "
-                        + settings.distanceText (total) + ")" + (ir[(size_t) peakIdx] < 0.0f ? "   POLARITY INVERTED" : ""),
+                        + settings.distanceText (total) + ")",   // no polarity: on Monitoring the programme says nothing about it
                     plot.reduced (10.0f, 6.0f).removeFromBottom (18.0f), juce::Justification::centredRight);
     }
 

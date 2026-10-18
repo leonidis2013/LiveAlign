@@ -3,6 +3,9 @@
 //  - the audio input is NOT muted. JUCE mutes it by default to stop a plug-in feeding its input back to its output;
 //    LiveAlign's app never passes its inputs to its outputs, so that protection would only silence the mic.
 //  - the editor gets a button for the audio device settings.
+//  - an audio interface that goes away (unplugged, switched off) is NOT replaced by another device: JUCE would open
+//    the computer's own audio instead, and measuring or playing pink noise there by surprise is worse than stopping.
+//    LiveAlign closes the audio, says the interface is gone, and opens it again when it comes back.
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
@@ -11,6 +14,7 @@
 
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #include "StandaloneHooks.h"
+#include "InterfaceGuard.h"
 #include "UI/ListenSetup.h"
 
 namespace la::ui
@@ -74,7 +78,7 @@ public:
 
         // LiveAlign's own audio settings: every input and output listed on its own (JUCE's standalone dialog groups
         // them in stereo pairs, so a mic on input 2 alone could not be picked), and no MIDI or feedback options.
-        la::StandaloneHooks::showAudioSettings() = [h]
+        la::StandaloneHooks::showAudioSettings() = [this, h]
         {
             // the interface, and under it the headphones (what to hear and where: a spare output, or another device)
             auto content = std::make_unique<la::ui::AudioWindowContent> (h->deviceManager, dynamic_cast<LiveAlignProcessor*> (h->processor.get()));
@@ -85,7 +89,7 @@ public:
             o.escapeKeyTriggersCloseButton = true;
             o.useNativeTitleBar = true;
             o.resizable = true;
-            o.launchAsync();
+            audioWindow = o.launchAsync();
         };
         // The input and the output device, which can be different (a USB interface in, the computer's speakers out).
         auto devicesText = [h]() -> juce::String
@@ -125,6 +129,11 @@ public:
            #endif
         };
 
+        interfaceGuard = std::make_unique<la::InterfaceGuard> (h->deviceManager, appProperties.getUserSettings()->getXmlValue ("audioSetup"),
+                                                                   h->processor->getTotalNumInputChannels(), h->processor->getTotalNumOutputChannels(),
+                                                                   [this] { return audioWindow != nullptr; });
+        la::StandaloneHooks::interfaceLost() = [this]() -> juce::String { return interfaceGuard != nullptr ? interfaceGuard->lostName() : juce::String(); };
+
         mainWindow = std::make_unique<juce::StandaloneFilterWindow> (
             getApplicationName(),
             juce::LookAndFeel::getDefaultLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId),
@@ -149,9 +158,14 @@ public:
         la::StandaloneHooks::deviceName() = nullptr;
         la::StandaloneHooks::toggleFullScreen() = nullptr;
         la::StandaloneHooks::isFullScreen() = nullptr;
+        la::StandaloneHooks::interfaceLost() = nullptr;
+        // the interface is gone: keep it as the choice for next time (not what JUCE opened, or nothing)
+        auto keep = interfaceGuard != nullptr ? interfaceGuard->savedChoice() : nullptr;
+        interfaceGuard = nullptr;
         if (juce::Desktop::getInstance().getKioskModeComponent() != nullptr)
             juce::Desktop::getInstance().setKioskModeComponent (nullptr, false);
         mainWindow = nullptr;
+        if (keep != nullptr) appProperties.getUserSettings()->setValue ("audioSetup", keep.get());
         appProperties.saveIfNeeded();
     }
 
@@ -177,6 +191,8 @@ public:
 private:
     juce::ApplicationProperties appProperties;
     std::unique_ptr<juce::StandaloneFilterWindow> mainWindow;
+    std::unique_ptr<la::InterfaceGuard> interfaceGuard;   // after the window: it watches the window's device manager, so goes first
+    juce::Component::SafePointer<juce::DialogWindow> audioWindow;
 };
 
 juce::JUCEApplicationBase* juce_CreateApplication();

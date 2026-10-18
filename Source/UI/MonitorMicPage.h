@@ -171,9 +171,7 @@ public:
         g.setColour (p.textDim);
         g.setFont (font (11.5f));
         juce::String info;
-        info << "Sound level: " << (mic.splCalibrated ? juce::String (proc.isMonitorMode() ? settings.micSplOffset[0].load() : mic.splOffset, 2) + " dB at 0 dBFS"
-                                                       + (mic.splDate.isNotEmpty() ? " (" + mic.splDate + ")" : juce::String())
-                                                     : juce::String ("not calibrated (levels in dBFS)"))
+        info << "Sound level: " << mic.calibrationText (proc.isMonitorMode() ? settings.micSplOffset[0].load() : mic.splOffset)
              << "\nDelay: " << juce::String (proc.isMonitorMode() ? settings.micDelayMs[0].load() : mic.delayMs, 2) << " ms";
         if (note.isNotEmpty()) info << "\n" << note;
         g.drawFittedText (info, infoArea, juce::Justification::topLeft, 4);

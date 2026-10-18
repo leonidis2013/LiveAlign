@@ -140,9 +140,13 @@ inline juce::StringArray howTo (int page)
         case Page::Listening: return { "Play music you know, at show level.", "At each point: Good or A problem, and a note.", "Compare with the EQ bypassed; then call it done." };
         case Page::Feedback: return { "The PA at show level, the stage mic in place.", "Bring the mic up slowly; LiveAlign catches each ring.", "Notch the rings on the mic's channel." };
         case Page::MonitorMic: return { "Pick the mic for the show and where it stands (a monitoring point).", "Calibrate it, set the limit and the window.", "Then Live monitoring." };
-        case Page::Monitor: return { "The graphs show the programme at the monitor mic.", "The event panel logs the level against the limit.", "Against the tuning shows how the show differs from the tuning." };
+        case Page::Monitor: return { "The graphs show the programme at the monitor mic; each picks its view (RTA, Transfer, Impulse, Waterfall, Level: the sound level over time).",
+                                     "The event panel logs the level against the limit; Mark part names each part of the event as it starts (Worship, Sermon ...).",
+                                     "Against the tuning shows how the show differs from the tuning.",
+                                     "The show log (a row per minute, a summary per part) is in the monitoring report and exports as CSV from Reports." };
         case Page::Sheet: return { "Enter each output's settings in the processor.", "Tick it once it is in.", "History lists every change; roll back to any of them." };
-        case Page::TuningReport: case Page::MonitorReport: return { "Pick the sections, then save the PDF." };
+        case Page::TuningReport: return { "Pick the sections, then save the PDF." };
+        case Page::MonitorReport: return { "Pick the sections, then save the PDF.", "Export the show log (CSV) for a spreadsheet: a row per minute, and a file with a row per part." };
         case Page::Settings: default: return { "Your preferences for every venue; Tuning has this venue's own values too." };
     }
 }

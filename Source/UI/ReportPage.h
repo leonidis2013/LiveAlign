@@ -15,7 +15,7 @@ namespace la::ui
 class ReportPage : public juce::Component
 {
 public:
-    std::function<void()> onExport;
+    std::function<void()> onExport, onExportCsv;
 
     ReportPage (LiveAlignProcessor& p, bool monitoringReport) : proc (p), monitoring (monitoringReport)
     {
@@ -39,6 +39,11 @@ public:
         exportButton.setButtonText (monitoring ? "Export the monitoring report (PDF)..." : "Export the tuning report (PDF)...");
         exportButton.onClick = [this] { if (onExport) onExport(); };
         addAndMakeVisible (exportButton);
+        csvButton.setButtonText ("Export the show log (CSV)...");
+        csvButton.setTooltip ("A row per minute (levels, the limit, feedback, temperature) and a file with a row per part: opens in Excel or Numbers");
+        csvButton.onClick = [this] { if (onExportCsv) onExportCsv(); };
+        addChildComponent (csvButton);
+        csvButton.setVisible (monitoring);
         refresh();
     }
 
@@ -98,8 +103,8 @@ public:
         g.setColour (p.textDim);
         g.setFont (font (12.0f));
         g.drawFittedText (monitoring
-                              ? "The sound level of the event against the limit, the monitoring mic and its calibration, where it was, and the traces "
-                                "captured during the event. The cover lists the chapters; pages are numbered \"page x of y\"."
+                              ? "The sound level of the event against the limit, the show log (each part, each minute), the monitoring mic and its "
+                                "calibration, where it was, and the traces captured during the event. The show log also exports as CSV for a spreadsheet."
                               : "The system as found and as left, the venue plan on its own landscape page, the speakers and processor settings, "
                                 "room EQ, the feedback test, the room's acoustics, the mics and the measurements. The cover lists the chapters; "
                                 "pages are numbered \"page x of y\".",
@@ -124,6 +129,7 @@ public:
         asFoundToggle.setBounds (c.removeFromTop (28));
         c.removeFromTop (12);
         exportButton.setBounds (c.removeFromTop (40));
+        if (monitoring) { c.removeFromTop (8); csvButton.setBounds (c.removeFromTop (34)); }
         c.removeFromTop (14);
         infoArea = c.removeFromTop (110);
     }
@@ -173,6 +179,13 @@ private:
         if (id == "level") return { ! proc.splLog.empty(), proc.splLog.empty() ? juce::String ("Not logged yet")
                                                                                 : hoursMinutes (proc.splLog.end() - proc.splLog.start()) + " logged" };
         if (id == "setup") return { proc.monitorMic.cal.any() || proc.monitorMic.splCalibrated, proc.monitorMic.name };
+        if (id == "log")
+        {
+            if (proc.splLog.empty()) return { false, "Not logged yet" };
+            const auto parts = proc.splLog.parts.size();
+            return { true, juce::String ((int) proc.splLog.minuteRows().size()) + " minutes, " + (parts == 0 ? juce::String ("no parts marked")
+                                                                                                           : juce::String ((int) parts) + (parts == 1 ? " part" : " parts")) };
+        }
         return { true, {} };
     }
 
@@ -182,7 +195,7 @@ private:
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     juce::TextEditor authorEditor;
     juce::ToggleButton asFoundToggle;
-    juce::TextButton exportButton;
+    juce::TextButton exportButton, csvButton;
     juce::Rectangle<int> listCard, optCard, authorLabel, infoArea;
 };
 } // namespace la::ui
