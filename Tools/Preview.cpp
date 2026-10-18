@@ -890,6 +890,19 @@ public:
                     shot ("settings-measurement");
                     std::printf ("settings: venue overrides=%s\n", proc.venuePrefs.describe().joinIntoString ("; ").toRawUTF8());
                     proc.venuePrefs.reset ("eqClose");
+                    // listening: the reference on the interface's last output, the level on the main screen
+                    proc.setListening (1, juce::jmax (0, proc.numOutputs() - 1), {});
+                    editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Audio);
+                    next (92);
+                }
+                break;
+            case 92:
+                if (after (20))
+                {
+                    shot ("settings-audio");
+                    check (proc.settings.listenSource.load() == 1 && editor->listenStripShownForPreview(),
+                           "listening: the reference, with its level on the main screen");
+                    proc.setListening (0, -1, {});   // off again for the rest of the run
                     editor->settingsPageForPreview().showCategory ((int) la::PrefCat::Units);
                     next (85);
                 }

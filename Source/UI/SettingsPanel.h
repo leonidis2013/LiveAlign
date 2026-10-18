@@ -334,6 +334,7 @@ private:
                 auto& coh = combo ({ "Off", "20 %", "40 % (default)", "60 %", "80 % (strict)" }, juce::jlimit (0, 4, (int) std::lround (settings.coherenceBlank.load() * 5.0f)),
                                    [this] (int i) { settings.coherenceBlank = (float) i / 5.0f; });
                 row ("Minimum coherence", coh, "Points less reliable than this are hidden and not trusted; raise it in a noisy room");
+                if (proc.isStandalone() || proc.uiAsStandalone) listenRows();
                 content.status = StandaloneHooks::deviceDescription() ? StandaloneHooks::deviceDescription()() : juce::String ("Inputs and outputs come from the host");
                 content.statusColour = pal().textDim;
                 break;
@@ -650,6 +651,62 @@ private:
         timerCallback();
     }
     juce::Label* climateStatus = nullptr;
+
+    // Listening on headphones: what to hear and where. The level and mute are on the main screen (bottom of the menu).
+    void listenRows()
+    {
+        heading ("Listening (headphones)");
+        juce::StringArray srcs { "Off", "The reference" };
+        const int mics = juce::jmax (1, settings.micCount.load());
+        for (int m = 0; m < mics; ++m) srcs.add (proc.mics.nameOf (m));
+        const int nOut = juce::jmax (0, proc.numOutputs());
+        listenTargets.clear();
+        juce::StringArray outs;
+        for (int c = 0; c < nOut; ++c)
+        {
+            juce::String feeds;
+            for (int i = 0; i < (int) proc.system.sources.size(); ++i)
+                if (proc.system.sources[(size_t) i].output == c + 1) feeds = proc.system.nameOf (i);
+            outs.add ("This interface: output " + juce::String (c + 1) + (feeds.isNotEmpty() ? "  (feeds " + feeds + "!)" : juce::String()));
+            listenTargets.add ("#" + juce::String (c));
+        }
+        for (const auto& d : proc.listenDevice.deviceNames())
+        {
+            outs.add (d);
+            listenTargets.add (d);
+        }
+        int sel = -1;
+        const int ch = settings.listenChannel.load();
+        if (ch >= 0) sel = listenTargets.indexOf ("#" + juce::String (ch));
+        else sel = listenTargets.indexOf (proc.listenDeviceName);
+        auto apply = [this] (int source, int target)
+        {
+            const auto t = target >= 0 && target < listenTargets.size() ? listenTargets[target] : juce::String();
+            if (t.startsWith ("#")) proc.setListening (source, t.substring (1).getIntValue(), {});
+            else proc.setListening (source, -1, t);
+            rebuildLater();
+        };
+        auto& out = combo (outs, sel, [this, apply] (int i) { apply (settings.listenSource.load(), i); });
+        if (sel < 0) out.setTextWhenNothingSelected (outs.isEmpty() ? "No outputs found" : "Pick where to listen");
+        auto* outPtr = &out;
+        row ("Listen to", combo (srcs, juce::jlimit (0, srcs.size() - 1, settings.listenSource.load()),
+                                 [apply, outPtr] (int i) { apply (i, outPtr->getSelectedItemIndex()); }),
+             "Hear the reference (what the console sends the PA) or a mic, on headphones");
+        row ("Play on", out, "A spare output of the interface (never one that feeds the PA), or another device such as this computer's headphone jack");
+        auto& st = make<juce::Label>();
+        st.setFont (font (12.0f));
+        juce::String t;
+        if (settings.listenSource.load() == 0) t = "Off";
+        else if (proc.listenError.isNotEmpty()) t = proc.listenError;
+        else if (ch >= 0) t = "On output " + juce::String (ch + 1) + " of the interface";
+        else if (proc.listenDevice.isOpen()) t = "On " + proc.listenDevice.description();
+        else t = "Pick where to listen";
+        t << ".  The level and mute are on the main screen, at the bottom of the menu.";
+        st.setText (t, juce::dontSendNotification);
+        st.setColour (juce::Label::textColourId, proc.listenError.isNotEmpty() ? pal().warn : pal().textDim);
+        row ("Status", st);
+    }
+    juce::StringArray listenTargets;
 
     LiveAlignProcessor& proc;
     Settings& settings;

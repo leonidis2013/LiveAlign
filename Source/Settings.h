@@ -23,6 +23,12 @@ struct Settings
     std::atomic<int> selectedMic { 0 };                    // shown on the Monitoring tab; kAverageMic = average
     std::atomic<int> refSource { 3 };        // 0 = off, 1 = generator (internal copy), 2.. = input (refSource - 2); default input 2
     std::atomic<int> genOutput { 0 };        // 0 = all outputs, 1.. = output (genOutput - 1)
+    // Listening (headphones), this computer's: what to hear (0 off, 1 the reference, 2.. mic (n - 2)), where (an output of
+    // the measurement interface, 0-based, or -1 another device), its level and mute.
+    std::atomic<int> listenSource { 0 };
+    std::atomic<int> listenChannel { -1 };
+    std::atomic<float> listenGainDb { -12.0f };
+    std::atomic<bool> listenMute { false };
 
     // Signal generator
     std::atomic<bool> genOn { false };

@@ -26,6 +26,7 @@ LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
     applyAppPrefs();
     settings.genLevelDb = (float) la::AppPrefs::get().value ("genStartDb");
     configureClimate();
+    if (wrapperType == wrapperType_Standalone) loadListening();
     savedProjectText = createProjectXml()->toString();
     changedCheckedAt = 0;
 }
@@ -80,6 +81,9 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const int refSrc = settings.refSource.load();
     const int genOut = settings.genOutput.load();
     const int chunkMax = (int) genBuf.size();
+    const int listenSrc = settings.listenSource.load(), listenCh = settings.listenChannel.load();
+    const float listenGain = settings.listenMute.load() || listenSrc == 0 ? 0.0f : juce::Decibels::decibelsToGain (settings.listenGainDb.load(), -90.0f);
+    listenDevice.bridge.setSourceRate (getSampleRate());
 
     std::array<float, la::kMaxMics> mPeak {};
     float rPeak = 0.0f;
@@ -124,13 +128,19 @@ void LiveAlignProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             refMs += rmsCoeff * ((double) ref[i] * ref[i] - refMs);
         }
 
+        // Listening: the reference or a mic, at its level, for headphones (never on an output the generator uses)
+        const float* lsn = listenSrc == 1 ? ref : (listenSrc >= 2 && listenSrc - 2 < la::kMaxMics ? mic[(size_t) (listenSrc - 2)] : nullptr);
+        if (lsn != nullptr && listenCh == -1 && standalone) listenDevice.bridge.push (lsn, n, listenGain);
+
         // Outputs. The app never passes its inputs through (that would feed the mics back into the PA);
         // the plug-in passes audio through untouched unless the generator is driving a channel.
         for (int ch = 0; ch < numOut; ++ch)
         {
             float* out = buffer.getWritePointer (ch, start);
-            const bool genHere = genActive && (genOut == 0 || genOut - 1 == ch);
+            const bool listenHere = lsn != nullptr && standalone && ch == listenCh;
+            const bool genHere = genActive && ! listenHere && (genOut == 0 || genOut - 1 == ch);
             if (genHere) std::copy (genBuf.begin(), genBuf.begin() + n, out);
+            else if (listenHere) { for (int i = 0; i < n; ++i) out[i] = lsn[i] * listenGain; }
             else if (standalone || ch >= numIn) std::fill (out, out + n, 0.0f);
         }
     }
@@ -635,6 +645,36 @@ void LiveAlignProcessor::syncMonitorFromSlot()
     monitorMic.delayMs = settings.micDelayMs[0].load();
     monitorMic.splOffset = settings.micSplOffset[0].load();
     monitorMic.splCalibrated = settings.micSplCalibrated[0].load();
+}
+
+// ---------------------------------------------------------------------------- listening
+
+void LiveAlignProcessor::setListening (int source, int channel, const juce::String& deviceName)
+{
+    settings.listenSource = juce::jlimit (0, la::kMaxMics + 1, source);
+    settings.listenChannel = juce::jmax (-1, channel);
+    listenError.clear();
+    const bool wantDevice = source > 0 && channel < 0 && deviceName.isNotEmpty();
+    if (! wantDevice) { listenDevice.close(); }
+    else if (! listenDevice.isOpen() || deviceName != listenDeviceName) listenError = listenDevice.open (deviceName, getSampleRate());
+    listenDeviceName = deviceName;
+    la::UserPrefs::set ("listenSource", juce::String (settings.listenSource.load()));
+    la::UserPrefs::set ("listenChannel", juce::String (settings.listenChannel.load()));
+    la::UserPrefs::set ("listenDevice", deviceName);
+}
+
+void LiveAlignProcessor::loadListening()
+{
+    settings.listenGainDb = (float) juce::jlimit (-60.0, 12.0, la::UserPrefs::get ("listenGainDb", "-12").getDoubleValue());
+    settings.listenMute = la::UserPrefs::get ("listenMute", "0") == "1";
+    const int src = la::UserPrefs::get ("listenSource", "0").getIntValue();
+    if (src > 0) setListening (src, la::UserPrefs::get ("listenChannel", "-1").getIntValue(), la::UserPrefs::get ("listenDevice"));
+}
+
+void LiveAlignProcessor::saveListenLevel()
+{
+    la::UserPrefs::set ("listenGainDb", juce::String (settings.listenGainDb.load(), 1));
+    la::UserPrefs::set ("listenMute", settings.listenMute.load() ? "1" : "0");
 }
 
 // ---------------------------------------------------------------------------- sessions

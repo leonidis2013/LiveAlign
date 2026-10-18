@@ -22,6 +22,7 @@
 #include "ShowChecks.h"
 #include "UpdateChecker.h"
 #include "ClimateFeed.h"
+#include "ListenOutput.h"
 #include "Prefs.h"
 #include "Analysis/Generator.h"
 
@@ -98,7 +99,14 @@ public:
     juce::String micModelSerial (int mic) const;              // from the locker, for tags and reports
     la::MicLocker locker;
     la::UpdateChecker updates;
-    la::ClimateFeed climate;            // live temperature and humidity over MQTT (Settings, Units and environment)
+    la::ClimateFeed climate;            // live temperature and humidity over MQTT (Settings, Room sensor)
+    // Listening on headphones (Settings, Audio; the level on the main screen): on a spare output of the interface, or
+    // on another device (`listenDevice`, app only).
+    la::ListenDevice listenDevice;
+    juce::String listenDeviceName, listenError;
+    void setListening (int source, int channel, const juce::String& deviceName);   // saves it on this computer
+    void loadListening();
+    void saveListenLevel();
     void configureClimate() { climate.configure (la::ClimateFeed::fromPrefs ([] (const char* k, const char* d) { return la::UserPrefs::get (k, d); })); }
 
     // Input meters: peak since the last read, and a smoothed RMS (dBFS)

@@ -350,6 +350,12 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     setResizable (true, true);
     setResizeLimits (1180, 740, 5120, 2880);
     setSize (1480, 920);
+    if (standalone)
+    {
+        listenStrip = std::make_unique<la::ui::ListenStrip> (processor);
+        listenStrip->onOpenSettings = [this] { showPage ((int) Page::Settings); settingsPage->showCategory ((int) la::PrefCat::Audio); };
+        nav.setFooter (listenStrip.get(), 44);
+    }
     applySessionKind();
     {
         const int tab = settings.currentTab.load();
@@ -1417,6 +1423,7 @@ void LiveAlignEditor::timerCallback()
     if (la::AppPrefs::get().serial != prefsSerial) applyPrefs();
     if (settings.theme.load() != appliedTheme) applyTheme (settings.theme.load());
     if (settings.genLocked.load() && settings.genOn.load()) { settings.genOn = false; generator.sync(); }   // a monitoring session never plays it
+    if (listenStrip != nullptr && tick % 5 == 0) listenStrip->refresh();
     if (settings.paneCount.load() != laidOutCount || settings.paneLayout.load() != laidOutLayout) layoutPanes();
     for (auto& pane : panes) pane->sync();
 

@@ -17,6 +17,7 @@
 #include "VenueLibrary.h"
 #include "Analysis/AirAbsorption.h"
 #include "ClimateFeed.h"
+#include "ListenOutput.h"
 
 using namespace la;
 
@@ -541,6 +542,42 @@ static void climateTests()
     }
 }
 
+// Listening on another device: the interface at 48 kHz, the headphones at 44.1 kHz on a clock 0.02 % off. Once
+// filled, no gaps for a minute, the buffer stays near its target, and a sine comes out as a sine.
+static void listenTests()
+{
+    ListenBridge b;
+    b.setSourceRate (48000.0);
+    b.reset();
+    const double f = 1000.0, srcRate = 48000.0, dstRate = 44100.0 * 1.0002;
+    std::vector<float> in (480), out (441);
+    double phase = 0.0;
+    int written = 0, gapsAfterStart = 0, maxFill = 0;
+    double err = 0.0;
+    int errN = 0;
+    for (int block = 0; block < 6000; ++block)   // 60 s of 10 ms blocks
+    {
+        for (auto& v : in) { v = (float) std::sin (phase); phase += 2.0 * juce::MathConstants<double>::pi * f / srcRate; }
+        b.push (in.data(), (int) in.size(), 1.0f);
+        written += (int) in.size();
+        const int before = b.underruns.load();
+        b.pull (out.data(), (int) out.size(), dstRate);
+        if (block > 20 && b.underruns.load() != before) ++gapsAfterStart;
+        maxFill = juce::jmax (maxFill, b.bufferedSamples());
+        if (block > 100)   // a sine in, a sine out: the sum of squares of the next-sample prediction error stays small
+            for (size_t i = 2; i < out.size(); ++i)
+            {
+                const double w = 2.0 * juce::MathConstants<double>::pi * f / dstRate;
+                const double pred = 2.0 * std::cos (w) * out[i - 1] - out[i - 2];
+                err += (pred - out[i]) * (pred - out[i]);
+                ++errN;
+            }
+    }
+    check (gapsAfterStart == 0, "listen: no gaps between two clocks once filled", gapsAfterStart, 0);
+    check (maxFill < 48000 * 0.2, "listen: the buffer stays near its target (no growing delay)", maxFill, 1920);
+    check (std::sqrt (err / juce::jmax (1, errN)) < 0.01, "listen: a sine comes through clean", std::sqrt (err / juce::jmax (1, errN)), 0.0);
+}
+
 int main()
 {
     // a private home for the preferences file
@@ -560,6 +597,7 @@ int main()
     airTests();
     venueListTests();
     climateTests();
+    listenTests();
     home.deleteRecursively();
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

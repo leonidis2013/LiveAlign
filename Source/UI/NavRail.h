@@ -274,6 +274,8 @@ public:
     }
     juce::Rectangle<int> venueArea() const { return venueBounds(); }
     juce::Rectangle<int> settingsArea() const { return settingsButton.getBounds(); }
+    // A control kept above Settings on every page (the listening level).
+    void setFooter (juce::Component* c, int height) { footer = c; footerH = height; if (c != nullptr) addAndMakeVisible (*c); resized(); }
 
     void setCurrent (int page)
     {
@@ -400,7 +402,8 @@ public:
         r.removeFromBottom (kVenueH + 16);
         settingsButton.setBounds (r.removeFromBottom (30));
         r.removeFromBottom (6);
-        if (updateButton.isVisible()) updateButton.setBounds (r.removeFromBottom (30));
+        if (updateButton.isVisible()) { updateButton.setBounds (r.removeFromBottom (30)); r.removeFromBottom (6); }
+        if (footer != nullptr && footer->isVisible()) { r.removeFromBottom (4); footer->setBounds (r.removeFromBottom (footerH)); }
         scroll = juce::jlimit (0, juce::jmax (0, contentHeight() - listArea().getHeight()), scroll);
     }
 
@@ -603,7 +606,7 @@ private:
 
     juce::Rectangle<int> listArea() const
     {
-        const int bottom = (updateButton.isVisible() ? updateButton.getY() : settingsButton.getY()) - 8;
+        const int bottom = (footer != nullptr && footer->isVisible() ? footer->getY() : updateButton.isVisible() ? updateButton.getY() : settingsButton.getY()) - 8;
         return { 0, kTop, getWidth() - 1, juce::jmax (0, bottom - kTop) };
     }
     int contentHeight() const { return content; }
@@ -631,6 +634,8 @@ private:
     juce::String venueName, sessionName;
     bool dirty = false;
     juce::TextButton settingsButton { "SETTINGS" }, updateButton;
+    juce::Component* footer = nullptr;
+    int footerH = 0;
 public:
     static constexpr int kWidth = 196;
 };

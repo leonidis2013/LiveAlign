@@ -12,6 +12,7 @@
 #include "UI/SpeakersPage.h"
 #include "UI/PlanPage.h"
 #include "UI/VenuePage.h"
+#include "UI/ListenStrip.h"
 #include "UI/CoveragePage.h"
 #include "UI/HeadroomPage.h"
 #include "UI/ListeningPage.h"
@@ -164,6 +165,7 @@ public:
     void undoTickForPreview() { trackChanges(); }
     bool pageInSession (int page) const;
     void afterProjectLoadedForPreview() { afterProjectLoaded(); }
+    bool listenStripShownForPreview() const { return listenStrip != nullptr && listenStrip->isVisible() && listenStrip->getParentComponent() != nullptr && listenStrip->listening(); }
     void applySessionKind();
     void startSession (const juce::String& name, int kind);   // a new session of this kind (0 tuning, 1 monitoring), opened
     bool canRedo() const { return ! redoStack.empty(); }
@@ -201,6 +203,7 @@ private:
     la::ui::FeedbackWatchPanel fbWatch;
     la::ui::TunedPanel tunedPanel;
     la::ui::ConditionsPanel condPanel;   // the room sensor's reading and its effect (shown when a sensor is set up)
+    std::unique_ptr<la::ui::ListenStrip> listenStrip;   // the listening level, above Settings on every page
     void updateConditionsPanel();
     void updateTunedPanel();
     la::fb::Detector liveFb { { 80.0, 12000.0, 15.0, 18, 3, 1.0 / 12.0 } };   // stricter than the feedback test: music has peaks too
