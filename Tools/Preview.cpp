@@ -739,7 +739,12 @@ public:
                                      sm.criticalDistance.empty() ? "-" : (sm.criticalDistance.front().name + " " + juce::String (sm.criticalDistance.front().metres, 1) + " m").toRawUTF8(),
                                      sm.coverage2k, sm.coverage4k);
                     }
+                    // STIPA as measured at two points (the analysis itself is checked against the theory in the engine tests)
+                    proc.room.stipa.push_back ({ "FOH", "Mic 1", "10:05", 0.62, { 0.55, 0.6, 0.63, 0.64, 0.66, 0.65, 0.6 }, true, false });
+                    proc.room.stipa.push_back ({ "Rear", "Mic 2", "10:05", 0.54, { 0.48, 0.52, 0.55, 0.56, 0.58, 0.55, 0.5 }, true, false });
+                    editor->acousticsPageForPreview().refresh();
                     shot ("acoustics");
+                    check (std::abs (editor->acousticsPageForPreview().stipaAverage() - 0.58) < 0.001, "STIPA: the measured points shown on Room acoustics");
                     editor->acousticsPageForPreview().showMetric (la::ui::AcousticsChart::Etc);
                     next (43);
                 }
@@ -770,6 +775,8 @@ public:
                     // an event's sound level, as if logged for two hours
                     proc.splLog.clear();
                     proc.splLog.limitLaeq = 96.0;
+                    proc.splLog.limit2 = 100.0;     // an LCeq limit too
+                    proc.splLog.peakLimit = 135.0;
                     // (ending now, so the live monitoring that follows carries straight on)
                     const double t0 = std::floor ((double) juce::Time::currentTimeMillis() / 1000.0 / 60.0) * 60.0 - 7200.0;
                     std::mt19937 lr (5);
@@ -782,7 +789,7 @@ public:
                         for (int k = 0; k < 5; ++k) if (i == partAt[k]) proc.splLog.markPart (t, partNames[k]);
                         const double base = 88.0 + 6.0 * std::sin (i / 900.0) + (i > 4200 && i < 5400 ? 6.0 : 0.0);
                         proc.splLog.add (t, (float) (base + nd (lr)), (float) (base + 7.0 + nd (lr)), (float) (base + 6.0 + std::abs (nd (lr)) * 2.0),
-                                         (float) (21.0 + i / 3600.0), (float) (44.0 - i / 1200.0));
+                                         (float) (21.0 + i / 3600.0), (float) (44.0 - i / 1200.0), (float) (base + 22.0 + std::abs (nd (lr)) * 4.0 + (i == 4800 ? 12.0 : 0.0)));
                     }
                     proc.splLog.addHit (t0 + 1500.0, 377.0f, -12.0f);
                     proc.splLog.addGlitch (t0 + 2950.0, "dropout");
@@ -1009,6 +1016,7 @@ public:
                 if (after (60))
                 {
                     shot ("monitor-level");
+                    check (editor->levelAlarmForPreview() >= 1, "alarm: the level near or over the limits shows on Live monitoring");
                     check (editor->lostInterfaceForPreview() == "Scarlett 18i20 USB", "interface: unplugged, the app says so");
                     la::StandaloneHooks::interfaceLost() = nullptr;
                     next (94);

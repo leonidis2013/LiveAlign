@@ -22,6 +22,10 @@ inline const std::vector<Term>& glossary()
         { "C50", "Clarity for speech: the sound energy in the first 50 ms against the rest (dB, ISO 3382-1). Above 0 dB speech is clear; below -3 dB it starts to blur." },
         { "C80", "Clarity for music: the first 80 ms against the rest (dB, ISO 3382-1). About -2 to +4 dB suits most music." },
         { "Calibration file", "A mic's own frequency response, measured by its maker, that LiveAlign takes out of every measurement. A 0 degree file is for a mic aimed at the speaker, a 90 degree file for one pointing up." },
+        { "LCpeak", "The highest instantaneous level, C weighted, with no averaging at all: a kick drum, a dropped mic, a slammed door. Hearing safety rules limit it (the EU: 135 dB(C) to act, 140 dB(C) the limit). It reads higher than any Leq or LAF max." },
+        { "Magnitude threshold", "On the transfer function: a frequency where the reference (the console feed) has almost nothing in a moment is left out of the average for that moment. Music never plays every note at once; without the threshold those gaps average in as noise." },
+        { "MTW", "Multi-time window: the transfer function from several FFT sizes at once, a long one in the lows (fine detail) and short ones in the highs (a short window keeps the room's late reflections out, so the highs show the speaker and not the room)." },
+        { "STIPA", "Speech transmission index for public address (IEC 60268-16): a speech-like test signal whose seven bands pulse at set rates. At a seat, how much of the pulsing survives the room's reverberation and noise gives the STI: 0.45 fair, 0.6 good, 0.75 excellent." },
         { "Dropout", "Audio that never arrived: the computer, the driver or the USB missed its moment, and a few milliseconds are lost (a click or a crackle). Found by counting the samples against the computer's clock. Try another USB port (no hub), a bigger buffer, or closing other programs." },
         { "Clock sync", "Every digital device has a clock. Two linked digitally (a console's AES, ADAT or Dante feed into an interface) must run on one of them, or a sample slips every few seconds: a click at a steady interval. Lock one to the other (word clock, or the interface set to follow its digital input). An analog cable carries no clock, so it cannot happen there." },
         { "Coherence", "How much of what the mic hears is the signal you are playing (1) rather than noise or the room (0). Below about 0.6 a reading is not to be trusted, so it is greyed out." },
@@ -90,14 +94,14 @@ inline juce::StringArray termsFor (int page)
         case Page::Level: return { "Level balance", "Trim" };
         case Page::Coverage: return { "Coverage", "Directivity (Q)" };
         case Page::Align: return { "Time alignment", "Delay", "Impulse response", "Speed of sound" };
-        case Page::Acoustics: return { "Reverberation time (RT)", "EDT", "C50", "C80", "Ts", "STI", "ALcons", "Bass ratio", "Treble ratio", "Schroeder frequency",
+        case Page::Acoustics: return { "STIPA", "Reverberation time (RT)", "EDT", "C50", "C80", "Ts", "STI", "ALcons", "Bass ratio", "Treble ratio", "Schroeder frequency",
                                        "Critical distance", "First reflection", "Echo", "Flutter echo", "NC, NR", "Sweep", "Standards" };
         case Page::Room: return { "Target curve", "EQ (parametric)", "Q", "Seat-to-seat variance", "Schroeder frequency", "Absorption (air)" };
         case Page::Headroom: return { "Headroom", "Compression", "Distortion", "Limiter", "dBA, dBC, dBZ" };
         case Page::Listening: return { "EQ (parametric)", "Target curve" };
         case Page::Feedback: return { "Waterfall", "EQ (parametric)", "Q" };
         case Page::MonitorMic: return { "Calibration file", "LAeq", "dBA, dBC, dBZ" };
-        case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "Coherence", "Dropout", "Clock sync", "Standards" };
+        case Page::Monitor: return { "Transfer function", "RTA", "Impulse response", "Waterfall", "LAeq", "LCpeak", "Coherence", "Magnitude threshold", "MTW", "Dropout", "Clock sync", "Standards" };
         case Page::Sheet: return { "Processor sheet", "Delay", "Polarity", "Q", "Limiter" };
         case Page::Home: return { "As found / as left", "Speed of sound", "Absorption (air)", "MQTT", "Target curve", "Headroom", "Coverage" };
         case Page::TuningReport: case Page::MonitorReport: case Page::Locker: case Page::Settings:

@@ -22,6 +22,7 @@
 #include "InterfaceGuard.h"
 #include "Monitoring.h"
 #include "AudioHealth.h"
+#include "TraceStore.h"
 
 using namespace la;
 
@@ -726,7 +727,7 @@ static void showLogTests()
     lines.addLines (csv.trim());
     check (lines.size() == 4 && lines[0].startsWith ("Date,Time,Part,LAeq") && lines[0].contains ("Temperature (F)"), "show log: CSV header and a line per minute",
            (double) lines.size(), 4);
-    check (lines.size() == 4 && lines[3].contains (",Sermon,90.0,98.0,8.0,95.0,") && lines[3].contains (",over,377 Hz,68.0,45"), "show log: CSV values (F)");
+    check (lines.size() == 4 && lines[3].contains (",Sermon,90.0,98.0,8.0,95.0,") && lines[3].contains (",over (LAeq),377 Hz,68.0,45"), "show log: CSV values (F)");
     check (log.partsCsv().contains ("Sermon,") && log.partsCsv().contains ("Worship,"), "show log: parts CSV");
     juce::XmlElement x ("Session");
     log.save (x);
@@ -735,6 +736,41 @@ static void showLogTests()
     check (back.points.size() == log.points.size() && back.parts.size() == 2 && back.hits.size() == 1 && back.parts[1].name == "Sermon"
                && std::abs (back.points[3].tempC - 20.0f) < 0.05f, "show log: saved and loaded with its parts, feedback and conditions");
     check (back.minuteRows().size() == 3 && back.minuteRows()[2].feedback == "377 Hz", "show log: the table is the same after loading");
+    {
+        // both limits (LAeq and LCeq), the peak limit, and the alarm
+        SplLog L;
+        L.interval = 5.0; L.limitMinutes = 1; L.limitLaeq = 85.0; L.limitC = false; L.limit2 = 95.0; L.peakLimit = 130.0;
+        for (int s2 = 0; s2 < 240; ++s2)
+        {
+            const float la = s2 < 120 ? 80.0f : 84.0f;         // under the LAeq limit, but closing in
+            const float lc = s2 < 180 ? 90.0f : 100.0f;        // over the LCeq limit in the last minute
+            const float pk = s2 == 200 ? 131.0f : 115.0f;      // one peak over the peak limit
+            L.add (t0 + s2, la, lc, la + 3.0f, NAN, NAN, pk);
+        }
+        const auto r2 = L.minuteRows();
+        check (r2.size() == 4 && ! r2[0].over && r2[3].overWhat.contains ("LCeq") && r2[3].overWhat.contains ("peak") && ! r2[3].overWhat.contains ("LAeq"),
+               "limits: a minute over the LCeq limit and the peak limit, not the LAeq one", r2.size(), 4);
+        check (r2.size() == 4 && std::abs (r2[3].lcPeak - 131.0f) < 0.05f && std::abs (r2[0].lcPeak - 115.0f) < 0.05f, "limits: the minute's LCpeak");
+        check (L.minutesOver2() > 0.5 && L.minutesOver() == 0.0 && L.peaksOver() == 1, "limits: time over each limit, peaks counted", L.minutesOver2(), 1.0);
+        auto a = L.alarm (115.0f, true, 3.0);
+        check (a.level == 2 && a.text.contains ("LCeq"), "alarm: red over the LCeq limit");
+        SplLog q;
+        q.interval = 5.0; q.limitMinutes = 1; q.limitLaeq = 85.0;
+        for (int s2 = 0; s2 < 120; ++s2) q.add (t0 + s2, 83.0f, 90.0f, 86.0f);
+        check (q.alarm (100.0f, true, 3.0).level == 1, "alarm: amber within 3 dB of the limit");
+        check (q.alarm (100.0f, true, 1.0).level == 0, "alarm: green with a 1 dB margin");
+        q.peakLimit = 135.0;
+        check (q.alarm (136.0f, true, 3.0).level == 2 && q.alarm (136.0f, false, 3.0).level == 1, "alarm: a peak over the peak limit is red (only when calibrated)");
+        SplLog none;
+        check (none.alarm (100.0f, true, 3.0).level == -1, "alarm: no limit, no alarm");
+        juce::XmlElement xx ("S");
+        L.save (xx);
+        SplLog back2;
+        back2.load (&xx);
+        check (back2.limit2 == 95.0 && back2.peakLimit == 130.0 && back2.points.size() == L.points.size() && std::isfinite (back2.points.back().lcPk),
+               "limits: saved and loaded with the peaks");
+        check (L.minutesCsv (false).contains ("LCpeak (dB)") && L.minutesCsv (false).contains ("1 min LCeq (dB)"), "limits: CSV has the peak and the second limit");
+    }
     juce::XmlElement old ("Session");
     auto* e = old.createNewChildElement ("SplLog");
     e->setAttribute ("interval", 5.0);
@@ -788,6 +824,36 @@ struct HealthSim
     }
 };
 } // namespace
+
+static void traceMathTests()
+{
+    auto make = [] (const juce::String& name, double offset, double tilt, double ph, int pointsPerOct)
+    {
+        Trace t;
+        t.name = name;
+        for (double f = 20.0; f <= 20000.0; f *= std::pow (2.0, 1.0 / pointsPerOct))
+        {
+            t.data.freq.push_back (f);
+            t.data.db.push_back (offset + tilt * std::log2 (f / 1000.0));
+            t.data.phase.push_back (ph);
+        }
+        return t;
+    };
+    const auto a = make ("EQ in", 2.0, -1.0, 170.0, 24), b = make ("Bypassed", 0.0, -1.0, -170.0, 12);   // b on a coarser grid
+    const auto d = tracemath::difference (a, b);
+    bool flat = ! d.data.empty();
+    for (size_t i = 0; i < d.data.freq.size(); ++i) flat = flat && std::abs (d.data.db[i] - 2.0) < 0.01 && std::abs (std::abs (d.data.phase[i]) - 20.0) < 0.5;
+    check (flat && d.kind == Trace::Transfer && d.name == "EQ in - Bypassed", "trace maths: a minus b, read between b's points, phase across +-180");
+    const auto c = make ("Seat 3", 4.0, -1.0, 0.0, 24);
+    const auto avg = tracemath::average ({ &a, &b, &c });
+    bool mean = ! avg.data.empty();
+    for (size_t i = 0; i < avg.data.freq.size(); ++i) mean = mean && std::abs (avg.data.db[i] - (2.0 + 0.0 + 4.0) / 3.0 - (-1.0 * std::log2 (avg.data.freq[i] / 1000.0))) < 0.01;
+    check (mean, "trace maths: the average of three, in dB");
+    Trace narrow = make ("Short", 0.0, 0.0, 0.0, 24);
+    narrow.data.freq.resize (100); narrow.data.db.resize (100); narrow.data.phase.resize (100);   // stops partway
+    const auto dn = tracemath::difference (a, narrow);
+    check (! dn.data.empty() && dn.data.freq.back() <= narrow.data.freq.back() + 1e-9, "trace maths: only where both reach");
+}
 
 static void healthTests()
 {
@@ -892,6 +958,7 @@ int main()
     interfaceTests();
     showLogTests();
     healthTests();
+    traceMathTests();
     home.deleteRecursively();
     juce::DeletedAtShutdown::deleteAll();
     juce::MessageManager::deleteInstance();

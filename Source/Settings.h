@@ -42,6 +42,8 @@ struct Settings
 
     // Transfer function
     std::atomic<int> fftSize { 32768 };
+    std::atomic<bool> multiWindow { false };     // multi-time-window transfer function (MTW)
+    std::atomic<float> magThresholdDb { -90.0f }; // magnitude threshold (0 = off)
     std::atomic<int> averages { 8 };
     std::atomic<int> smoothing { 24 };       // 1/N octave
     std::atomic<float> coherenceBlank { 0.4f };   // hide transfer points below this coherence (0 = off)
@@ -126,6 +128,8 @@ struct Settings
         x.setAttribute ("genFreq", genFreq.load());
         x.setAttribute ("genSweepSec", genSweepSec.load());
         x.setAttribute ("fftSize", fftSize.load());
+        x.setAttribute ("multiWindow", multiWindow.load());
+        x.setAttribute ("magThresholdDb", magThresholdDb.load());
         x.setAttribute ("averages", averages.load());
         x.setAttribute ("smoothing", smoothing.load());
         x.setAttribute ("coherenceBlank", coherenceBlank.load());
@@ -158,7 +162,7 @@ struct Settings
     // a venue file does not change them.
     static const juce::StringArray& userKeys()
     {
-        static const juce::StringArray k { "fftSize", "averages", "smoothing", "coherenceBlank", "magRange", "rtaBands", "rtaSpeed", "rtaShowRef",
+        static const juce::StringArray k { "fftSize", "multiWindow", "magThresholdDb", "averages", "smoothing", "coherenceBlank", "magRange", "rtaBands", "rtaSpeed", "rtaShowRef",
                                            "rtaPeakHold", "view", "theme", "irMode", "irRange", "wfSeconds", "wfRange", "paneCount", "currentTab",
                                            "paneLayout", "paneView2", "paneView3", "temperatureUnit", "distanceUnit", "calibratorDb",
                                            "genType", "genLevelDb", "genFreq", "genSweepSec" };
@@ -196,12 +200,14 @@ struct Settings
         if (x.hasAttribute ("splOffset")) micSplOffset[0] = juce::jlimit (0.0f, 200.0f, (float) x.getDoubleAttribute ("splOffset"));
         refSource = i ("refSource", 3, 0, 17);
         genOutput = i ("genOutput", 0, 0, 8);
-        genType = i ("genType", 0, 0, 4);
+        genType = i ("genType", 0, 0, 5);
         genLevelDb = f ("genLevelDb", -20.0f, -90.0f, 0.0f);
         genFreq = f ("genFreq", 1000.0f, 10.0f, 20000.0f);
         genSweepSec = f ("genSweepSec", 3.0f, 0.5f, 30.0f);
         const int fs = x.getIntAttribute ("fftSize", 32768);
         fftSize = (fs == 8192 || fs == 16384 || fs == 32768 || fs == 65536) ? fs : 32768;
+        multiWindow = x.getBoolAttribute ("multiWindow", false);
+        magThresholdDb = juce::jlimit (-120.0f, 0.0f, (float) x.getDoubleAttribute ("magThresholdDb", -90.0));
         averages = i ("averages", 8, 1, 128);
         smoothing = i ("smoothing", 24, 1, 48);
         coherenceBlank = f ("coherenceBlank", 0.4f, 0.0f, 0.95f);

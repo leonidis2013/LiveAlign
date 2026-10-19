@@ -172,6 +172,7 @@ public:
     void markPart();
     juce::String lostInterfaceForPreview() const { return lostInterface; }
     void layoutPanesForPreview() { layoutPanes(); }
+    int levelAlarmForPreview() const { return levelAlarm.level(); }
     la::ui::MeasurePane& paneForPreview (int i) { return *panes[i]; }
     const la::ui::InputPanel& inputPanelForPreview() const { return inputPanel; }
     void exportLogCsv();
@@ -209,6 +210,7 @@ private:
     la::ui::DelayPanel delayPanel;
     la::ui::TracesPanel tracesPanel;
     la::ui::EventPanel eventPanel;
+    la::ui::LevelAlarm levelAlarm;
     la::ui::FeedbackWatchPanel fbWatch;
     la::ui::TunedPanel tunedPanel;
     la::ui::ConditionsPanel condPanel;   // the room sensor's reading and its effect (shown when a sensor is set up)

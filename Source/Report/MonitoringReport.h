@@ -141,10 +141,30 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
             double peakRoll = -1e9;
             for (double v : rolling) peakRoll = std::max (peakRoll, v);
             L.tiles ({ { "LAeq (whole event)", n1 (la), "dB" }, { "LCeq", n1 (lc), "dB" }, { "LC - LA", n1 (lc - la), "dB" },
-                       { "Highest " + juce::String (log.limitMinutes) + " min " + log.limitName(), n1 (peakRoll), "dB" }, { "Max LAF", n1 (log.maxLaf()), "dB" } });
+                       { "Highest " + juce::String (log.limitMinutes) + " min " + log.limitName(), n1 (peakRoll), "dB" }, { "Max LAF", n1 (log.maxLaf()), "dB" },
+                       { "Max LCpeak", n1 (log.maxPeak()), "dB" } });
+            juce::StringArray limits;
+            bool overAny = false;
             if (log.limitLaeq > 0.0)
-                L.para ("Limit: " + juce::String (juce::roundToInt (log.limitLaeq)) + " " + log.limitUnit() + " " + log.limitName() + " over " + juce::String (log.limitMinutes) + " minutes. Over the limit for "
-                        + juce::String (juce::roundToInt (log.minutesOver())) + " minutes of the event.", 9.5f, log.minutesOver() > 0.0 ? warn : ink);
+            {
+                limits.add (juce::String (juce::roundToInt (log.limitLaeq)) + " " + log.limitUnit() + " " + log.limitName() + " over " + juce::String (log.limitMinutes)
+                            + " minutes: over it for " + juce::String (juce::roundToInt (log.minutesOver())) + " minutes");
+                overAny |= log.minutesOver() > 0.0;
+            }
+            if (log.limit2 > 0.0)
+            {
+                limits.add (juce::String (juce::roundToInt (log.limit2)) + " " + log.limit2Unit() + " " + log.limit2Name() + " over " + juce::String (log.limitMinutes)
+                            + " minutes: over it for " + juce::String (juce::roundToInt (log.minutesOver2())) + " minutes");
+                overAny |= log.minutesOver2() > 0.0;
+            }
+            if (log.peakLimit > 0.0)
+            {
+                const int n = log.peaksOver();
+                limits.add ("LCpeak " + juce::String (juce::roundToInt (log.peakLimit)) + " dB(C): " + (n == 0 ? juce::String ("never reached") : "reached in "
+                            + juce::String (n) + (n == 1 ? " moment" : " moments") + " (" + juce::String (juce::roundToInt (log.interval)) + " s each)"));
+                overAny |= n > 0;
+            }
+            if (! limits.isEmpty()) L.para ("Limits. " + limits.joinIntoString (". ") + ".", 9.5f, overAny ? warn : ink);
             L.need (300.0f);
             L.picture (levelChart (log), 290.0f);
             L.para ("Blue: LAeq every " + juce::String (juce::roundToInt (log.interval)) + " seconds. Teal: the rolling " + juce::String (log.limitMinutes) + "-minute "
@@ -189,10 +209,11 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
                 std::vector<juce::StringArray> rows;
                 for (const auto& pt : parts)
                     rows.push_back ({ pt.name, juce::Time ((juce::int64) (pt.from * 1000.0)).formatted ("%H:%M") + " - " + juce::Time ((juce::int64) (pt.to * 1000.0)).formatted ("%H:%M"),
-                                      n1 (pt.la), n1 (pt.lc), n1 (pt.lc - pt.la), n1 (pt.laMax), n1 (pt.peakRolling),
-                                      log.limitLaeq > 0.0 ? juce::String (juce::roundToInt (pt.minutesOver)) + " min" : juce::String ("-"), juce::String (pt.hits) });
-                L.table ({ 1.6f, 1.3f, 0.75f, 0.75f, 0.75f, 0.85f, 0.95f, 0.85f, 0.75f },
-                         { "Part", "Time", "LAeq", "LCeq", "LC-LA", "LAF max", juce::String (log.limitMinutes) + " min max", "Over limit", "Rings" }, rows, 8.0f);
+                                      n1 (pt.la), n1 (pt.lc), n1 (pt.lc - pt.la), n1 (pt.laMax), n1 (pt.lcPeak), n1 (pt.peakRolling),
+                                      log.limitLaeq > 0.0 || log.limit2 > 0.0 ? juce::String (juce::roundToInt (pt.minutesOver + pt.minutesOver2)) + " min"
+                                                                                  + (pt.peaksOver > 0 ? ", peaks" : "") : juce::String ("-"), juce::String (pt.hits) });
+                L.table ({ 1.5f, 1.25f, 0.7f, 0.7f, 0.7f, 0.8f, 0.8f, 0.9f, 0.85f, 0.6f },
+                         { "Part", "Time", "LAeq", "LCeq", "LC-LA", "LAF max", "LCpeak", juce::String (log.limitMinutes) + " min max", "Over limit", "Rings" }, rows, 8.0f);
             }
             else L.para ("No parts were marked (Mark part on Live monitoring names each part as it starts, and they are summed up here).", 9.0f, dim);
             L.sub ("Each minute");
@@ -202,15 +223,15 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
             for (const auto& r : log.minuteRows())
             {
                 juce::StringArray row { juce::Time ((juce::int64) (r.t * 1000.0)).formatted ("%H:%M"), r.part, n1 (r.la), n1 (r.lc), n1 (r.lc - r.la), n1 (r.laMax),
-                                        n1 (r.rolling), r.over ? "over" : "", r.feedback.isNotEmpty() ? r.feedback : "-" };
+                                        n1 (r.lcPeak), n1 (r.rolling), r.over ? r.overWhat : "", r.feedback.isNotEmpty() ? r.feedback : "-" };
                 if (anyTemp)
                     row.add ((std::isfinite (r.tempC) ? juce::String (juce::roundToInt (fahrenheit ? r.tempC * 9.0f / 5.0f + 32.0f : r.tempC)) : juce::String ("-"))
                              + " / " + (std::isfinite (r.rh) ? juce::String (juce::roundToInt (r.rh)) + "%" : juce::String ("-")));
                 if (anyAudio) row.add (r.audio.isNotEmpty() ? r.audio : "-");
                 rows.push_back (row);
             }
-            juce::StringArray head { "Time", "Part", "LAeq", "LCeq", "LC-LA", "LAF max", juce::String (log.limitMinutes) + " min " + log.limitName(), "Limit", "Feedback" };
-            std::vector<float> widths { 0.7f, 1.4f, 0.7f, 0.7f, 0.7f, 0.8f, 0.95f, 0.6f, 1.3f };
+            juce::StringArray head { "Time", "Part", "LAeq", "LCeq", "LC-LA", "LAF max", "LCpeak", juce::String (log.limitMinutes) + " min " + log.limitName(), "Over", "Feedback" };
+            std::vector<float> widths { 0.65f, 1.3f, 0.65f, 0.65f, 0.65f, 0.75f, 0.75f, 0.9f, 0.75f, 1.2f };
             if (anyTemp) { head.add (fahrenheit ? "Temp F / RH" : "Temp C / RH"); widths.push_back (0.95f); }
             if (anyAudio) { head.add ("Audio"); widths.push_back (1.4f); }
             L.table (widths, head, rows, 7.5f);
@@ -268,8 +289,10 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
         if (! rows.empty()) L.table ({ 3.0f, 1.4f, 1.6f }, { "Trace", "Kind", "Captured" }, rows, 8.5f);
     }
 
-    L.need (40.0f);
+    L.need (60.0f);
     L.y += 10.0f;
+    L.para ("About the levels: measured with a measurement mic and software (LiveAlign), as accurate as the mic, its calibration and the interface. "
+            "This is not a certified IEC 61672 class 1 or class 2 sound level meter; for compliance where one is required, use a certified meter.", 8.0f, dim);
     L.para ("Prepared with LiveAlign " + juce::String (JucePlugin_VersionString) + " on " + LiveAlignProcessor::today()
             + (opt.author.isNotEmpty() ? " by " + opt.author : juce::String()) + ".", 8.5f, dim);
     L.contents (0, contentsY);

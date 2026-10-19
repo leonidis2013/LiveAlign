@@ -3,6 +3,7 @@
 // H = Gxy / Gxx and coherence = |Gxy|^2 / (Gxx * Gyy), from overlapped Hann frames with exponential averaging.
 // The reference passes through a delay line so the two signals line up (delay compensation).
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -40,12 +41,21 @@ public:
         gxx.assign (bins, 0.0);
         gyy.assign (bins, 0.0);
         gxy.assign (bins, cplx {});
+        binFrames.assign (bins, 0);
         frameCount = 0;
         sinceFrame = 0;
         filled = 0;
     }
 
     void setAverages (int frames) { averages = std::max (1, frames); }
+    // Magnitude threshold: a frequency where the reference is quieter than this in a frame is left out of the average
+    // for that frame (music leaves gaps in the spectrum; without it they average in as noise). dB, the level a sine
+    // at that frequency would read (dBFS); 0 = off.
+    void setMagnitudeThreshold (double db)
+    {
+        const double a = db < 0.0 ? std::pow (10.0, db / 20.0) * n / 4.0 : 0.0;   // a Hann frame's bin for a sine of that peak
+        thresholdPower = a * a;
+    }
     int getAverages() const { return averages; }
 
     // Delay applied to the reference, in samples. Changing it restarts the average.
@@ -170,12 +180,15 @@ private:
         fft.forward (bufY.data());
 
         ++frameCount;
-        const double alpha = std::max (1.0 / averages, 1.0 / frameCount);
-        const double keep = 1.0 - alpha;
         for (size_t k = 0; k < gxx.size(); ++k)
         {
             const cplx x = bufX[k], y = bufY[k];
-            gxx[k] = keep * gxx[k] + alpha * std::norm (x);
+            const double xx = std::norm (x);
+            if (thresholdPower > 0.0 && xx < thresholdPower) continue;   // no reference here this time: keep what was there
+            const int nb = ++binFrames[k];
+            const double alpha = std::max (1.0 / averages, 1.0 / nb);
+            const double keep = 1.0 - alpha;
+            gxx[k] = keep * gxx[k] + alpha * xx;
             gyy[k] = keep * gyy[k] + alpha * std::norm (y);
             gxy[k] = keep * gxy[k] + alpha * (std::conj (x) * y);
         }
@@ -190,6 +203,85 @@ private:
     std::vector<cplx> bufX, bufY;
     std::vector<double> gxx, gyy;
     std::vector<cplx> gxy;
+    std::vector<int> binFrames;   // frames averaged into each bin (the magnitude threshold leaves some out)
+    double thresholdPower = 0.0;
     int frameCount = 0;
+};
+
+// The transfer function as the analyser runs it: one FFT size, or multi-time-window (MTW): four sizes side by side,
+// each used where its window suits (the longest in the lows for resolution, short ones in the highs so the room's
+// late reflections do not smear them), blended across a third of an octave at each hand-over.
+class TransferAnalyzer
+{
+public:
+    void prepare (double sampleRate, int fftSize, double maxDelaySeconds = 2.0)
+    {
+        sr = sampleRate;
+        n0 = fftSize;
+        maxDelay = maxDelaySeconds;
+        engines[0].prepare (sr, n0, maxDelay);
+        for (int k = 1; k < kWindows; ++k) engines[(size_t) k].prepare (sr, std::max (256, n0 >> shift (k)), maxDelay);
+        applyAverages();
+        for (auto& e : engines) e.setMagnitudeThreshold (thresholdDb);
+    }
+    void setMultiWindow (bool on) { if (on != mtw) { mtw = on; reset(); } }
+    bool multiWindow() const { return mtw; }
+    void reset() { for (auto& e : engines) e.reset(); }
+    void setAverages (int frames) { if (frames != averages) { averages = std::max (1, frames); applyAverages(); } }
+    void setDelaySamples (int d) { for (auto& e : engines) e.setDelaySamples (d); }
+    void setMagnitudeThreshold (double db) { thresholdDb = db; for (auto& e : engines) e.setMagnitudeThreshold (db); }
+    void push (const float* mic, const float* ref, int count)
+    {
+        engines[0].push (mic, ref, count);
+        if (mtw) for (int k = 1; k < kWindows; ++k) engines[(size_t) k].push (mic, ref, count);
+    }
+    int frames() const { return engines[0].frames(); }
+    void impulse (std::vector<float>& ir) const { engines[0].impulse (ir); }
+    const TransferEngine& longest() const { return engines[0]; }
+
+    // Where each window takes over (Hz): about where its bins are half a 1/12-octave band apart.
+    double handOver (int k) const { return k <= 0 ? 0.0 : 34.6 * sr / (double) engines[(size_t) k].fftSize(); }
+
+    void banded (const std::vector<double>& freqs, double fraction, std::vector<float>& magDb, std::vector<float>& phaseDeg, std::vector<float>& coherence) const
+    {
+        engines[0].banded (freqs, fraction, magDb, phaseDeg, coherence);
+        if (! mtw) return;
+        std::vector<float> m, ph, co;
+        for (int k = 1; k < kWindows; ++k)
+        {
+            if (engines[(size_t) k].frames() == 0) continue;
+            engines[(size_t) k].banded (freqs, fraction, m, ph, co);
+            const double f0 = handOver (k);
+            for (size_t i = 0; i < freqs.size(); ++i)
+            {
+                // 0 below the hand-over, 1 a sixth of an octave above it, a smooth blend in between
+                const double oct = std::log2 (freqs[i] / f0);
+                const double w = std::clamp ((oct + 1.0 / 6.0) * 3.0, 0.0, 1.0);
+                if (w <= 0.0 || ! std::isfinite (m[i])) continue;
+                if (w >= 1.0 || ! std::isfinite (magDb[i])) { magDb[i] = m[i]; phaseDeg[i] = ph[i]; coherence[i] = co[i]; continue; }
+                magDb[i] = (float) ((1.0 - w) * magDb[i] + w * m[i]);
+                if (std::isfinite (coherence[i]) && std::isfinite (co[i])) coherence[i] = (float) ((1.0 - w) * coherence[i] + w * co[i]);
+                if (std::isfinite (phaseDeg[i]) && std::isfinite (ph[i]))
+                {
+                    const double a = phaseDeg[i] * kPi / 180.0, b = ph[i] * kPi / 180.0;
+                    const double re = (1.0 - w) * std::cos (a) + w * std::cos (b), im = (1.0 - w) * std::sin (a) + w * std::sin (b);
+                    phaseDeg[i] = (float) (std::atan2 (im, re) * 180.0 / kPi);
+                }
+            }
+        }
+    }
+
+private:
+    static constexpr int kWindows = 4;
+    static int shift (int k) { static const int sh[kWindows] = { 0, 2, 4, 5 }; return sh[k]; }   // N, N/4, N/16, N/32
+    void applyAverages()
+    {
+        // the same averaging time in every window: a short one averages more of its frames
+        for (int k = 0; k < kWindows; ++k) engines[(size_t) k].setAverages (std::min (256, averages << shift (k)));
+    }
+    double sr = 48000.0, maxDelay = 2.0, thresholdDb = 0.0;
+    int n0 = 32768, averages = 8;
+    bool mtw = false;
+    std::array<TransferEngine, kWindows> engines;
 };
 } // namespace la

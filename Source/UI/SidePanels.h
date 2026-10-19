@@ -67,9 +67,10 @@ public:
 
         struct Item { const char* name; float v; };
         const Item items[] = { { "A fast", data->splAF }, { "C slow", data->splCS }, { "Z slow", data->splZS },
-                               { "LAeq", data->leqA }, { "LCeq", data->leqC }, { "LAF max", data->maxAF } };
+                               { "LAeq", data->leqA }, { "LCeq", data->leqC }, { "LAF max", data->maxAF },
+                               { "LCpeak", data->lcPeak }, { "LCpeak max", data->lcPeakMax }, { "LZpeak max", data->lzPeakMax } };
         const int colW = r.getWidth() / 3;
-        for (int i = 0; i < 6; ++i)
+        for (int i = 0; i < 9; ++i)
         {
             auto cell = juce::Rectangle<int> (r.getX() + (i % 3) * colW, r.getY() + (i / 3) * 36, colW, 34);
             g.setColour (p.textDim);
@@ -339,6 +340,53 @@ private:
     std::vector<std::pair<juce::Time, double>> history;
     juce::TextButton findButton { "Find delay" }, zeroButton { "Zero" };
     juce::TextButton nudge[4];
+};
+
+//==============================================================================
+// The level alarm, in the Live monitoring header: a light (green, amber, red) and what it is about. Red holds for 10 s
+// after it clears, so a short peak is not missed while looking elsewhere.
+class LevelAlarm : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    void set (const SplLog::Alarm& a)
+    {
+        const auto now = la::clock::ms32();
+        int level = a.level;
+        if (level == 2) redUntil = now + 10000;
+        else if (now < redUntil && level >= 0) level = 2;   // held
+        if (level == 2 && a.level != 2) text = lastRed;
+        else text = a.text;
+        if (a.level == 2) lastRed = a.text;
+        if (level != shown || text != shownText) { shown = level; shownText = text; repaint(); }
+        setTooltip (level < 0 ? juce::String ("No limit set: set one on the Monitor mic page (or in Settings, Monitoring)")
+                              : "The level against the limits: green, amber within a few dB (Settings, Monitoring), red over a limit or at the peak limit (held 10 s). " + text);
+    }
+    int level() const { return shown; }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        auto r = getLocalBounds().toFloat().reduced (0.5f);
+        const auto c = shown == 2 ? p.bad : shown == 1 ? p.warn : shown == 0 ? p.good : p.textFaint;
+        g.setColour (c.withAlpha (shown >= 0 ? 0.18f : 0.08f));
+        g.fillRoundedRectangle (r, 6.0f);
+        g.setColour (c);
+        g.drawRoundedRectangle (r, 6.0f, 1.4f);
+        auto in = getLocalBounds().reduced (10, 0);
+        g.fillEllipse (in.removeFromLeft (14).toFloat().withSizeKeepingCentre (12.0f, 12.0f));
+        in.removeFromLeft (8);
+        g.setFont (font (12.5f, true));
+        const auto head = shown == 2 ? juce::String ("OVER") : shown == 1 ? juce::String ("NEAR LIMIT") : shown == 0 ? juce::String ("LEVEL OK") : juce::String ("NO LIMIT");
+        g.drawText (head, in.removeFromLeft (84), juce::Justification::centredLeft);
+        g.setColour (p.text);
+        g.setFont (font (11.5f));
+        g.drawFittedText (shown >= 0 ? shownText : juce::String ("set one on Monitor mic"), in, juce::Justification::centredLeft, 2, 0.8f);
+    }
+
+private:
+    int shown = -2;
+    juce::String text, shownText, lastRed;
+    juce::uint32 redUntil = 0;
 };
 
 //==============================================================================
@@ -812,6 +860,19 @@ private:
         m.addItem (1, traces.all()[(size_t) i].visible ? "Hide" : "Show");
         m.addItem (2, "Rename...");
         m.addItem (3, "Export as FRD...");
+        {
+            // trace maths: this one minus another, and the average of the ones shown of its kind
+            juce::PopupMenu sub;
+            const auto& all = traces.all();
+            for (int j = 0; j < (int) all.size(); ++j)
+                if (j != i && all[(size_t) j].fromSession.isEmpty()) sub.addItem (100 + j, all[(size_t) j].name);
+            m.addSeparator();
+            m.addSubMenu ("Subtract another trace from this one", sub, sub.getNumItems() > 0);
+            int shownSame = 0;
+            for (const auto& t : all) shownSame += t.visible && t.kind == all[(size_t) i].kind ? 1 : 0;
+            m.addItem (5, "Average the " + juce::String (shownSame) + (all[(size_t) i].kind == Trace::Rta ? " RTA" : " transfer function") + " traces shown",
+                       shownSame >= 2);
+        }
         m.addSeparator();
         m.addItem (4, "Delete");
         juce::Component::SafePointer<TracesPanel> safe (this);
@@ -824,7 +885,25 @@ private:
                 case 2: if (safe->onRename) safe->onRename (i); break;
                 case 3: if (safe->onExport) safe->onExport (i); break;
                 case 4: if (safe->onDelete) safe->onDelete (i); break;
-                default: break;
+                case 5:
+                {
+                    std::vector<const Trace*> in;
+                    const auto kind = safe->traces.all()[(size_t) i].kind;
+                    in.push_back (&safe->traces.all()[(size_t) i]);
+                    for (const auto& t : safe->traces.all()) if (&t != in.front() && t.visible && t.kind == kind) in.push_back (&t);
+                    auto avg = tracemath::average (in);
+                    if (! avg.data.empty()) safe->traces.add (std::move (avg));
+                    safe->repaint();
+                    break;
+                }
+                default:
+                    if (result >= 100 && safe->traces.valid (result - 100))
+                    {
+                        auto d = tracemath::difference (safe->traces.all()[(size_t) i], safe->traces.all()[(size_t) (result - 100)]);
+                        if (! d.data.empty()) safe->traces.add (std::move (d));
+                        safe->repaint();
+                    }
+                    break;
             }
         });
     }

@@ -29,6 +29,7 @@ struct MicResult
     std::vector<float> rta, rtaPeak;
     int tfFrames = 0;
     float splAS = -200, splAF = -200, splCS = -200, splZS = -200, leqA = -200, leqC = -200, maxAF = -200;
+    float lcPeak = -200, lcPeakMax = -200, lzPeakMax = -200;   // LCpeak now (the last second or two), the largest since the reset; LZpeak
     float rawZSlowDbfs = -200;   // uncalibrated Z slow, used by the calibrate button
     bool isSpl = false;
     std::vector<float> ir;       // impulse response, only while Settings::captureAllIr is on (room acoustics)
@@ -54,6 +55,7 @@ struct Snapshot
     std::vector<float> ir;        // impulse response of the selected mic (mic 1 for the average)
     int irZero = 0;
     float splAS = -200, splAF = -200, splCS = -200, splZS = -200, leqA = -200, leqC = -200, maxAF = -200;
+    float lcPeak = -200, lcPeakMax = -200, lzPeakMax = -200;
     double leqSeconds = 0.0;
     float rawZSlowDbfs = -200;
     bool splIsSpl = false;
@@ -188,7 +190,7 @@ private:
 
     struct MicChain
     {
-        TransferEngine tf;
+        TransferAnalyzer tf;
         PowerSpectrum rta, noiseRta;
         SplMeter spl, noiseMeter;
         std::vector<float> raw;
@@ -294,6 +296,8 @@ private:
         {
             auto& m = chains[(size_t) i];
             m.tf.setAverages (settings.averages.load());
+            m.tf.setMultiWindow (settings.multiWindow.load());
+            m.tf.setMagnitudeThreshold (settings.magThresholdDb.load());
             m.tf.setDelaySamples ((int) std::lround (settings.micDelayMs[i].load() * 0.001 * sr));
         }
     }
@@ -522,6 +526,9 @@ private:
             r.leqA = (float) c.spl.leqDb (SplMeter::A) + offset;
             r.leqC = (float) c.spl.leqDb (SplMeter::C) + offset;
             r.maxAF = (float) c.spl.maxFastDb (SplMeter::A) + offset;
+            r.lcPeak = (float) c.spl.peakDb (SplMeter::C) + offset;
+            r.lcPeakMax = (float) c.spl.maxPeakDb (SplMeter::C) + offset;
+            r.lzPeakMax = (float) c.spl.maxPeakDb (SplMeter::Z) + offset;
             r.rawZSlowDbfs = (float) c.spl.slowDb (SplMeter::Z);
         }
         PowerSpectrum::bands (rtaRef.averaged(), rtaRef.binHz(), s.rtaFreq, 1.0 / bands, p);
@@ -540,6 +547,7 @@ private:
             s.rtaMic = r.rta; s.rtaPeak = r.rtaPeak; s.rtaIsSpl = r.isSpl;
             s.splAS = r.splAS; s.splAF = r.splAF; s.splCS = r.splCS; s.splZS = r.splZS;
             s.leqA = r.leqA; s.leqC = r.leqC; s.maxAF = r.maxAF; s.rawZSlowDbfs = r.rawZSlowDbfs; s.splIsSpl = r.isSpl;
+            s.lcPeak = r.lcPeak; s.lcPeakMax = r.lcPeakMax; s.lzPeakMax = r.lzPeakMax;
         }
         else
         {
@@ -643,6 +651,13 @@ private:
         s.leqA = levelAvg (&MicResult::leqA);
         s.leqC = levelAvg (&MicResult::leqC);
         s.maxAF = levelAvg (&MicResult::maxAF);
+        // peaks: the largest of the mics, not an average
+        s.lcPeak = s.lcPeakMax = s.lzPeakMax = -200.0f;
+        for (int m = 0; m < count; ++m)
+        {
+            const auto& r = s.mics[(size_t) m];
+            s.lcPeak = juce::jmax (s.lcPeak, r.lcPeak); s.lcPeakMax = juce::jmax (s.lcPeakMax, r.lcPeakMax); s.lzPeakMax = juce::jmax (s.lzPeakMax, r.lzPeakMax);
+        }
         s.rawZSlowDbfs = s.mics[0].rawZSlowDbfs;
     }
 

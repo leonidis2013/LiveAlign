@@ -101,6 +101,7 @@ public:
         for (const auto& pt : log.points)
             if (pt.t >= t0) { lo = std::min (lo, std::min (pt.la, pt.lc)); hi = std::max (hi, std::max (pt.laMax, pt.lc)); }
         if (log.limitLaeq > 0.0) { hi = std::max (hi, (float) log.limitLaeq + 2.0f); lo = std::min (lo, (float) log.limitLaeq - 10.0f); }
+        if (log.limit2 > 0.0) { hi = std::max (hi, (float) log.limit2 + 2.0f); lo = std::min (lo, (float) log.limit2 - 10.0f); }
         if (lo > hi) { lo = 40.0f; hi = 100.0f; }
         const float top = std::ceil ((hi + 2.0f) / 10.0f) * 10.0f, bot = std::floor ((lo - 2.0f) / 10.0f) * 10.0f;
         auto yAt = [&] (double db) { return plot.getY() + (float) ((top - juce::jlimit ((double) bot, (double) top, db)) / juce::jmax (1.0f, top - bot)) * plot.getHeight(); };
@@ -177,6 +178,20 @@ public:
             g.setFont (font (10.5f, true));
             g.drawText ("limit " + juce::String (juce::roundToInt (log.limitLaeq)) + " " + log.limitUnit(),
                         juce::Rectangle<float> (plot.getRight() - 120.0f, yAt (log.limitLaeq) - 15.0f, 116.0f, 13.0f), juce::Justification::centredRight);
+        }
+        if (log.limit2 > 0.0)
+        {
+            // the second limit (the other weighting): orange dashes
+            juce::Path lim, dashed;
+            lim.startNewSubPath (plot.getX(), yAt (log.limit2));
+            lim.lineTo (plot.getRight(), yAt (log.limit2));
+            const float dashes[] = { 4.0f, 4.0f };
+            juce::PathStrokeType (1.4f).createDashedStroke (dashed, lim, dashes, 2);
+            g.setColour (p.outputCol);
+            g.fillPath (dashed);
+            g.setFont (font (10.5f, true));
+            g.drawText ("limit " + juce::String (juce::roundToInt (log.limit2)) + " " + log.limit2Unit(),
+                        juce::Rectangle<float> (plot.getRight() - 240.0f, yAt (log.limit2) - 15.0f, 116.0f, 13.0f), juce::Justification::centredRight);
         }
         // the feedback watch's catches: a red tick at the bottom
         g.setColour (p.bad);

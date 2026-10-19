@@ -1,15 +1,17 @@
 #pragma once
-// Measurement signal generator: pink noise, white noise, sine, repeating log sweep and a polarity test pulse.
+// Measurement signal generator: pink noise, white noise, sine, repeating log sweep, a polarity test pulse, and the
+// STIPA test signal (speech intelligibility, IEC 60268-16).
 // Level convention (AES17): a full-scale sine is 0 dBFS, and noise at -20 dBFS has the same RMS as a -20 dBFS sine.
 // Switching on and off ramps over 20 ms so there are no clicks through the PA.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include "Fft.h"
+#include "Stipa.h"
 
 namespace la
 {
-enum class GenType { Pink = 0, White = 1, Sine = 2, Sweep = 3, Pulse = 4 };
+enum class GenType { Pink = 0, White = 1, Sine = 2, Sweep = 3, Pulse = 4, Stipa = 5 };
 
 class Generator
 {
@@ -21,6 +23,7 @@ public:
         rampUpStep = rampStep;
         resetState();
         pinkNorm = measurePinkNorm();
+        stipaSignal.prepare (sr);   // the carriers: a few large FFTs, here rather than on the audio thread
     }
 
     void setType (GenType newType) { if (newType != type) { type = newType; resetState(); } }
@@ -53,6 +56,7 @@ public:
                     case GenType::Sine:  s = sine() * amp; break;
                     case GenType::Sweep: s = sweep() * amp; break;
                     case GenType::Pulse: s = pulse() * amp; break;
+                    case GenType::Stipa: s = stipaSignal.next (rms); break;
                 }
             }
             out[i] = (float) std::clamp (s * gain, -1.0, 1.0);
@@ -65,6 +69,7 @@ private:
         b0 = b1 = b2 = b3 = b4 = b5 = b6 = 0.0;
         phase = 0.0;
         t = 0;
+        stipaSignal.restart();
     }
 
     double white()   // uniform in [-1, 1)
@@ -142,5 +147,6 @@ private:
     int64_t t = 0;
     uint64_t rng = 0x9E3779B97F4A7C15ull;
     GenType type = GenType::Pink;
+    stipa::Signal stipaSignal;
 };
 } // namespace la

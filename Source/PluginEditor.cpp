@@ -333,7 +333,8 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
         addChildComponent (*panes[i]);
     }
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel, (juce::Component*) &condPanel })
+                     (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel, (juce::Component*) &condPanel,
+                     (juce::Component*) &levelAlarm })
         addChildComponent (*c);
 
     micPicker.setTooltip ("Which mic the graphs and sound level show, or the average of all mics");
@@ -514,7 +515,8 @@ void LiveAlignEditor::showPage (int page)
     if (page == (int) Page::Plan) planPage->refresh();
     for (int i = 0; i < 3; ++i) panes[i]->setVisible (mon && i < juce::jlimit (1, 3, settings.paneCount.load()));
     for (auto* c : { (juce::Component*) &splPanel, (juce::Component*) &inputPanel, (juce::Component*) &delayPanel, (juce::Component*) &tracesPanel,
-                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel })
+                     (juce::Component*) &runButton, (juce::Component*) &resetButton, (juce::Component*) &eventPanel, (juce::Component*) &fbWatch, (juce::Component*) &tunedPanel,
+                     (juce::Component*) &levelAlarm })
         c->setVisible (mon);
     condPanel.setVisible (mon && processor.climate.enabled());
     if (mon) updateConditionsPanel();
@@ -1611,7 +1613,7 @@ void LiveAlignEditor::timerCallback()
             lastLogSecond = now;
             const bool sensor = processor.climate.live();   // the room sensor's reading goes in the log (typed-in conditions do not change)
             processor.splLog.add (now, snap.splAS, snap.splCS, snap.splAF, sensor ? processor.climate.tempC.load() : NAN,
-                                  sensor ? processor.climate.humidity.load() : NAN);
+                                  sensor ? processor.climate.humidity.load() : NAN, snap.lcPeak);
         }
     }
 
@@ -1628,6 +1630,13 @@ void LiveAlignEditor::timerCallback()
         }
         tracesPanel.refresh();
         if (tick % 15 == 0) { eventPanel.setLog (processor.splLog); updateConditionsPanel(); }
+        if (tick % 3 == 0)
+        {
+            // the level alarm: red at a limit or the peak limit, amber close to one
+            const int was = levelAlarm.level();
+            levelAlarm.set (processor.splLog.alarm (snap.lcPeak, snap.splIsSpl, la::AppPrefs::get().value ("alarmMargin")));
+            if (levelAlarm.level() == 2 && was != 2) showToast ("Level over the limit");
+        }
     }
 
     const bool running = settings.running.load();
@@ -1822,6 +1831,9 @@ void LiveAlignEditor::resized()
         helpButton.setBounds (h.removeFromRight (32).withSizeKeepingCentre (32, 30));
         h.removeFromRight (14);
         micPicker.setBounds (h.removeFromRight (240).withSizeKeepingCentre (240, 30));
+        h.removeFromRight (12);
+        const int aw = juce::jlimit (260, 480, h.getWidth() - 280);   // the title keeps a little
+        levelAlarm.setBounds (h.removeFromRight (aw).withSizeKeepingCentre (aw, 38));
         titleArea = h;
     }
     else
@@ -1875,7 +1887,7 @@ void LiveAlignEditor::resized()
     paneArea = r;
     layoutPanes();
 
-    splPanel.setBounds (side.removeFromTop (184));
+    splPanel.setBounds (side.removeFromTop (220));
     side.removeFromTop (8);
     inputPanel.setBounds (side.removeFromTop (118));
     side.removeFromTop (8);

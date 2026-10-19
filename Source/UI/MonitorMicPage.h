@@ -87,6 +87,15 @@ public:
             changed();
         };
         addAndMakeVisible (limitBox);
+        // a second limit on the other weighting, and the peak limit
+        limit2Box.setTooltip ("A second limit on the other weighting (an LCeq beside an LAeq, or the other way), over the same window. Many guidelines limit both.");
+        limit2Box.onChange = [this] { proc.splLog.limit2 = juce::jmax (0, limit2Box.getSelectedId() - 1); changed(); };
+        addAndMakeVisible (limit2Box);
+        peakBox.addItem ("No peak limit", 1);
+        for (int l : { 120, 125, 130, 135, 137, 140 }) peakBox.addItem ("LCpeak " + juce::String (l) + " dB", l + 1);
+        peakBox.setTooltip ("The instantaneous C-weighted peak (a kick drum, a dropped mic): 135 dB(C) is the EU lower action value, 140 dB(C) the limit. Needs a calibrated mic.");
+        peakBox.onChange = [this] { proc.splLog.peakLimit = juce::jmax (0, peakBox.getSelectedId() - 1); changed(); };
+        addAndMakeVisible (peakBox);
         windowBox.addItem ("over 1 minute", 1);
         windowBox.addItem ("over 5 minutes", 5);
         windowBox.addItem ("over 15 minutes", 15);
@@ -139,6 +148,17 @@ public:
         limitBox.setSelectedId (proc.splLog.limitLaeq <= 0.0 ? 1 : proc.splLog.limitC ? 1000 + (int) proc.splLog.limitLaeq : (int) proc.splLog.limitLaeq + 1, juce::dontSendNotification);
         if (limitBox.getSelectedId() == 0) limitBox.setSelectedId (1, juce::dontSendNotification);
         windowBox.setSelectedId (proc.splLog.limitMinutes, juce::dontSendNotification);
+        {
+            // the second limit's list follows the first one's weighting
+            const bool c2 = ! proc.splLog.limitC;
+            limit2Box.clear (juce::dontSendNotification);
+            limit2Box.addItem ("No second limit", 1);
+            for (int l = 75; l <= (c2 ? 125 : 110); ++l) limit2Box.addItem (juce::String (l) + (c2 ? " dBC (LCeq)" : " dBA (LAeq)"), l + 1);
+            limit2Box.setSelectedId (proc.splLog.limit2 <= 0.0 ? 1 : (int) proc.splLog.limit2 + 1, juce::dontSendNotification);
+            if (limit2Box.getSelectedId() == 0) limit2Box.setSelectedId (1, juce::dontSendNotification);
+            peakBox.setSelectedId (proc.splLog.peakLimit <= 0.0 ? 1 : (int) proc.splLog.peakLimit + 1, juce::dontSendNotification);
+            if (peakBox.getSelectedId() == 0) peakBox.setSelectedId (1, juce::dontSendNotification);
+        }
         repaint();
     }
 
@@ -214,7 +234,9 @@ public:
                 t << "Logged " << juce::Time ((juce::int64) (log.start() * 1000.0)).formatted ("%H:%M") << " - "
                   << juce::Time ((juce::int64) (log.end() * 1000.0)).formatted ("%H:%M") << ": LAeq " << juce::String (log.leq (false), 1)
                   << " dB, LCeq " << juce::String (log.leq (true), 1) << " dB, max LAF " << juce::String (log.maxLaf(), 1) << " dB.";
-                if (log.limitLaeq > 0.0) t << "\nOver the limit for " << juce::String (juce::roundToInt (log.minutesOver())) << " min.";
+                if (log.limitLaeq > 0.0) t << "\nOver the " << log.limitName() << " limit for " << juce::String (juce::roundToInt (log.minutesOver())) << " min.";
+                if (log.limit2 > 0.0) t << " Over the " << log.limit2Name() << " limit for " << juce::String (juce::roundToInt (log.minutesOver2())) << " min.";
+                if (std::isfinite (log.maxPeak())) t << " Highest LCpeak " << juce::String (log.maxPeak(), 1) << " dB.";
             }
             g.setColour (p.textDim);
             g.setFont (font (11.5f));
@@ -238,7 +260,7 @@ public:
         micCard = left;
         liveCard = r.removeFromTop (190);
         r.removeFromTop (10);
-        eventCard = r.removeFromTop (260);
+        eventCard = r.removeFromTop (300);
         r.removeFromTop (10);
         whyCard = r;
         {
@@ -277,6 +299,7 @@ public:
             };
             row ("Target", targetBox, &sameAsRoomButton, 150);
             row ("Level limit", limitBox, &windowBox, 160);
+            row ("And", limit2Box, &peakBox, 160);
             auto lr = c.removeFromTop (30);
             clearLogButton.setBounds (lr.removeFromRight (150));
             c.removeFromTop (8);
@@ -355,7 +378,7 @@ private:
     const Snapshot* snap = nullptr;
     juce::TextEditor nameEditor;
     juce::ComboBox posBox;
-    juce::ComboBox sourceBox, inputBox, aimBox, targetBox, limitBox, windowBox;
+    juce::ComboBox sourceBox, inputBox, aimBox, targetBox, limitBox, windowBox, limit2Box, peakBox;
     juce::TextButton calButton, levelButton { "Calibrate" }, delayButton { "Find delay" }, sameAsRoomButton { "Same as Room EQ" },
         clearLogButton { "Clear the log" };
     juce::StringArray sourceIds;

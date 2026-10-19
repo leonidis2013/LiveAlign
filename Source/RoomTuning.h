@@ -44,6 +44,16 @@ struct SweepMeasurement
     acoustics::Result ac;
 };
 
+// STIPA measured at one position (IEC 60268-16, the direct method): the STI and each octave's transmission index.
+struct StipaMeasurement
+{
+    juce::String position, micName, time;
+    double sti = NAN;
+    std::array<double, 7> mti {};
+    bool corrected = false;     // masking and hearing threshold corrections (a calibrated mic)
+    bool external = false;      // an external STIPA source (a talkbox), not LiveAlign's generator
+};
+
 // The difference a frequency-dependent window makes (dB on `grid`): the response from the first 15 cycles of each
 // frequency (at least 5 ms) against the steady state from the whole impulse response. Where the room rings, the
 // windowed response is the speaker and the early reflections; the steady state adds the reverberation. Normalised to
@@ -131,6 +141,7 @@ struct RoomTuning
 {
     std::vector<RoomMeasurement> meas;
     std::vector<SweepMeasurement> sweeps;   // room acoustics measured with a sweep (preferred over the Room EQ estimate)
+    std::vector<StipaMeasurement> stipa;    // STIPA, measured directly (one per position, the latest)
     int target = 4;                 // targets:: index (Worship / live music)
     // Which speakers the EQ goes on: the whole system (default), the mains, or one speaker (its index).
     static constexpr int kWholeSystem = -1, kMains = -2;
@@ -890,6 +901,19 @@ struct RoomTuning
             c->setAttribute ("gain", b.gainDb);
             c->setAttribute ("q", b.q);
         }
+        for (const auto& w : stipa)
+        {
+            auto* c = e->createNewChildElement ("Stipa");
+            c->setAttribute ("position", w.position);
+            c->setAttribute ("micName", w.micName);
+            c->setAttribute ("time", w.time);
+            c->setAttribute ("sti", w.sti);
+            c->setAttribute ("corrected", w.corrected);
+            c->setAttribute ("external", w.external);
+            juce::StringArray m;
+            for (double v : w.mti) m.add (juce::String (v, 4));
+            c->setAttribute ("mti", m.joinIntoString (" "));
+        }
         for (const auto& w : sweeps)
         {
             auto* c = e->createNewChildElement ("Sweep");
@@ -959,6 +983,20 @@ struct RoomTuning
             suggested.push_back ({ c->getDoubleAttribute ("freq"), c->getDoubleAttribute ("gain"), c->getDoubleAttribute ("q", 1.0) });
         for (const auto* c : e->getChildWithTagNameIterator ("BaseEq"))
             baseEq.push_back ({ c->getDoubleAttribute ("freq"), c->getDoubleAttribute ("gain"), c->getDoubleAttribute ("q", 1.0) });
+        for (const auto* c : e->getChildWithTagNameIterator ("Stipa"))
+        {
+            StipaMeasurement w;
+            w.position = c->getStringAttribute ("position");
+            w.micName = c->getStringAttribute ("micName");
+            w.time = c->getStringAttribute ("time");
+            w.sti = c->getDoubleAttribute ("sti", NAN);
+            w.corrected = c->getBoolAttribute ("corrected");
+            w.external = c->getBoolAttribute ("external");
+            juce::StringArray m;
+            m.addTokens (c->getStringAttribute ("mti"), " ", {});
+            for (int k = 0; k < 7 && k < m.size(); ++k) w.mti[(size_t) k] = m[k].getDoubleValue();
+            if (std::isfinite (w.sti)) stipa.push_back (std::move (w));
+        }
         for (const auto* c : e->getChildWithTagNameIterator ("Sweep"))
         {
             SweepMeasurement w;

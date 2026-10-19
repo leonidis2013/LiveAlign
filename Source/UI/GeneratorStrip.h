@@ -15,7 +15,7 @@ public:
         onButton.onClick = [this] { settings.genOn = onButton.getToggleState(); refreshColours(); };
         addAndMakeVisible (onButton);
 
-        typeBox.addItemList ({ "Pink noise", "White noise", "Sine", "Log sweep", "Polarity pulse" }, 1);
+        typeBox.addItemList ({ "Pink noise", "White noise", "Sine", "Log sweep", "Polarity pulse", "STIPA (speech test)" }, 1);
         typeBox.setTooltip ("Pink noise for tuning, a sweep for quiet rooms, sine for checking a frequency, "
                             "and a positive pulse for polarity checkers");
         typeBox.onChange = [this] { settings.genType = typeBox.getSelectedItemIndex(); updateVisibility(); };

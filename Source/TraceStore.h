@@ -6,6 +6,8 @@
 // with the app / plug-in state and inside venue project files. FRD files are used to exchange them with other software.
 // Message thread only.
 #include <algorithm>
+#include <cmath>
+#include <vector>
 #include <juce_core/juce_core.h>
 #include "Analysis/FreqTable.h"
 
@@ -23,6 +25,90 @@ struct Trace
     FreqTable data;   // freq, db, phase (transfer), extra = coherence (transfer)
     juce::String fromSession;   // set for traces shown from another session for comparison (not saved)
 };
+
+// Trace maths: one trace minus another (what changed: "EQ in" minus "bypassed", this Sunday minus the tuning), and
+// the average of several (a few seats as one). On the first trace's frequencies; the other is read in between its
+// points (log frequency), and where it does not reach, there is nothing.
+namespace tracemath
+{
+inline double readAt (const FreqTable& t, double f, const std::vector<double>& v)
+{
+    if (t.freq.size() < 2 || v.size() != t.freq.size() || f < t.freq.front() || f > t.freq.back()) return NAN;
+    const auto it = std::lower_bound (t.freq.begin(), t.freq.end(), f);
+    const size_t i = (size_t) std::max<long> (1, it - t.freq.begin());
+    const double f0 = t.freq[i - 1], f1 = t.freq[i];
+    const double w = f1 > f0 ? std::log (f / f0) / std::log (f1 / f0) : 0.0;
+    return v[i - 1] + w * (v[i] - v[i - 1]);
+}
+inline double readPhaseAt (const FreqTable& t, double f)
+{
+    // phase is read as a direction (no jump at +-180)
+    if (! t.hasPhase()) return NAN;
+    std::vector<double> c (t.freq.size()), s2 (t.freq.size());
+    const auto it = std::lower_bound (t.freq.begin(), t.freq.end(), f);
+    if (t.freq.size() < 2 || f < t.freq.front() || f > t.freq.back()) return NAN;
+    const size_t i = (size_t) std::max<long> (1, it - t.freq.begin());
+    const double f0 = t.freq[i - 1], f1 = t.freq[i];
+    const double w = f1 > f0 ? std::log (f / f0) / std::log (f1 / f0) : 0.0;
+    const double a = t.phase[i - 1] * 3.14159265358979 / 180.0, b = t.phase[i] * 3.14159265358979 / 180.0;
+    return std::atan2 ((1.0 - w) * std::sin (a) + w * std::sin (b), (1.0 - w) * std::cos (a) + w * std::cos (b)) * 180.0 / 3.14159265358979;
+}
+inline double wrap180 (double d) { while (d > 180.0) d -= 360.0; while (d <= -180.0) d += 360.0; return d; }
+
+// a - b: a transfer function of the difference (it sits around 0 dB, so it is shown on the transfer function graph).
+inline Trace difference (const Trace& a, const Trace& b)
+{
+    Trace t;
+    t.kind = Trace::Transfer;
+    t.name = a.name + " - " + b.name;
+    const bool phase = a.data.hasPhase() && b.data.hasPhase();
+    for (size_t i = 0; i < a.data.freq.size(); ++i)
+    {
+        const double f = a.data.freq[i];
+        const double bd = readAt (b.data, f, b.data.db);
+        if (! std::isfinite (bd) || ! std::isfinite (a.data.db[i])) continue;
+        t.data.freq.push_back (f);
+        t.data.db.push_back (a.data.db[i] - bd);
+        if (phase) t.data.phase.push_back (wrap180 (a.data.phase[i] - readPhaseAt (b.data, f)));
+    }
+    return t;
+}
+
+// The average of several traces of one kind: the levels in dB (as Smaart's trace averages), the phase as directions.
+inline Trace average (const std::vector<const Trace*>& in)
+{
+    Trace t;
+    if (in.empty()) return t;
+    const Trace& a = *in.front();
+    t.kind = a.kind;
+    t.name = "Average of " + juce::String ((int) in.size());
+    bool phase = true;
+    for (const auto* x : in) phase = phase && x->data.hasPhase();
+    for (size_t i = 0; i < a.data.freq.size(); ++i)
+    {
+        const double f = a.data.freq[i];
+        double sum = 0.0, cs = 0.0, sn = 0.0;
+        int n = 0;
+        for (const auto* x : in)
+        {
+            const double v = x == &a ? a.data.db[i] : readAt (x->data, f, x->data.db);
+            if (! std::isfinite (v)) { n = -1; break; }
+            sum += v;
+            ++n;
+            if (phase)
+            {
+                const double ph = (x == &a ? a.data.phase[i] : readPhaseAt (x->data, f)) * 3.14159265358979 / 180.0;
+                cs += std::cos (ph); sn += std::sin (ph);
+            }
+        }
+        if (n <= 0) continue;   // not every trace reaches here
+        t.data.freq.push_back (f);
+        t.data.db.push_back (sum / n);
+        if (phase) t.data.phase.push_back (std::atan2 (sn, cs) * 180.0 / 3.14159265358979);
+    }
+    return t;
+}
+} // namespace tracemath
 
 class TraceStore
 {

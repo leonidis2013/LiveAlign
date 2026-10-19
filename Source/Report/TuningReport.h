@@ -401,6 +401,27 @@ inline juce::String writeTuningReport (LiveAlignProcessor& p, const juce::File& 
                        { "Noise", noise ? "NC " + juce::String (juce::roundToInt (acoustics::noiseCriterion (L8))) : juce::String ("-"), "" } });
             L.para ("Room use: " + RoomTuning::useNames()[room.use] + ". Typical reverberation for it: " + juce::String (rtLo, 1) + " - " + juce::String (rtHi, 1)
                     + " s; speech intelligibility (STI) of " + juce::String (stiMin, 2) + " or more.", 9.0f);
+            if (! room.stipa.empty())
+            {
+                // STIPA, measured directly at the seats
+                L.sub ("Speech intelligibility, measured (STIPA)");
+                std::vector<juce::StringArray> sr;
+                for (const auto& w : room.stipa)
+                {
+                    juce::StringArray row { w.position, w.micName, n2 (w.sti, 2), acoustics::stiRating (w.sti), n2 (acoustics::alcons (w.sti), 1) + " %" };
+                    for (double v : w.mti) row.add (n2 (v, 2));
+                    row.add (w.time);
+                    sr.push_back (row);
+                }
+                L.table ({ 1.1f, 0.9f, 0.6f, 0.75f, 0.75f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.6f },
+                         { "Point", "Mic", "STIPA", "Rating", "ALcons", "125", "250", "500", "1k", "2k", "4k", "8k", "At" }, sr, 7.5f);
+                bool corr = true, ext = false;
+                for (const auto& w : room.stipa) { corr = corr && w.corrected; ext = ext || w.external; }
+                L.para ("STIPA per IEC 60268-16 (the direct method): the STIPA test signal" + juce::String (ext ? " (from an external source)" : " (LiveAlign's generator)")
+                        + " through the system, 18 s at each point, with the room's noise and reverberation as they were. Per octave: the modulation transfer index."
+                        + juce::String (corr ? " Masking and hearing threshold corrections applied (calibrated mics)." : " Without the level corrections (a mic was not calibrated)."),
+                        8.0f, dim);
+            }
 
             ui::AcousticsChart chart (p);
             const auto img = snapshotLight (chart, 820, 380, [] (ui::AcousticsChart& c) { c.setMetric (0); });

@@ -114,6 +114,13 @@ inline const std::vector<PrefDef>& all()
                        [] (double x) { return x < 1.0 ? juce::String ("None") : juce::String ((int) x) + " dB"; } });
         v.push_back ({ "eventLimitC", PrefCat::Monitoring, "Event level", "Weighting", "A for loudness, C to include the bass", 0.0,
                        { 0.0, 1.0 }, [] (double x) { return juce::String (x > 0.5 ? "C (LCeq)" : "A (LAeq)"); } });
+        v.push_back ({ "eventLimit2", PrefCat::Monitoring, "Event level", "Second limit", "A limit on the other weighting too (an LCeq beside an LAeq, or the other way)", 0.0,
+                       [] { std::vector<double> l { 0.0 }; for (int x = 75; x <= 125; ++x) l.push_back (x); return l; }(),
+                       [] (double x) { return x < 1.0 ? juce::String ("None") : juce::String ((int) x) + " dB"; } });
+        v.push_back ({ "peakLimit", PrefCat::Monitoring, "Event level", "Peak limit (LCpeak)", "The instantaneous C-weighted peak: 135 dB is the EU lower action value, 140 dB the limit", 135.0,
+                       { 0.0, 120.0, 125.0, 130.0, 135.0, 137.0, 140.0 }, [] (double x) { return x < 1.0 ? juce::String ("None") : juce::String ((int) x) + " dB(C)"; } });
+        v.push_back ({ "alarmMargin", PrefCat::Monitoring, "Level alarm", "Amber before the limit", "The alarm turns amber this far below a limit, and red at it", 3.0,
+                       { 1.0, 2.0, 3.0, 5.0, 6.0 }, [] (double x) { return juce::String ((int) x) + " dB"; } });
         v.push_back ({ "eventMinutes", PrefCat::Monitoring, "Event level", "Averaged over", "The limit's averaging window", 15.0,
                        { 1.0, 5.0, 10.0, 15.0, 30.0, 60.0 }, [] (double x) { return juce::String ((int) x) + " min"; } });
         v.push_back ({ "logSec", PrefCat::Monitoring, "Event level", "Log a point every", "The sound level log's step", 5.0,

@@ -1,7 +1,10 @@
 #pragma once
 // Sound level meter built on short FFT frames: A, C and Z weighting applied exactly per bin (IEC 61672 curves),
-// Fast (125 ms) and Slow (1 s) exponential time weighting, and Leq since the last reset.
+// Fast (125 ms) and Slow (1 s) exponential time weighting, and Leq since the last reset. Peak levels (LCpeak, LZpeak:
+// the largest instantaneous value, no time weighting) need every sample, so they run in the time domain: the C
+// weighting as a filter (IEC 61672's poles at 20.6 Hz and 12.2 kHz, two of each), the Z peak on the signal itself.
 // Levels are dBFS (AES17) plus the SPL calibration offset.
+#include <array>
 #include <cmath>
 #include <vector>
 #include "RtaEngine.h"
@@ -27,6 +30,56 @@ inline double cWeightDb (double f)
     return 20.0 * std::log10 (num / den) + 0.06;
 }
 
+// The C weighting as a time-domain filter: two first-order high-passes at 20.6 Hz and two first-order low-passes at
+// 12194 Hz (bilinear, not pre-warped: exact to 0.05 dB up to 4 kHz, and within the class 1 tolerance of IEC 61672
+// above: -0.6 dB at 8 kHz, -2.7 dB at 12.5 kHz at 48 kHz), 0 dB at 1 kHz.
+class CWeightFilter
+{
+public:
+    void prepare (double sr)
+    {
+        const double K = 2.0 * sr;
+        const double wl = 2.0 * kPiC * 20.598997, wh = 2.0 * kPiC * 12194.217;
+        hp = { K / (K + wl), -K / (K + wl), (wl - K) / (K + wl) };
+        lp = { wh / (K + wh), wh / (K + wh), (wh - K) / (K + wh) };
+        // the gain at 1 kHz, to normalise
+        const double w = 2.0 * kPiC * 1000.0 / sr;
+        auto mag = [w] (const Sec& c)
+        {
+            const double re = c.b0 + c.b1 * std::cos (w), im = -c.b1 * std::sin (w);
+            const double dr = 1.0 + c.a1 * std::cos (w), di = -c.a1 * std::sin (w);
+            return std::sqrt ((re * re + im * im) / (dr * dr + di * di));
+        };
+        const double g = mag (hp) * mag (hp) * mag (lp) * mag (lp);
+        norm = g > 0.0 ? 1.0 / g : 1.0;
+        reset();
+    }
+    void reset() { for (auto& z : state) z = {}; }
+    double process (double x)
+    {
+        x = run (hp, state[0], x);
+        x = run (hp, state[1], x);
+        x = run (lp, state[2], x);
+        x = run (lp, state[3], x);
+        return x * norm;
+    }
+
+private:
+    static constexpr double kPiC = 3.14159265358979323846;
+    struct Sec { double b0 = 1.0, b1 = 0.0, a1 = 0.0; };
+    struct Z { double x1 = 0.0, y1 = 0.0; };
+    static double run (const Sec& c, Z& z, double x)
+    {
+        const double y = c.b0 * x + c.b1 * z.x1 - c.a1 * z.y1;
+        z.x1 = x;
+        z.y1 = y;
+        return y;
+    }
+    Sec hp, lp;
+    std::array<Z, 4> state {};
+    double norm = 1.0;
+};
+
 class SplMeter
 {
 public:
@@ -39,6 +92,8 @@ public:
         spec.prepare (sr, n, n / 4);
         spec.setTimeConstant (0.0);
         const size_t bins = (size_t) n / 2 + 1;
+        cFilter.prepare (sr);
+        peakBlock = (int) sr;   // the recent peak: the largest in the last one to two seconds
         for (int w = 0; w < 3; ++w) weight[w].assign (bins, 0.0);
         const double binHz = sr / n;
         for (size_t k = 0; k < bins; ++k)
@@ -57,12 +112,15 @@ public:
         for (int w = 0; w < 3; ++w) { fast[w] = slow[w] = 0.0; energy[w] = 0.0; maxFast[w] = 0.0; }
         seconds = 0.0;
         spec.reset();
+        cFilter.reset();
+        resetPeaks();
     }
 
     void resetLeq()
     {
         for (int w = 0; w < 3; ++w) { energy[w] = 0.0; maxFast[w] = 0.0; }
         seconds = 0.0;
+        resetPeaks();
     }
 
     // Per-bin power correction for the measurement mic (from its calibration file). Empty = flat.
@@ -70,6 +128,19 @@ public:
 
     void push (const float* x, int count)
     {
+        // peaks: every sample, C weighted and unweighted
+        for (int i = 0; i < count; ++i)
+        {
+            const double c = std::abs (cFilter.process (x[i]));
+            const double z = std::abs ((double) x[i]);
+            if (c > blockPk[0]) blockPk[0] = c;
+            if (z > blockPk[1]) blockPk[1] = z;
+            if (++inBlock >= peakBlock)
+            {
+                for (int k = 0; k < 2; ++k) { lastPk[k] = blockPk[k]; maxPk[k] = std::max (maxPk[k], blockPk[k]); blockPk[k] = 0.0; }
+                inBlock = 0;
+            }
+        }
         // Feed in hop-sized pieces so every frame updates the time weighting.
         int done = 0;
         while (done < count)
@@ -86,8 +157,15 @@ public:
     double leqDb (Weight w) const { return seconds > 0.0 ? powerToDbfs (energy[w] / seconds) : -200.0; }
     double maxFastDb (Weight w) const { return powerToDbfs (maxFast[w]); }
     double leqSeconds() const { return seconds; }
+    // Peak levels in the same units (a full-scale sine's peak reads +3.01 dB above its level, as on a sound level
+    // meter): the recent one (the last second or two) and the largest since the Leq was reset. C or Z only.
+    double peakDb (Weight w) const { const int k = w == Z ? 1 : 0; return peakToDb (std::max (blockPk[k], lastPk[k])); }
+    double maxPeakDb (Weight w) const { const int k = w == Z ? 1 : 0; return peakToDb (std::max ({ maxPk[k], blockPk[k], lastPk[k] })); }
 
 private:
+    static double peakToDb (double pk) { return pk > 1e-10 ? 20.0 * std::log10 (pk) + 3.0103 : -200.0; }
+    void resetPeaks() { for (int k = 0; k < 2; ++k) { blockPk[k] = lastPk[k] = maxPk[k] = 0.0; } inBlock = 0; }
+
     void frameDone()
     {
         const auto& p = spec.lastFrame();
@@ -116,5 +194,8 @@ private:
     std::vector<double> weight[3], micGain;
     double fast[3] {}, slow[3] {}, energy[3] {}, maxFast[3] {};
     double seconds = 0.0;
+    CWeightFilter cFilter;
+    double blockPk[2] {}, lastPk[2] {}, maxPk[2] {};   // C, Z
+    int inBlock = 0, peakBlock = 48000;
 };
 } // namespace la

@@ -348,6 +348,15 @@ private:
                 for (int i = 0; i < 4; ++i) if (sizes[i] == settings.fftSize.load()) fi = i;
                 row ("FFT size", combo ({ "8k   (5.9 Hz, fast)", "16k  (2.9 Hz)", "32k  (1.5 Hz)", "64k  (0.7 Hz, slow)" }, fi, [this] (int i) { settings.fftSize = sizes[juce::jlimit (0, 3, i)]; }),
                      "Bigger resolves low frequencies better but reacts more slowly (at 48 kHz)");
+                row ("Windows", combo ({ "One FFT size", "Multi-time window (MTW)" }, settings.multiWindow.load() ? 1 : 0,
+                                       [this] (int i) { settings.multiWindow = i == 1; }),
+                     "MTW: the size above in the lows, shorter windows in the highs (as Smaart): fine detail in the bass, and highs not smeared by the room");
+                static const float thr[] = { 0.0f, -110.0f, -100.0f, -90.0f, -80.0f, -70.0f };
+                int ti = 3;
+                for (int i = 0; i < 6; ++i) if (std::abs (thr[i] - settings.magThresholdDb.load()) < 0.5f) ti = i;
+                row ("Magnitude threshold", combo ({ "Off", "-110 dB", "-100 dB", "-90 dB", "-80 dB", "-70 dB" }, ti,
+                                                   [this] (int i) { settings.magThresholdDb = thr[juce::jlimit (0, 5, i)]; }),
+                     "Frequencies where the reference has (almost) nothing are left out of the average: music leaves gaps that would average in as noise");
                 static const int avgs[] = { 1, 2, 4, 8, 16, 32, 64 };
                 juce::StringArray ai;
                 int as = 3;
@@ -525,7 +534,7 @@ private:
         {
             case PrefCat::Audio: settings.coherenceBlank = 0.4f; break;
             case PrefCat::Measurement:
-                settings.fftSize = 32768; settings.averages = 8; settings.smoothing = 24; settings.magRange = 20.0f;
+                settings.fftSize = 32768; settings.multiWindow = false; settings.magThresholdDb = -90.0f; settings.averages = 8; settings.smoothing = 24; settings.magRange = 20.0f;
                 settings.rtaBands = 3; settings.rtaSpeed = 1; settings.rtaShowRef = false; settings.rtaPeakHold = false;
                 break;
             case PrefCat::Display:

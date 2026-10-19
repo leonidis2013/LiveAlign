@@ -23,6 +23,7 @@
 #include "Analysis/Polarity.h"
 #include "Analysis/Deconvolve.h"
 #include "Analysis/EqFit.h"
+#include "Analysis/Stipa.h"
 
 using namespace la;
 
@@ -275,6 +276,204 @@ static void testWeightingAndSpl()
         near (m.slowDb (SplMeter::A), -20.0 + aWeightDb (f), 0.15, "SPL: A slow at " + fs_);
         near (m.fastDb (SplMeter::C), -20.0 + cWeightDb (f), 0.15, "SPL: C fast at " + fs_);
         near (m.leqDb (SplMeter::Z), -20.0, 0.3, "SPL: Leq Z at " + fs_);
+    }
+}
+
+static void testPeaks()
+{
+    const double fs = 48000.0;
+    // the C filter follows the C curve (within the tolerance of a class 1 meter around these)
+    for (double f : { 31.5, 63.0, 1000.0, 4000.0, 8000.0, 12500.0 })
+    {
+        CWeightFilter c;
+        c.prepare (fs);
+        double pk = 0.0;
+        for (int i = 0; i < 48000; ++i)
+        {
+            const double y = c.process (std::sin (2.0 * kPi * f * i / fs));
+            if (i > 24000) pk = std::max (pk, std::abs (y));
+        }
+        // (sample peaks: a few samples per cycle at the top miss the true peak a little)
+        // exact to 4 kHz; above, within the class 1 tolerance of IEC 61672 (+1.5 / -2.5 dB at 8 kHz, +2 / -5 dB at 12.5 kHz)
+        near (20.0 * std::log10 (pk), cWeightDb (f), f >= 12000.0 ? 3.5 : f >= 8000.0 ? 1.5 : 0.1, "LCpeak: the C filter at " + std::to_string ((int) f) + " Hz");
+    }
+    {
+        // a -20 dBFS sine: peak +3.01 dB above its level
+        SplMeter m;
+        m.prepare (fs);
+        std::vector<float> x (48000 * 3);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = (float) (0.1 * std::sin (2.0 * kPi * 1000.0 * i / fs));
+        m.push (x.data(), (int) x.size());
+        near (m.peakDb (SplMeter::C), -20.0 + 3.01, 0.05, "LCpeak: a -20 dBFS sine reads -17.0");
+        near (m.maxPeakDb (SplMeter::Z), -20.0 + 3.01, 0.05, "LZpeak: the same unweighted");
+        // one sharp click on top: the peak catches it, the slow level hardly moves
+        std::vector<float> y (48000, 0.0f);
+        y[1000] = 0.9f;
+        m.push (y.data(), (int) y.size());
+        near (m.maxPeakDb (SplMeter::Z), 20.0 * std::log10 (0.9) + 3.01, 0.05, "LZpeak: a single-sample click");
+        check (m.maxPeakDb (SplMeter::C) > -10.0, "LCpeak: the click shows C weighted too", m.maxPeakDb (SplMeter::C), -5.0);
+        m.resetLeq();
+        check (m.maxPeakDb (SplMeter::C) < -150.0, "LCpeak: reset with the Leq");
+    }
+}
+
+// A band of noise (FFT-shaped: only fLo..fHi), `len` samples.
+static std::vector<float> bandNoise (int len, double fs, double fLo, double fHi, unsigned seed)
+{
+    const int n = nextPowerOfTwo (len);
+    Fft f;
+    f.setSize (n);
+    std::vector<cplx> X ((size_t) n);
+    unsigned st = seed;
+    auto rnd = [&st] { st = st * 1664525u + 1013904223u; return (double) (st >> 8) / 16777216.0 - 0.5; };
+    for (int k = 1; k < n / 2; ++k)
+    {
+        const double fk = k * fs / n;
+        if (fk >= fLo && fk <= fHi) { X[(size_t) k] = cplx (rnd(), rnd()); X[(size_t) (n - k)] = std::conj (X[(size_t) k]); }
+    }
+    f.inverse (X.data());
+    std::vector<float> x ((size_t) len);
+    double ms = 0.0;
+    for (int i = 0; i < len; ++i) { x[(size_t) i] = (float) X[(size_t) i].real(); ms += x[(size_t) i] * x[(size_t) i]; }
+    const double g = 0.1 / std::sqrt (ms / len);
+    for (auto& v : x) v = (float) (v * g);
+    return x;
+}
+
+static void testThresholdAndMtw()
+{
+    const double fs = 48000.0;
+    {
+        // the reference plays the lows, then only the highs (music moving on); the mic is it at -6 dB plus a little noise
+        const int len = 48000 * 4;
+        auto lows = bandNoise (len, fs, 200.0, 800.0, 3), highs = bandNoise (len, fs, 3000.0, 8000.0, 5);
+        std::vector<float> ref (lows), mic ((size_t) len);
+        ref.insert (ref.end(), highs.begin(), highs.end());
+        mic.resize (ref.size());
+        unsigned st = 9;
+        for (size_t i = 0; i < ref.size(); ++i) { st = st * 1664525u + 1013904223u; mic[i] = 0.5f * ref[i] + 0.003f * ((float) (st >> 8) / 16777216.0f - 0.5f); }
+        auto run = [&] (double thr)
+        {
+            TransferEngine e;
+            e.prepare (fs, 8192);
+            e.setAverages (8);
+            e.setMagnitudeThreshold (thr);
+            e.push (mic.data(), ref.data(), (int) ref.size());
+            std::vector<double> fr { 400.0 };
+            std::vector<float> m, ph, co;
+            e.banded (fr, 1.0 / 6.0, m, ph, co);
+            return std::make_pair (m[0], co[0]);
+        };
+        const auto with = run (-90.0), without = run (0.0);
+        near (with.first, -6.02, 0.3, "Threshold: 400 Hz still right after the music left it");
+        check (with.second > 0.9f, "Threshold: and still coherent", with.second, 0.9);
+        check (! (std::abs (without.first + 6.02) < 0.3 && without.second > 0.9f), "Threshold: without it, the gap averages in (the test means something)", without.second, 0.5);
+    }
+    {
+        // a room: the direct sound, and a reflection 8 ms later at -6 dB. A 32k window takes the reflection in (a comb
+        // in the highs, every 125 Hz); MTW's short window at the top (21 ms, Hann) mostly does not.
+        const int len = 48000 * 6;
+        auto ref = bandNoise (len, fs, 20.0, 20000.0, 7);
+        std::vector<float> mic ((size_t) len, 0.0f);
+        const int d = (int) (0.008 * fs);
+        for (int i = 0; i < len; ++i) mic[(size_t) i] = ref[(size_t) i] + (i >= d ? 0.5f * ref[(size_t) (i - d)] : 0.0f);
+        auto ripple = [&] (bool mtw)
+        {
+            TransferAnalyzer t;
+            t.prepare (fs, 32768);
+            t.setAverages (8);
+            t.setMultiWindow (mtw);
+            t.push (mic.data(), ref.data(), len);
+            std::vector<double> fr;
+            for (double f = 3000.0; f <= 6000.0; f *= std::pow (2.0, 1.0 / 192.0)) fr.push_back (f);
+            fr.push_back (100.0);
+            std::vector<float> m, ph, co;
+            t.banded (fr, 1.0 / 96.0, m, ph, co);
+            float lo = 1e9f, hi = -1e9f;
+            for (size_t i = 0; i + 1 < fr.size(); ++i) { lo = std::min (lo, m[i]); hi = std::max (hi, m[i]); }
+            return std::make_pair (hi - lo, m.back());
+        };
+        const auto single = ripple (false), multi = ripple (true);
+        check (single.first > 5.0, "MTW: one long window shows the reflection's comb in the highs", single.first, 8.0);
+        check (multi.first < single.first * 0.5, "MTW: much less of it with short windows in the highs", multi.first, single.first * 0.5);
+        check (std::abs (multi.second - single.second) < 1.0, "MTW: the lows are the long window's", multi.second, single.second);
+    }
+}
+
+static void testStipa()
+{
+    const double fs = 48000.0;
+    const int len = (int) (stipa::kSeconds * fs);
+    stipa::Signal sig;
+    sig.prepare (fs);
+    std::vector<float> x ((size_t) len);
+    for (auto& v : x) v = (float) sig.next (0.1);
+    {
+        const auto r = stipa::analyse (x.data(), len, fs);
+        check (r.valid && r.sti > 0.95, "STIPA: the clean signal reads about 1", r.sti, 1.0);
+        bool depth = true;
+        for (const auto& b : r.m) for (double v : b) depth = depth && v > 0.9;
+        check (depth, "STIPA: every band keeps its modulation");
+        const auto withRef = stipa::analyse (x.data(), len, fs, x.data());
+        check (withRef.valid && withRef.sti > 0.97, "STIPA: against the looped-back reference too", withRef.sti, 1.0);
+    }
+    {
+        // noise as loud as the signal in every band: the modulation halves, STI 0.50
+        stipa::Signal noise;
+        noise.prepare (fs, 0xBEEF);
+        noise.setModulated (false);
+        std::vector<float> y ((size_t) len);
+        for (int i = 0; i < len; ++i) y[(size_t) i] = x[(size_t) i] + (float) noise.next (0.1);
+        const auto r = stipa::analyse (y.data(), len, fs);
+        near (r.sti, 0.50, 0.04, "STIPA: noise at the signal's level gives 0.50");
+    }
+    {
+        // reverberation (an exponential decay, RT 1.0 s): m(F) = 1 / sqrt (1 + (2 pi F T / 13.8)^2)
+        const double T = 1.0;
+        const int hl = (int) (1.6 * fs);
+        const int n = nextPowerOfTwo (len + hl);
+        Fft f;
+        f.setSize (n);
+        std::vector<cplx> X ((size_t) n), H ((size_t) n);
+        unsigned st = 77;
+        for (int i = 0; i < hl; ++i)
+        {
+            st = st * 1664525u + 1013904223u;
+            const double nz = (double) (st >> 8) / 16777216.0 - 0.5;
+            H[(size_t) i] = cplx (nz * std::exp (-6.9078 * i / (fs * T)), 0.0);
+        }
+        for (int i = 0; i < len; ++i) X[(size_t) i] = cplx (x[(size_t) i], 0.0);
+        f.forward (X.data());
+        f.forward (H.data());
+        for (int k = 0; k < n; ++k) X[(size_t) k] *= H[(size_t) k];
+        f.inverse (X.data());
+        // the steady part (after the first decay)
+        std::vector<float> y ((size_t) len);
+        double ms = 0.0;
+        for (int i = 0; i < len; ++i) { y[(size_t) i] = (float) X[(size_t) (i + hl)].real(); ms += (double) y[(size_t) i] * y[(size_t) i]; }
+        const auto r = stipa::analyse (y.data(), len - hl, fs);
+        // the theory
+        static const double alpha[7] = { 0.085, 0.127, 0.230, 0.233, 0.309, 0.224, 0.173 };
+        static const double beta[6] = { 0.085, 0.078, 0.065, 0.011, 0.047, 0.095 };
+        std::array<double, 7> mti {};
+        for (int b = 0; b < 7; ++b)
+        {
+            double ti = 0.0;
+            for (double F : stipa::modFreqs()[(size_t) b])
+            {
+                const double m = 1.0 / std::sqrt (1.0 + std::pow (2.0 * kPi * F * T / 13.8, 2.0));
+                ti += (std::clamp (10.0 * std::log10 (m / (1.0 - m)), -15.0, 15.0) + 15.0) / 30.0;
+            }
+            mti[(size_t) b] = ti / 2.0;
+        }
+        double want = 0.0;
+        for (int b = 0; b < 7; ++b) want += alpha[b] * mti[(size_t) b];
+        for (int b = 0; b < 6; ++b) want -= beta[b] * std::sqrt (mti[(size_t) b] * mti[(size_t) b + 1]);
+        near (r.sti, want, 0.04, "STIPA: a 1.0 s reverberation reads as the theory says");
+    }
+    {
+        const auto r = stipa::analyse (x.data(), (int) (5.0 * fs), fs);
+        check (! r.valid, "STIPA: too short a recording is refused");
     }
 }
 
@@ -970,6 +1169,9 @@ int main()
     testCoherence();
     testDelayFinder();
     testWeightingAndSpl();
+    testPeaks();
+    testThresholdAndMtw();
+    testStipa();
     testGenerator();
     testFreqTable();
     testCrossover();

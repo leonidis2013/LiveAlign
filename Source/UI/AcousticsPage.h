@@ -15,6 +15,7 @@
 #include "RoomPage.h"
 #include "../PluginProcessor.h"
 #include "../Analysis/Deconvolve.h"
+#include "../Analysis/Stipa.h"
 #include "../AcousticsSummary.h"
 
 namespace la::ui
@@ -290,6 +291,13 @@ public:
             else startSweep();
         };
         addAndMakeVisible (sweepButton);
+        stipaButton.setTooltip ("STIPA (IEC 60268-16, the direct method): 18 seconds of the speech-like STIPA test signal through the whole system, "
+                                "picked up by every mic at a point. Measures speech intelligibility as heard, with the room's noise and reverberation.");
+        stipaButton.onClick = [this] { if (phase == Phase::Idle) startStipa(); else if (stipaRunning) stopSweep ("Stopped."); };
+        addAndMakeVisible (stipaButton);
+        externalToggle.setButtonText ("External STIPA source");
+        externalToggle.setTooltip ("A STIPA talkbox (or a STIPA file played from elsewhere) instead of LiveAlign's generator: only record and analyse");
+        addAndMakeVisible (externalToggle);
         planButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("Points on the plan  \xe2\x86\x92")));
         planButton.onClick = [this] { if (onOpenPlan) onOpenPlan(); };
         addAndMakeVisible (planButton);
@@ -324,11 +332,76 @@ public:
     {
         proc.recorder.stop();
         restoreGenerator();
+        stipaRunning = false;
         phase = Phase::Idle;
         stopTimer();
         status = why;
         refreshButtons();
         repaint();
+    }
+
+    // ---- STIPA: the test signal through the system (or an external source), 18 s at every mic at a point ----
+    void startStipa()
+    {
+        auto& st = proc.settings;
+        juce::StringArray where;
+        for (int m = 0; m < st.micCount.load(); ++m)
+            if (proc.mics.position[(size_t) m].isNotEmpty()) where.add (proc.mics.nameOf (m) + " at " + proc.mics.position[(size_t) m]);
+        if (where.isEmpty()) { status = "Put a mic at a listening point first."; repaint(); return; }
+        stipaExternal = externalToggle.getToggleState();
+        saved = { st.genType.load(), st.genSweepSec.load(), st.genOutput.load(), st.genOn.load() };
+        if (! stipaExternal)
+        {
+            if (st.genLocked.load()) { status = "The generator is off in a show session: use an external STIPA source."; repaint(); return; }
+            st.genType = (int) GenType::Stipa;
+            st.genOutput = 0;   // the whole system
+            st.genOn = true;
+        }
+        st.running = true;
+        stipaRunning = true;
+        phase = Phase::Lead;
+        phaseStart = la::clock::ms();
+        status = "STIPA: " + juce::String (stipaExternal ? "recording the external source" : "playing the test signal") + " for 18 s at " + where.joinIntoString (", ")
+                 + ". Speech level, please (about 60 - 70 dBA at the seats).";
+        refreshButtons();
+        startTimerHz (15);
+        repaint();
+    }
+
+    void stipaDone (const std::vector<juce::String>& where, const std::vector<juce::String>& names, const std::vector<stipa::Result>& results)
+    {
+        stopTimer();
+        phase = Phase::Idle;
+        stipaRunning = false;
+        juce::StringArray done, failed;
+        auto& sw = proc.room.stipa;
+        for (size_t k = 0; k < results.size() && k < where.size(); ++k)
+        {
+            if (! results[k].valid) { failed.add (where[k]); continue; }
+            sw.erase (std::remove_if (sw.begin(), sw.end(), [&] (const StipaMeasurement& w) { return w.position == where[k]; }), sw.end());
+            StipaMeasurement m;
+            m.position = where[k];
+            m.micName = names[k];
+            m.time = juce::Time::getCurrentTime().formatted ("%H:%M");
+            m.sti = results[k].sti;
+            m.mti = results[k].mti;
+            m.corrected = results[k].corrected;
+            m.external = stipaExternal;
+            sw.push_back (m);
+            done.add (where[k] + " " + juce::String (m.sti, 2) + " (" + acoustics::stiRating (m.sti) + ")");
+        }
+        status = done.isEmpty() ? juce::String ("STIPA: nothing clear came back. Is the signal reaching the mics (raise the level)?")
+                                : "STIPA " + done.joinIntoString (", ") + "." + (failed.isEmpty() ? juce::String() : " Not clear at " + failed.joinIntoString (", ") + ".");
+        if (! done.isEmpty()) ++serial;
+        changed();
+    }
+
+    double stipaAverage() const
+    {
+        double s = 0.0;
+        int n = 0;
+        for (const auto& w : proc.room.stipa) if (std::isfinite (w.sti)) { s += w.sti; ++n; }
+        return n > 0 ? s / n : NAN;
     }
 
     bool sweeping() const { return phase != Phase::Idle; }
@@ -451,6 +524,14 @@ public:
         tile (1, "WARMTH / BRILLIANCE", num (sum.bassRatio, 2) + " / " + num (sum.trebleRatio, 2), "BR / TR",
               ! std::isfinite (sum.bassRatio) ? p.textDim : sum.bassRatio > 1.3 || sum.trebleRatio > 1.15 ? p.warn : p.text);
         tile (2, "CLARITY C50 / C80", num (sum.c50, 1) + " / " + num (sum.c80, 1), "dB", p.text);
+        if (std::isfinite (stipaAverage()))
+        {
+            // measured directly: it outranks the figure worked out from the impulse responses
+            const double sti = stipaAverage();
+            tile (3, "SPEECH (STIPA)", num (sti, 2), juce::String (acoustics::stiRating (sti)) + ", " + juce::String (acoustics::alcons (sti), 1) + "% ALcons",
+                  sti >= stiMin ? p.good : p.warn);
+        }
+        else
         {
             const double sti = std::isfinite (sum.stiCorrected) ? sum.stiCorrected : sum.stiRaw;
             tile (3, "SPEECH (STI)", num (sti, 2),
@@ -507,7 +588,9 @@ public:
             g.drawText (name, r.removeFromLeft (110), juce::Justification::centredLeft, true);
             g.setFont (monoFont (11.0f));
             g.setColour (res != nullptr ? p.textDim : p.textFaint);
-            g.drawText (res != nullptr ? "RT " + num (res->rtMid(), 2) + "  STI " + num (res->sti, 2) : juce::String (on ? "to sweep" : "left out"), r, juce::Justification::centredLeft, true);
+            juce::String line = res != nullptr ? "RT " + num (res->rtMid(), 2) + "  STI " + num (res->sti, 2) : juce::String (on ? "to sweep" : "left out");
+            for (const auto& w : room.stipa) if (w.position == name) line << "  STIPA " << num (w.sti, 2);
+            g.drawText (line, r, juce::Justification::centredLeft, true);
         }
 
         // the details
@@ -537,6 +620,13 @@ public:
         bar.removeFromLeft (10);
         roomLink.setBounds (bar.removeFromRight (juce::jmin (440, bar.getWidth())).reduced (0, 2));
         sweepButton.setBounds (right.removeFromTop (34));
+        right.removeFromTop (6);
+        {
+            auto row = right.removeFromTop (28);
+            stipaButton.setBounds (row.removeFromLeft (row.getWidth() / 2 - 4));
+            row.removeFromLeft (8);
+            externalToggle.setBounds (row);
+        }
         right.removeFromTop (6);
         sweepInfo = right.removeFromTop (34);
         right.removeFromTop (6);
@@ -574,6 +664,9 @@ private:
 
     void refreshButtons()
     {
+        stipaButton.setButtonText (stipaRunning ? juce::String ("Stop STIPA") : proc.room.stipa.empty() ? juce::String ("Measure STIPA") : juce::String ("Measure STIPA again"));
+        stipaButton.setEnabled (phase == Phase::Idle || stipaRunning);
+        sweepButton.setEnabled (! stipaRunning);
         sweepButton.setButtonText (phase != Phase::Idle ? juce::String ("Stop")
                                    : sweptCount() >= points().size() && ! points().isEmpty() ? juce::String ("Measure again with a sweep") : juce::String ("Measure with a sweep"));
         sweepButton.setColour (juce::TextButton::buttonColourId, phase != Phase::Idle ? pal().bad : pal().accent);
@@ -697,6 +790,7 @@ private:
     void restoreGenerator()
     {
         auto& st = proc.settings;
+        if (stipaRunning && stipaExternal) return;   // it was never touched
         st.genOn = false;
         st.genType = saved.type;
         st.genSweepSec = saved.sweepSec;
@@ -705,9 +799,58 @@ private:
 
     double rate() const { return proc.getSampleRate() > 1000.0 ? proc.getSampleRate() : 48000.0; }
 
+    void stipaTimer (double el)
+    {
+        if (phase == Phase::Lead && el > 1000.0)   // a second for the signal to fill the room
+        {
+            proc.recorder.start ((int) (stipa::kSeconds * rate()), proc.settings.micCount.load());
+            phase = Phase::Recording;
+        }
+        else if (phase == Phase::Recording && proc.recorder.done())
+        {
+            restoreGenerator();
+            phase = Phase::Working;
+            status = "Working out the STIPA...";
+            struct Job { std::vector<std::vector<float>> mics; std::vector<float> ref; std::vector<double> offsets; double fs; int n; bool useRef; std::vector<juce::String> where, names; };
+            auto job = std::make_shared<Job>();
+            const auto& rec = proc.recorder;
+            job->fs = rate();
+            job->n = rec.length;
+            job->ref = rec.ref;
+            job->useRef = ! stipaExternal && proc.settings.refSource.load() != 0;   // the generator, looped back or copied
+            for (int m = 0; m < rec.numMics; ++m)
+                if (proc.mics.position[(size_t) m].isNotEmpty())
+                {
+                    job->mics.push_back (rec.mic[(size_t) m]);
+                    job->offsets.push_back (proc.settings.micSplCalibrated[m].load() ? (double) proc.settings.micSplOffset[m].load() : NAN);
+                    job->where.push_back (proc.mics.position[(size_t) m]);
+                    job->names.push_back (proc.mics.nameOf (m));
+                }
+            juce::Component::SafePointer<AcousticsPage> safe (this);
+            std::thread ([job, safe]
+            {
+                auto results = std::make_shared<std::vector<stipa::Result>>();
+                for (size_t k = 0; k < job->mics.size(); ++k)
+                    results->push_back (stipa::analyse (job->mics[k].data(), job->n, job->fs, job->useRef ? job->ref.data() : nullptr, job->offsets[k]));
+                if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
+                    mm->callAsync ([safe, job, results] { if (safe != nullptr) safe->stipaDone (job->where, job->names, *results); });
+            }).detach();
+        }
+        else if (phase == Phase::Recording && el > (stipa::kSeconds + 8.0) * 1000.0)
+        {
+            stopSweep ("The recording did not finish: check the audio device.");
+            stipaRunning = false;
+            refreshButtons();
+            return;
+        }
+        if ((phase == Phase::Lead || phase == Phase::Recording) && ! stipaExternal && ! proc.settings.genOn.load()) { stipaRunning = false; stopSweep ("Stopped: the generator was turned off."); return; }
+        repaint (sweepInfo.expanded (2));
+    }
+
     void timerCallback() override
     {
         const double el = la::clock::ms() - phaseStart;
+        if (stipaRunning) { stipaTimer (el); return; }
         if (phase == Phase::Lead && el > 300.0)
         {
             // two sweeps and the silence after each: the second is clean of the start-up
@@ -777,7 +920,9 @@ public:
 private:
     LiveAlignProcessor& proc;
     AcousticsChart chart;
-    juce::TextButton sweepButton { "Measure with a sweep" }, planButton;
+    juce::TextButton sweepButton { "Measure with a sweep" }, planButton, stipaButton { "Measure STIPA" };
+    juce::ToggleButton externalToggle;
+    bool stipaRunning = false, stipaExternal = false;
     Phase phase = Phase::Idle;
     double phaseStart = 0.0;
     juce::String status, redo;
