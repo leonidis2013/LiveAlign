@@ -165,12 +165,14 @@ public:
     void undoTickForPreview() { trackChanges(); }
     bool pageInSession (int page) const;
     void afterProjectLoadedForPreview() { afterProjectLoaded(); }
+    void refreshListenStripForPreview() { if (listenStrip != nullptr) listenStrip->refresh(); }
     bool listenStripShownForPreview() const { return listenStrip != nullptr && listenStrip->isVisible() && listenStrip->getParentComponent() != nullptr && listenStrip->listening(); }
     void applySessionKind();
     void startSession (const juce::String& name, int kind);
     bool unsavedForPreview() const { return unsaved; }
     void markPart();
     void checkInterface();
+    void updateLevelAlarm();
     juce::String lostInterfaceForPreview() const { return lostInterface; }
     void layoutPanesForPreview() { layoutPanes(); }
     int levelAlarmForPreview() const { return levelAlarm.level(); }

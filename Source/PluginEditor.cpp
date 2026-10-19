@@ -541,6 +541,14 @@ void LiveAlignEditor::showPage (int page)
     repaint();
 }
 
+// The level alarm: red at a limit or the peak limit, amber close to one.
+void LiveAlignEditor::updateLevelAlarm()
+{
+    const int was = levelAlarm.level();
+    levelAlarm.set (processor.splLog.alarm (snap.lcPeak, snap.splIsSpl, la::AppPrefs::get().value ("alarmMargin")));
+    if (levelAlarm.level() == 2 && was != 2) showToast ("Level over the limit");
+}
+
 // The audio interface gone (unplugged, switched off): say so until it is back.
 void LiveAlignEditor::checkInterface()
 {
@@ -1642,13 +1650,7 @@ void LiveAlignEditor::timerCallback()
         }
         tracesPanel.refresh();
         if (tick % 15 == 0) { eventPanel.setLog (processor.splLog); updateConditionsPanel(); }
-        if (tick % 3 == 0)
-        {
-            // the level alarm: red at a limit or the peak limit, amber close to one
-            const int was = levelAlarm.level();
-            levelAlarm.set (processor.splLog.alarm (snap.lcPeak, snap.splIsSpl, la::AppPrefs::get().value ("alarmMargin")));
-            if (levelAlarm.level() == 2 && was != 2) showToast ("Level over the limit");
-        }
+        if (tick % 3 == 0) updateLevelAlarm();
     }
 
     const bool running = settings.running.load();

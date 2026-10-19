@@ -956,6 +956,7 @@ public:
                         }
                         save (img, "audio-window-listen");
                     }
+                    editor->refreshListenStripForPreview();   // (the timer does it; a slow machine may not have got there yet)
                     check (proc.settings.listenSource.load() == 1 && editor->listenStripShownForPreview(),
                            "listening: the reference, with its level on the main screen");
                     proc.setListening (0, -1, {});   // off again for the rest of the run
@@ -1015,7 +1016,8 @@ public:
             case 93:
                 if (after (60))
                 {
-                    editor->checkInterface();   // (the timer does it twice a second; a slow machine may not have got there yet)
+                    editor->checkInterface();   // (the timer does these; a slow machine may not have got there yet)
+                    editor->updateLevelAlarm();
                     shot ("monitor-level");
                     check (editor->levelAlarmForPreview() >= 1, "alarm: the level near or over the limits shows on Live monitoring");
                     check (editor->lostInterfaceForPreview() == "Scarlett 18i20 USB", "interface: unplugged, the app says so");
