@@ -170,6 +170,7 @@ public:
     void startSession (const juce::String& name, int kind);
     bool unsavedForPreview() const { return unsaved; }
     void markPart();
+    void checkInterface();
     juce::String lostInterfaceForPreview() const { return lostInterface; }
     void layoutPanesForPreview() { layoutPanes(); }
     int levelAlarmForPreview() const { return levelAlarm.level(); }

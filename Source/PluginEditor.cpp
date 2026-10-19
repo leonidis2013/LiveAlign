@@ -541,6 +541,18 @@ void LiveAlignEditor::showPage (int page)
     repaint();
 }
 
+// The audio interface gone (unplugged, switched off): say so until it is back.
+void LiveAlignEditor::checkInterface()
+{
+    const auto lost = la::StandaloneHooks::interfaceLost() ? la::StandaloneHooks::interfaceLost()() : juce::String();
+    if (lost == lostInterface) return;
+    if (lost.isNotEmpty()) showToast ("The audio interface is gone: " + lost);
+    else if (lostInterface.isNotEmpty()) showToast (lostInterface + " is back");
+    lostInterface = lost;
+    resized();
+    repaint();
+}
+
 // Marks where a part of the event starts: a menu of the usual parts, the ones used before, or a name typed in.
 void LiveAlignEditor::markPart()
 {
@@ -1704,16 +1716,7 @@ void LiveAlignEditor::timerCallback()
 
     if (tick % 15 == 0)
     {
-        // the audio interface gone (unplugged, switched off): say so until it is back
-        const auto lost = la::StandaloneHooks::interfaceLost() ? la::StandaloneHooks::interfaceLost()() : juce::String();
-        if (lost != lostInterface)
-        {
-            if (lost.isNotEmpty()) showToast ("The audio interface is gone: " + lost);
-            else if (lostInterface.isNotEmpty()) showToast (lostInterface + " is back");
-            lostInterface = lost;
-            resized();
-            repaint();
-        }
+        checkInterface();
     }
 
     if (tick % 15 == 0)

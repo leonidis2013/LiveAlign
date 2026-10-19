@@ -1015,6 +1015,7 @@ public:
             case 93:
                 if (after (60))
                 {
+                    editor->checkInterface();   // (the timer does it twice a second; a slow machine may not have got there yet)
                     shot ("monitor-level");
                     check (editor->levelAlarmForPreview() >= 1, "alarm: the level near or over the limits shows on Live monitoring");
                     check (editor->lostInterfaceForPreview() == "Scarlett 18i20 USB", "interface: unplugged, the app says so");
@@ -1025,6 +1026,7 @@ public:
             case 94:
                 if (after (60))
                 {
+                    editor->checkInterface();
                     check (editor->lostInterfaceForPreview().isEmpty(), "interface: back, the warning goes");
                     // the RTA and the waterfall showing the mic and the console feed together
                     editor->setPaneViews (0, 3, 4);
