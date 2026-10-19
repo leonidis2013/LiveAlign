@@ -238,6 +238,7 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     addChildComponent (*coveragePage);
     headroomPage = std::make_unique<HeadroomPage> (p);
     headroomPage->onChanged = [this] { generator.sync(); updateStatuses(); };
+    headroomPage->crossoverReady = [this] { return speakerPage != nullptr && speakerPage->crossoverDone(); };
     headroomPage->onOpenVenue = [this] { showPage ((int) Page::Venue); };
     headroomPage->setSnapshot (snap);
     addChildComponent (*headroomPage);
@@ -678,7 +679,12 @@ void LiveAlignEditor::updateStatuses()
     };
 
     // ---- setup ----
-    if (setupChanged)
+    if (! processor.sessionStarted() || (done == 0 && ! setupChanged))
+        set (Page::Mics, StepStatus::NotStarted, "Not set up",
+             ! processor.sessionStarted() ? juce::String ("The mics are checked in each session: start a session on Home.")
+                                          : everCalibrated ? juce::String ("Set up before: re-check the sound level, loopback and noise for this session.")
+                                                           : juce::String ("Mics, calibration, loopback and room noise."));
+    else if (setupChanged)
     {
         const auto ch = processor.setupChanges();
         set (Page::Mics, StepStatus::Attention, processor.interfaceChanged() ? "Interface changed" : "Wiring changed",
@@ -698,9 +704,11 @@ void LiveAlignEditor::updateStatuses()
     else set (Page::Speakers, nSrc > 0 ? StepStatus::Ready : StepStatus::NotStarted, juce::String (nSrc) + (nSrc == 1 ? " speaker" : " speakers"),
               juce::String (nSrc) + (nSrc == 1 ? " speaker" : " speakers") + " in the system: roles, channels and outputs.");
     {
-        const int pts = processor.positions.size();
-        set (Page::Plan, pts > 0 ? StepStatus::Ready : StepStatus::NotStarted, juce::String (pts) + (pts == 1 ? " point" : " points"),
-             pts > 0 ? juce::String (pts) + " tuning points: " + processor.positions.joinIntoString (", ") + "."
+        juce::StringArray allPts (processor.monitoringSession() ? processor.monitorPoints : processor.positions);
+        if (! processor.sessionStarted()) for (const auto& m : processor.monitorPoints) allPts.addIfNotAlreadyThere (m);
+        const int pts = allPts.size();
+        set (Page::Plan, pts > 0 ? StepStatus::Ready : StepStatus::NotStarted, pts > 0 ? juce::String (pts) + (pts == 1 ? " point" : " points") : juce::String ("Not set"),
+             pts > 0 ? juce::String (pts) + (processor.monitoringSession() ? " monitoring points: " : " points: ") + allPts.joinIntoString (", ") + "."
                      : juce::String ("Add the points (FOH, a few seats) where the mic goes."));
         // Venue: the speakers and the points together
         const bool sizeKnown = processor.plan.volume() > 0.0;
@@ -709,7 +717,7 @@ void LiveAlignEditor::updateStatuses()
         else if (pts == 0) set (Page::Venue, StepStatus::InProgress, juce::String (nSrc) + (nSrc == 1 ? " speaker, no points" : " speakers, no points"),
                                 "Add the points where the mic goes (Plan and points).", 0.5f);
         else set (Page::Venue, StepStatus::Ready, juce::String (nSrc) + (nSrc == 1 ? " speaker, " : " speakers, ") + juce::String (pts) + (pts == 1 ? " point" : " points"),
-                  juce::String (nSrc) + " speakers and " + juce::String (pts) + " tuning points" + (sizeKnown ? "." : "; the room's size is not entered (Details)."));
+                  juce::String (nSrc) + " speakers and " + juce::String (pts) + " points" + (sizeKnown ? "." : "; the room's size is not entered (Details)."));
     }
 
     // ---- tuning ----
@@ -754,7 +762,7 @@ void LiveAlignEditor::updateStatuses()
                   "Line the speakers up where they meet.", 0.5f);
     }
     else set (Page::Align, sys.alignments.empty() ? StepStatus::None : speakerPage->alignmentsDone() ? StepStatus::Ready : StepStatus::InProgress,
-              sys.alignments.empty() ? "Optional" : speakerPage->stepSummaryText (2), "Optional: left / right, fills and delays.");
+              sys.alignments.empty() ? "Optional" : speakerPage->stepSummaryText (2), "Optional: Stereo to the sub, fills and delays.");
 
     {
         const auto& rt = processor.room;
@@ -854,6 +862,16 @@ void LiveAlignEditor::refreshNext()
     juce::String what;
     auto pick = [&] (Page pg, const juce::String& w) { if (page < 0 && pageInSession ((int) pg)) { page = (int) pg; what = w; } };
     const auto& sys = processor.system;
+    if (! processor.sessionStarted())
+    {
+        // a new venue: the setup that both kinds of visit share, then a session
+        if (sys.sources.empty()) pick (Page::Speakers, "add the speakers");
+        if (processor.positions.isEmpty() && processor.monitorPoints.isEmpty()) pick (Page::Plan, "add the measurement points (or load a layout)");
+        if (page < 0) { page = (int) Page::Home; what = "Start a session: New session, for tuning the room or for a show"; }
+        nav.setNext (page, what);
+        homePage->setNext (page, what);
+        return;
+    }
     if (processor.monitoringSession())
     {
         if (monitorMicPage->nextHint().isNotEmpty()) pick (Page::MonitorMic, monitorMicPage->nextHint().toLowerCase());
@@ -866,9 +884,9 @@ void LiveAlignEditor::refreshNext()
     if (micPage->nextHint().isNotEmpty()) pick (Page::Mics, micPage->nextHint());
     if (processor.positions.isEmpty()) pick (Page::Plan, "add the listening points");
     if (! speakerPage->responsesDone()) pick (Page::Response, "measure each speaker close up");
-    if (headroomPage->nextHint().isNotEmpty()) pick (Page::Headroom, headroomPage->nextHint().toLowerCase());
     for (const auto& s : sys.sources) if (s.polaritySummary() == la::polarity::Inverted) { pick (Page::Response, "fix " + s.name + "'s polarity and measure it again"); break; }
-    if (! speakerPage->crossoverDone()) pick (Page::Crossover, "find the crossover");
+    if (! speakerPage->crossoverDone()) pick (Page::Crossover, "find the crossover and enter it in the processor");
+    if (headroomPage->nextHint().isNotEmpty()) pick (Page::Headroom, headroomPage->nextHint().toLowerCase());
     if (! levelPage->done()) pick (Page::Level, levelPage->nextHint().isNotEmpty() ? levelPage->nextHint().toLowerCase() : juce::String ("balance the levels"));
     if (coveragePage->nextHint().isNotEmpty() && levelPage->readingsCount (false) > 0) pick (Page::Coverage, coveragePage->nextHint().toLowerCase());
     if (speakerPage->alignmentRequired() && ! speakerPage->alignmentsDone()) pick (Page::Align, "line up " + juce::String (sys.alignments.empty() ? "the fills or delays" : "the speakers"));
@@ -1409,15 +1427,13 @@ void LiveAlignEditor::openProject()
 
 void LiveAlignEditor::newProject()
 {
-    // a new venue: its name, and what its first session is for (tuning the room, or monitoring a show)
+    // a new venue: just its name. Its first session (tuning the room, or a show) is started from Home, once the
+    // speakers and the plan are in.
     textWindow = std::make_unique<juce::AlertWindow> ("New venue",
-        "A blank venue: add the room, the speakers and the points next.\n\n"
-        "Its first session: Tuning (the tuning steps, with test signals) or Show monitoring (live monitoring only; the "
-        "generator never plays). More sessions can be added on Home.",
+        "A blank venue: add the speakers, the plan and the measurement points next. Then start a session on Home: "
+        "Tuning (the tuning steps, with test signals) or Show monitoring.",
         juce::MessageBoxIconType::NoIcon, this);
     textWindow->addTextEditor ("name", "", "Venue name");
-    textWindow->addComboBox ("kind", { "Tuning", "Show monitoring" }, "First session");
-    if (auto* c = textWindow->getComboBoxComponent ("kind")) c->setSelectedItemIndex (0, juce::dontSendNotification);
     textWindow->addButton ("Create", 1, juce::KeyPress (juce::KeyPress::returnKey));
     textWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
@@ -1425,19 +1441,16 @@ void LiveAlignEditor::newProject()
     {
         if (safe == nullptr || safe->textWindow == nullptr) return;
         const auto name = safe->textWindow->getTextEditorContents ("name").trim();
-        auto* c = safe->textWindow->getComboBoxComponent ("kind");
-        const int kind = c != nullptr ? c->getSelectedItemIndex() : 0;
         safe->textWindow->setVisible (false);
         if (result != 1) return;
-        safe->startVenue (name, kind);
+        safe->startVenue (name);
     }), false);
 }
 
-void LiveAlignEditor::startVenue (const juce::String& name, int kind)
+void LiveAlignEditor::startVenue (const juce::String& name)
 {
     processor.newProject();
     if (name.isNotEmpty()) processor.venueName = name;
-    processor.setFirstSession ((kind == 1 ? "Show " : "Tuning ") + LiveAlignProcessor::today(), kind);
     afterProjectLoaded();
     showPage ((int) Page::Home);
     processor.markSaved();   // a blank venue has nothing to save yet (after the pages have shown it)
@@ -1456,7 +1469,22 @@ void LiveAlignEditor::newSession()
         juce::MessageBoxIconType::NoIcon, this);
     textWindow->addTextEditor ("text", juce::String (tuned ? "Show " : "Tuning ") + LiveAlignProcessor::today());
     textWindow->addComboBox ("kind", { "Tuning", "Show monitoring" }, "For");
-    if (auto* c = textWindow->getComboBoxComponent ("kind")) c->setSelectedItemIndex (tuned ? 1 : 0, juce::dontSendNotification);
+    if (auto* c = textWindow->getComboBoxComponent ("kind"))
+    {
+        c->setSelectedItemIndex (tuned ? 1 : 0, juce::dontSendNotification);
+        // the name follows the choice, as long as it is still the suggested one
+        juce::Component::SafePointer<juce::AlertWindow> w (textWindow.get());
+        c->onChange = [w, c]
+        {
+            if (w == nullptr) return;
+            auto* ed = w->getTextEditor ("text");
+            if (ed == nullptr) return;
+            const auto day = LiveAlignProcessor::today();
+            const auto now = ed->getText().trim();
+            if (now.isEmpty() || now == "Show " + day || now == "Tuning " + day)
+                ed->setText ((c->getSelectedItemIndex() == 1 ? "Show " : "Tuning ") + day, juce::dontSendNotification);
+        };
+    }
     textWindow->addButton ("Create", 1, juce::KeyPress (juce::KeyPress::returnKey));
     textWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<LiveAlignEditor> safe (this);
@@ -1487,16 +1515,21 @@ void LiveAlignEditor::afterProjectLoaded()
 
 // What the open session is for decides what the menu shows: a tuning session the tuning steps, the mics and the
 // tuning report; a monitoring session the monitor mic, live monitoring and its report (and never the generator).
-// Venue, the mic locker and the processor sheet are in both.
+// Venue and the mic locker are in both; the processor sheet is a tuning page.
 bool LiveAlignEditor::pageInSession (int page) const
 {
     if (! standalone) return page == (int) Page::Monitor || page == (int) Page::MonitorMic || page == (int) Page::Settings;
     if (! processor.venueOpen) return page == (int) Page::Home || page == (int) Page::Settings;   // at start: Home until a venue is open
     if (page == (int) Page::Venue) return false;   // on Home now, not a menu item of its own
+    // no session yet (a new venue): the venue's setup only, until New session says what the visit is for
+    if (! processor.sessionStarted())
+        return page == (int) Page::Home || page == (int) Page::Settings || page == (int) Page::Speakers || page == (int) Page::Plan
+               || page == (int) Page::Locker || page == (int) Page::Mics;
     if (page == (int) Page::Home || page == (int) Page::Settings || page == (int) Page::Speakers
-        || page == (int) Page::Plan || page == (int) Page::Locker || page == (int) Page::Sheet)
+        || page == (int) Page::Plan || page == (int) Page::Locker)
         return true;
     const bool mon = processor.monitoringSession();
+    // the processor sheet is the tuning's settings to enter: a tuning visit's page (a show only listens)
     const bool monitoringPage = page == (int) Page::Monitor || page == (int) Page::MonitorMic || page == (int) Page::MonitorReport;
     return mon ? monitoringPage : ! monitoringPage;
 }
@@ -1506,6 +1539,7 @@ void LiveAlignEditor::applySessionKind()
     for (int i = 0; i < kNumPages; ++i) if (i != (int) Page::Settings) nav.setPageVisible (i, pageInSession (i));
     // the plan opens on the session's layer: a show's monitoring points, a tuning visit's tuning points (the other is a click away)
     planPage->setLayer (processor.monitoringSession() ? 1 : 0);
+    inputPanel.setShowMode (processor.monitoringSession());
     if (processor.monitoringSession() && settings.genOn.load()) { settings.genOn = false; generator.sync(); }
     if (shownPage >= 0 && ! pageInSession (shownPage)) showPage ((int) Page::Home);
     resized();
@@ -1904,7 +1938,10 @@ void LiveAlignEditor::resized()
     if (condPanel.isVisible()) slots.push_back ({ &condPanel, 96, 96 });
     slots.push_back ({ &eventPanel, 108, 96 });
     slots.push_back ({ &fbWatch, 96, 68 });
-    slots.push_back ({ &tunedPanel, 80, 72 });
+    // against the tuning: only when the room has been tuned (nothing to compare with otherwise)
+    const auto& tunedRoom = processor.tuningRoom();
+    if (tunedRoom.count (true) + tunedRoom.count (false) > 0) slots.push_back ({ &tunedPanel, 80, 72 });
+    else tunedPanel.setBounds ({});
     int want = 0, min = 0;
     for (const auto& s : slots) { want += s.want; min += s.min; }
     const int avail = side.getHeight() - 8 * (int) slots.size() - 60;   // the traces keep a little

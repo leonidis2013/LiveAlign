@@ -141,9 +141,22 @@ public:
                 if (out != lastOut) { std::printf ("  sim: output %d at tick %d\n", out, ticks); lastOut = out; }
                 double t = 0.0, sb = 0.0, fl = 0.0;
                 // outputs: 1 / 2 main left / right, 3 sub, 4 front fill
-                if (out == 0 || out == 1 || out == 2) { t = ref; for (auto& f : top) t = f (t); for (auto& f : system) t = f (t); }
+                // all outputs, while a time alignment plays a set: the console has the others muted
+                bool topsOn = out == 0 || out == 1 || out == 2, subOn = out == 0 || out == 3;
+                if (out == 0 && proc.settings.genOn.load())
+                    if (const auto playing = editor->speakersPage().alignmentPlayingForPreview(); ! playing.empty())
+                    {
+                        topsOn = subOn = false;
+                        for (int k : playing)
+                        {
+                            const int o = proc.system.sources[(size_t) k].output;
+                            topsOn = topsOn || o == 1 || o == 2;
+                            subOn = subOn || o == 3 || o == 0;
+                        }
+                    }
+                if (topsOn) { t = ref; for (auto& f : top) t = f (t); for (auto& f : system) t = f (t); }
                 if (out == 2 && simRightInverted) t = -t;   // Main R wired the wrong way round
-                if (out == 0 || out == 3) { sb = ref; for (auto& f : sub) sb = f (sb); for (auto& f : subSystem) sb = f (sb); sb *= 2.0 * subGain; }
+                if (subOn) { sb = ref; for (auto& f : sub) sb = f (sb); for (auto& f : subSystem) sb = f (sb); sb *= 2.0 * subGain; }
                 if (out == 4) { fl = ref; for (auto& f : fillChain) fl = f (fl); fl *= 0.5; }
                 lineTop[wp % L] = (float) (t * ampGain);
                 lineSub[wp % L] = (float) (sb * ampGain);
@@ -206,7 +219,11 @@ public:
             shot ("home-boot");
             check (! editor->pageInSession ((int) P::Mics) && ! editor->pageInSession ((int) P::Monitor) && editor->pageInSession ((int) P::Home),
                    "at start: only Home until a venue is open");
-            proc.venueOpen = true;   // the run's venue, as if opened
+            proc.venueOpen = true;   // the run's venue, as if opened: four points and a tuning session started
+            proc.positions = { "FOH", "Centre", "Rear", "Balcony" };
+            proc.monitorPoints = { "FOH" };
+            proc.syncPositionsWithPlan();
+            proc.setFirstSession ("Tuning " + LiveAlignProcessor::today(), 0);
             editor->afterProjectLoadedForPreview();
         }
         if (ticks == 2) { proc.timingChecksOff = true; proc.health.setTimingChecks (false); }   // simulated audio: not real time
@@ -464,8 +481,10 @@ public:
                 if (stageTick + 5 < ticks && (! page.busy() || timeout))
                 {
                     const auto& a = proc.system.alignments[0];
-                    std::printf ("alignment 1: ref=%s align=%s at %s arrivals %.3f / %.3f phase=%d %.2f need=%.3f\n", proc.system.sources[(size_t) a.ref].name.toRawUTF8(),
-                                 proc.system.sources[(size_t) a.align].name.toRawUTF8(), a.spot.toRawUTF8(), a.refArrivalMs, a.alignArrivalMs, (int) a.phaseValid, a.phaseDelayMs,
+                    // a set on all outputs needs the console mutes: the two sides are measured one at a time
+                    if (a.hasRef && ! a.hasAlign && ! timeout) { page.measureAlignmentOne (0, 1); stageTick = ticks; break; }
+                    std::printf ("alignment 1: ref=%s align=%s at %s arrivals %.3f / %.3f phase=%d %.2f need=%.3f\n", proc.system.endName (a.ref, a.refSet).toRawUTF8(),
+                                 proc.system.endName (a.align, a.alignSet).toRawUTF8(), a.spot.toRawUTF8(), a.refArrivalMs, a.alignArrivalMs, (int) a.phaseValid, a.phaseDelayMs,
                                  a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs));
                     shot ("alignment-impulse");
                     check (! a.refIr.empty() && ! a.alignIr.empty(), "time alignment: both impulse responses captured");
@@ -495,13 +514,13 @@ public:
                 if (stageTick + 5 < ticks && (! page.busy() || timeout))
                 {
                     const auto& a = proc.system.alignments[1];
-                    std::printf ("alignment 2: %s to %s need=%.3f\n", proc.system.sources[(size_t) a.align].name.toRawUTF8(), proc.system.sources[(size_t) a.ref].name.toRawUTF8(),
+                    std::printf ("alignment 2: %s to %s need=%.3f\n", proc.system.endName (a.align, a.alignSet).toRawUTF8(), proc.system.endName (a.ref, a.refSet).toRawUTF8(),
                                  a.neededMs (proc.system.sources[(size_t) a.ref].proc.delayMs));
                     page.applyAlignmentNow();
                     // the main / sub alignment again with "music from the console", one speaker at a time
                     savedSub = proc.system.alignments[0].alignArrivalMs;
                     page.setAlignmentSignal (2);
-                    consoleOut = proc.system.sources[(size_t) proc.system.alignments[0].ref].output;
+                    consoleOut = proc.system.sharedOutput (proc.system.endMembers (proc.system.alignments[0].ref, proc.system.alignments[0].refSet));
                     page.measureAlignmentOne (0, 0);
                     next (50);
                 }
@@ -513,8 +532,8 @@ public:
                     const auto& a = proc.system.alignments[0];
                     if (stage == 50)
                     {
-                        std::printf ("music: %s measured: %s\n", proc.system.sources[(size_t) a.ref].name.toRawUTF8(), page.statusText().toRawUTF8());
-                        consoleOut = proc.system.sources[(size_t) a.align].output;
+                        std::printf ("music: %s measured: %s\n", proc.system.endName (a.ref, a.refSet).toRawUTF8(), page.statusText().toRawUTF8());
+                        consoleOut = proc.system.sharedOutput (proc.system.endMembers (a.align, a.alignSet));
                         page.measureAlignmentOne (0, 1);
                         next (51);
                         break;
@@ -1131,14 +1150,22 @@ public:
                            "sessions: the only session can be deleted (an empty one takes its place)");
                 }
                 {
-                    // New venue: named, and its first session of the kind picked (here a show)
-                    editor->startVenue ("Grace Chapel", 1);
+                    // New venue: just named, no session yet (only the setup pages) and no points; New session starts one
+                    editor->startVenue ("Grace Chapel");
                     editor->showPage ((int) P::Home);
-                    shot ("home-new-show-venue");
-                    check (proc.venueName == "Grace Chapel" && proc.monitoringSession() && proc.getSessions().size() == 1 && ! proc.projectChangedNow()
+                    shot ("home-new-venue");
+                    check (proc.venueName == "Grace Chapel" && ! proc.sessionStarted() && proc.getSessions().size() == 1 && ! proc.projectChangedNow()
+                           && proc.positions.isEmpty() && proc.monitorPoints.isEmpty()
                            && std::abs (proc.settings.temperatureC.load() - 20.0f) < 0.01f && ! editor->unsavedForPreview(),
-                           "new venue: named, its first session a show, the usual conditions, nothing unsaved yet");
-                    editor->startVenue ("Grace Chapel", 0);
+                           "new venue: named, no session yet, no points, the usual conditions, nothing unsaved yet");
+                    check (editor->pageInSession ((int) P::Speakers) && editor->pageInSession ((int) P::Plan) && ! editor->pageInSession ((int) P::Response)
+                           && ! editor->pageInSession ((int) P::Monitor),
+                           "new venue: only the setup pages until a session is started");
+                    editor->startSession ("Show " + LiveAlignProcessor::today(), 1);
+                    check (proc.sessionStarted() && proc.monitoringSession() && proc.getSessions().size() == 1,
+                           "new venue: New session turns the placeholder into the first session (a show here)");
+                    editor->startVenue ("Grace Chapel");
+                    editor->startSession ("Tuning " + LiveAlignProcessor::today(), 0);
                     shot ("home-new-tuning-venue");
                 }
                 finish();
@@ -1195,7 +1222,7 @@ public:
         const bool written = LiveAlignProcessor::recoveryFile().existsAsFile();
         proc.newProject();
         check (proc.system.sources.empty() && proc.settings.micCount.load() == 1 && ! proc.settings.micSplCalibrated[0].load() && proc.mics.position[0].isEmpty()
-               && proc.venuePrefs.values.empty() && proc.monitorPoints.contains ("FOH"), "new venue: blank (no speakers, one mic, nothing attached)");
+               && proc.venuePrefs.values.empty() && proc.monitorPoints.isEmpty() && proc.positions.isEmpty(), "new venue: blank (no speakers, one mic, nothing attached, no points)");
         const auto err = proc.restoreRecovery();
         check (written && err.isEmpty() && proc.venueNotes == "Unsaved note", "recovery: unsaved work comes back");
         std::printf ("recovery: written=%d err='%s' name=%s notes=%s changed=%d\n", (int) written, err.toRawUTF8(), proc.venueName.toRawUTF8(),

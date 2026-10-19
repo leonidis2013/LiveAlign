@@ -144,7 +144,9 @@ public:
 
     void newSession (const juce::String& name, int kind = 0);   // kind: 0 tuning, 1 show monitoring
     int sessionKind() const { return current >= 0 && current < (int) sessions.size() ? sessions[(size_t) current].kind : 0; }
-    bool monitoringSession() const { return sessionKind() == 1; }
+    bool monitoringSession() const { return sessionStarted() && sessionKind() == 1; }
+    // A new venue has a placeholder until New session: only the venue's setup (speakers, plan, mics) until then.
+    bool sessionStarted() const { return current >= 0 && current < (int) sessions.size() && sessions[(size_t) current].started; }
     // The room tuning a monitoring session compares the show with: the venue's latest tuning session that measured the
     // room (this session's own room while tuning).
     const la::RoomTuning& tuningRoom() const;
@@ -158,6 +160,7 @@ public:
         if (current < 0 || current >= (int) sessions.size()) return;
         if (name.trim().isNotEmpty()) sessions[(size_t) current].name = name.trim();
         sessions[(size_t) current].kind = juce::jlimit (0, 1, kind);
+        sessions[(size_t) current].started = true;
         sessionKindChanged();
     }
     void switchSession (int index);

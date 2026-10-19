@@ -115,6 +115,29 @@ struct VenuePlan
         }
     }
 
+    // The edges of the biggest seating area (one with chairs, or named "seat..."). False, and the edges left as they
+    // are, when there is none.
+    bool seatingBounds (float& x0, float& x1, float& y0, float& y1) const
+    {
+        float best = 0.0f;
+        for (const auto& it : items)
+            if (it.kind == PlanItem::Area && (it.seating != PlanItem::Plain || it.text.containsIgnoreCase ("seat")) && it.w * it.h > best)
+            {
+                best = it.w * it.h;
+                x0 = it.x - it.w * 0.5f; x1 = it.x + it.w * 0.5f;
+                y0 = it.y - it.h * 0.5f; y1 = it.y + it.h * 0.5f;
+            }
+        return best > 0.0f;
+    }
+
+    // The first area whose name contains `name` (FOH, Balcony ...), or nullptr.
+    const PlanItem* areaNamed (const juce::String& name) const
+    {
+        for (const auto& it : items)
+            if (it.kind == PlanItem::Area && it.text.containsIgnoreCase (name)) return &it;
+        return nullptr;
+    }
+
     int markerOf (const juce::String& name) const
     {
         for (int i = 0; i < (int) items.size(); ++i)
@@ -135,14 +158,8 @@ struct VenuePlan
                 return (int) items.size() - 1;
             }
         // the biggest seating area, or the middle of the room
-        float x0 = 0.15f, x1 = 0.85f, y0 = 0.38f, y1 = 0.8f, best = 0.0f;
-        for (const auto& it : items)
-            if (it.kind == PlanItem::Area && (it.seating != PlanItem::Plain || it.text.containsIgnoreCase ("seat")) && it.w * it.h > best)
-            {
-                best = it.w * it.h;
-                x0 = it.x - it.w * 0.5f; x1 = it.x + it.w * 0.5f;
-                y0 = it.y - it.h * 0.5f; y1 = it.y + it.h * 0.5f;
-            }
+        float x0 = 0.15f, x1 = 0.85f, y0 = 0.38f, y1 = 0.8f;
+        seatingBounds (x0, x1, y0, y1);
         float bx = 0.5f * (x0 + x1), by = 0.5f * (y0 + y1), bestD = -1.0f;
         for (int row = 0; row < 4; ++row)
             for (int col = 0; col < 5; ++col)

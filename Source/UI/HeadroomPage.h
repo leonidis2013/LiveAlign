@@ -3,7 +3,8 @@
 
 #pragma once
 #include "../Clock.h"
-// Tuning step 2: Gain and headroom, once every speaker is verified (Speaker response) and before anything is tuned,
+// Tuning step 3: Gain and headroom, once every speaker is verified (Speaker response) and the crossover is in (so the
+// tops are protected by their high-pass at show level), before anything else is tuned,
 // so the gain structure is set first (and checked again at the end with the EQ in). Pink noise in 3 dB steps through
 // the whole system up to the show level at FOH (on Home) plus the headroom wanted, watching the FOH mic: when the level stops rising with the generator the
 // system is compressing or limiting, and when the coherence drops it is distorting. Then each speaker alone at the
@@ -20,6 +21,9 @@ class HeadroomPage : public juce::Component, private juce::Timer
 {
 public:
     std::function<void()> onChanged, onOpenVenue, onOpenMics;
+    // The crossover is found (or not needed): until then the tops would get full-range pink noise at show level with
+    // no high-pass, which can blow their drivers. The editor answers it from the Crossover step.
+    std::function<bool()> crossoverReady;
 
     explicit HeadroomPage (LiveAlignProcessor& p) : proc (p)
     {
@@ -56,6 +60,7 @@ public:
     }
     juce::String nextHint() const
     {
+        if (crossoverReady && ! crossoverReady()) return {};
         if (! measured()) return "Run the whole system up to the show level";
         if (verdictLevel() == 2) return "The system falls short of the show level: check the gains";
         return {};
@@ -240,6 +245,13 @@ private:
         if (running()) { stopRun ("Stopped."); return; }
         if (armed != what) { armed = what; armedAt = la::clock::ms32(); repaint(); return; }
         armed = -1;
+        if (crossoverReady && ! crossoverReady())
+        {
+            status = "Do the Crossover step first, and enter its filters in the processor: run at show level without them, the tops get "
+                     "the full low end and can be damaged.";
+            repaint();
+            return;
+        }
         if (proc.settings.refSource.load() == 0 && proc.settings.micCount.load() == 0) { status = "Set up a mic on Mics first."; repaint(); return; }
         queue.clear();
         if (what == 0) queue.push_back (0);

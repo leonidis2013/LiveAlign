@@ -36,7 +36,7 @@ inline const std::vector<Term>& glossary()
         { "dBA, dBC, dBZ", "Sound level weighted like the ear at moderate levels (A), with the low end included (C), or flat (Z), as IEC 61672-1 defines them. Show limits are usually LAeq (A) or LCeq (C)." },
         { "dBFS", "Decibels against digital full scale: 0 dBFS is the loudest a signal can be. Used when a mic has no sound-level calibration." },
         { "Delay", "Time added to a speaker in the processor so its sound arrives together with another's. 1 ms is about 34 cm (13.5 in) at 20 C." },
-        { "Directivity (Q)", "How narrowly a speaker radiates: 2 for nearly all round (a sub), around 9 for 90 x 60 degrees, 30 for a line array. From the data sheet's coverage angles." },
+        { "Directivity (Q)", "How narrowly a speaker radiates: 2 for nearly all round (a sub), around 9 for 90 x 60 degrees, about 19 for a 150 x 20 column, 30 for a line array. From the data sheet's coverage angles (horizontal x vertical, to -6 dB): Q = 180 / asin (sin (H/2) sin (V/2)), after Molloy. Set on Speakers as Coverage." },
         { "Distortion", "Sound that is not in the signal: the amps or drivers running out. With pink noise it shows as the coherence dropping as the level goes up." },
         { "Echo", "A reflection late and loud enough to be heard as a repeat (usually more than 50 ms after the direct sound): a far wall, a balcony front." },
         { "EDT", "Early decay time: the reverberation time from the first 10 dB of the decay (ISO 3382-1), which is what the ear notices most. Compare it with RT." },
@@ -58,12 +58,13 @@ inline const std::vector<Term>& glossary()
         { "Polarity", "Whether a speaker pushes when the signal pushes (normal) or pulls (inverted). A wrong polarity cancels low end where speakers overlap." },
         { "Processor sheet", "Every setting to enter in your processor, output by output: filters, delay, polarity, gain, EQ. Tick each output once it is in." },
         { "Q", "The width of an EQ band: higher Q is narrower. Room EQ keeps cuts at Q 4 or wider, boosts wider still." },
-        { "Reference", "The signal the system is fed, which every mic is compared with: the loopback, or the generator's own copy." },
+        { "Reference", "The signal the system is fed, which every mic is compared with to get the transfer function. Tuning: the loopback, or the generator's own copy. A show: the desk's feed (the programme, from the console to an input), since the generator does not play." },
         { "Reverberation time (RT)", "How long the sound takes to die away by 60 dB (RT60), in seconds, per octave, measured from the decay as T20 or T30 (ISO 3382-1 / ISO 3382-2). Speech wants under about 1 s; music a little more." },
         { "RTA", "Real-time analyser: the level of what the mic hears in each band (1/3 octave or finer), with no reference." },
         { "Schroeder frequency", "Below it, single room modes (standing waves) rule: peaks and dips that change from seat to seat. EQ there only helps where most seats agree." },
         { "Seat-to-seat variance", "How much the tonal balance differs from point to point (dB). Under 2 dB is very even; EQ cannot fix differences between seats, aim and coverage can." },
         { "Session", "One visit to the venue: a tuning session (the tuning steps, with test signals) or a show session (live monitoring only, compared with the venue's latest tuning; the generator never plays). Doing both on one day is two sessions." },
+        { "Set (Stereo)", "Speakers that play as one in the show, such as Stereo (L) and Stereo (R): each is checked on its own in Speaker response, then time-aligned as a set (Stereo to the sub, fills and delays to Stereo), each member keeping its own small trim." },
         { "SPL", "Sound pressure level (dB re 20 µPa). A mic calibrated with an acoustic calibrator (IEC 60942 class 1 or 2, usually 94 or 114 dB at 1 kHz) reads true SPL." },
         { "Speed of sound", "About 343 m/s (1125 ft/s) at 20 C, faster when warmer. Delays set at one temperature drift when the room warms up." },
         { "STI", "Speech transmission index (IEC 60268-16), 0 to 1: how well speech gets through the system and the room (with the noise). Above 0.6 is good, under 0.45 poor; emergency and voice-alarm systems usually ask for 0.5 or more (ISO 7240-19, NFPA 72)." },
@@ -93,7 +94,7 @@ inline juce::StringArray termsFor (int page)
         case Page::Crossover: return { "Crossover", "Phase", "Polarity", "Delay" };
         case Page::Level: return { "Level balance", "Trim" };
         case Page::Coverage: return { "Coverage", "Directivity (Q)" };
-        case Page::Align: return { "Time alignment", "Delay", "Impulse response", "Speed of sound" };
+        case Page::Align: return { "Time alignment", "Set (Stereo)", "Delay", "Impulse response", "Speed of sound" };
         case Page::Acoustics: return { "STIPA", "Reverberation time (RT)", "EDT", "C50", "C80", "Ts", "STI", "ALcons", "Bass ratio", "Treble ratio", "Schroeder frequency",
                                        "Critical distance", "First reflection", "Echo", "Flutter echo", "NC, NR", "Sweep", "Standards" };
         case Page::Room: return { "Target curve", "EQ (parametric)", "Q", "Seat-to-seat variance", "Schroeder frequency", "Absorption (air)" };
@@ -135,12 +136,12 @@ inline juce::StringArray howTo (int page)
                                    "Put the trims on the sheet, enter them, and measure again to check." };
         case Page::Coverage: return { "Each speaker's level across its area comes from Level balance.", "A speaker that falls off more than the spec: re-aim it as the hint says.",
                                       "Measure it again; the report shows before and after." };
-        case Page::Align: return { "Pick a spot where two speakers overlap (a fill and the mains).", "Measure each, set the delay, enter it.", "Measure them together to check." };
+        case Page::Align: return { "First Stereo (L + R together) to the Sub, at FOH; then each fill or delay to Stereo, where they overlap.", "Measure each side, set the delay, enter it (a set's members move together).", "Measure them together to check." };
         case Page::Acoustics: return { "A quiet room: sweep at two or three points.", "Read the verdict: whether EQ can help, or the room needs treatment.",
                                        "Room EQ allows for what it finds (the switch on Room EQ)." };
         case Page::Room: return { "Measure the points as found.", "Suggest EQ, enter it in the processor, then I've entered this EQ.",
                                   "Measure a check at the same points; refine until it is close enough.", "Then the listening check." };
-        case Page::Headroom: return { "Right after every speaker is verified: the gain structure comes before any tuning.", "Hearing protection on, nobody near the speakers.",
+        case Page::Headroom: return { "After the crossover is found and entered in the processor (so the tops have their high-pass at show level), before the rest of the tuning.", "Hearing protection on, nobody near the speakers.",
                                       "Run the whole system: pink noise in steps up to the show level plus headroom.",
                                       "Then each speaker alone at the same drive: the one that compresses first is the weak link.", "Note the amp gains and limiters for the sheet." };
         case Page::Listening: return { "Play music you know, at show level.", "At each point: Good or A problem, and a note.", "Compare with the EQ bypassed; then call it done." };

@@ -614,7 +614,11 @@ void LiveAlignProcessor::takeMonitorMicFromTuning (int mic)
             if (mics.position[(size_t) k].containsIgnoreCase ("FOH")) { m = k; break; }
     const bool slot0 = monitorModeOn && m == 0;
     monitorMic.name = mics.nameOf (m);
-    monitorMic.position = mics.position[(size_t) m].isNotEmpty() ? mics.position[(size_t) m] : juce::String ("FOH");
+    // where it stands for the show: the monitoring point already chosen; else the first monitoring point (FOH). Not
+    // the tuning point the mic was last at: that would turn a tuning point into a monitoring point behind the
+    // user's back, and the plan would show the mic somewhere it is not.
+    if (monitorMic.position.isEmpty() || ! monitorPoints.contains (monitorMic.position))
+        monitorMic.position = monitorPoints.isEmpty() ? juce::String ("FOH") : monitorPoints[0];
     monitorMic.lockerId = mics.lockerId[(size_t) m];
     monitorMic.input = slot0 ? tuningSlot.input : settings.micInput[m].load();
     monitorMic.cal = cals[(size_t) m];
@@ -836,6 +840,17 @@ void LiveAlignProcessor::loadSessionBody (const juce::XmlElement* b)
 
 void LiveAlignProcessor::newSession (const juce::String& name, int kind)
 {
+    if (! sessionStarted())
+    {
+        // the venue's placeholder becomes its first session (it holds nothing of a visit yet)
+        auto& c = sessions[(size_t) current];
+        c.name = name.isNotEmpty() ? name : juce::String ("Session 1");
+        c.created = today();
+        c.kind = juce::jlimit (0, 1, kind);
+        c.started = true;
+        sessionKindChanged();
+        return;
+    }
     traces.clearComparisons();
     sessions[(size_t) current].body = sessionBody();
     la::SessionInfo s;
@@ -900,10 +915,17 @@ void LiveAlignProcessor::deleteSession (int index)
     if (index < 0 || index >= (int) sessions.size()) return;
     if (sessions.size() == 1)
     {
-        // a venue always has a session: the only one is replaced by an empty one of the same kind
-        newSession ("Session 1", sessions.front().kind);
-        sessions.erase (sessions.begin());
+        // a venue always has a session: the only one is replaced by an empty placeholder (New session starts the next)
+        la::SessionInfo s;
+        s.id = juce::Uuid().toString();
+        s.name = "No session yet";
+        s.created = today();
+        s.kind = sessions.front().kind;
+        s.started = false;
+        sessions.clear();
+        sessions.push_back (std::move (s));
         current = 0;
+        loadSessionBody (nullptr);
         traces.clearComparisons();
         sessionKindChanged();
         return;
@@ -952,8 +974,8 @@ void LiveAlignProcessor::resetVenue()
     for (auto& c : cals) c.clearAll();
     aimOverrideValue = -1;
     for (int m = 0; m < la::kMaxMics; ++m) applyCalibration (m);
-    positions = { "FOH", "Centre", "Rear", "Balcony" };
-    monitorPoints = { "FOH" };
+    positions.clear();       // a new venue: no points until they are added (or a layout loaded) on the plan
+    monitorPoints.clear();
     positionAim.clear();
     roomAim = la::Cal90;
     speakerAim = la::Cal0;
@@ -981,11 +1003,12 @@ void LiveAlignProcessor::resetVenue()
     sessions.clear();
     la::SessionInfo s;
     s.id = juce::Uuid().toString();
-    s.name = "Session 1";
+    s.name = "No session yet";
     s.created = today();
+    s.started = false;      // a new venue has no session until New session (what it is for: tuning or a show)
     sessions.push_back (std::move (s));
     current = 0;
-    sessionKindChanged();   // a new venue starts with a tuning session
+    sessionKindChanged();
     for (int m = 0; m < la::kMaxMics; ++m) settings.micDelayMs[m] = 0.0f;
     if (wasMonitoring) setMonitorMode (true);
 }
@@ -1057,6 +1080,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
         e->setAttribute ("created", s.created);
         e->setAttribute ("notes", s.notes);
         e->setAttribute ("kind", s.kind == 1 ? "monitoring" : "tuning");
+        if (! s.started) e->setAttribute ("started", false);
         auto body = (int) i == current ? sessionBody() : (s.body != nullptr ? std::make_unique<juce::XmlElement> (*s.body) : nullptr);
         if (body != nullptr)
             for (auto* child : body->getChildIterator()) e->addChildElement (new juce::XmlElement (*child));
@@ -1104,7 +1128,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     history.load (x);
     monitorMic.load (x);
     // venues from before 0.19: the monitor mic's place (or FOH) is the monitoring point
-    if (monitorPoints.isEmpty()) monitorPoints.add (monitorMic.position.isNotEmpty() ? monitorMic.position : juce::String ("FOH"));
+    if (monitorPoints.isEmpty() && monitorMic.position.isNotEmpty()) monitorPoints.add (monitorMic.position);
     // mics linked to the locker pick up their latest calibration from it
     for (int m = 0; m < la::kMaxMics; ++m)
         if (const auto* e = locker.find (mics.lockerId[(size_t) m]))
@@ -1123,6 +1147,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
             s.name = e->getStringAttribute ("name", "Session");
             s.created = e->getStringAttribute ("created");
             s.notes = e->getStringAttribute ("notes");
+            s.started = e->getBoolAttribute ("started", true);
             s.body = std::make_unique<juce::XmlElement> ("Body");
             for (const auto* child : e->getChildIterator()) s.body->addChildElement (new juce::XmlElement (*child));
             if (e->hasAttribute ("kind")) s.kind = e->getStringAttribute ("kind") == "monitoring" ? 1 : 0;

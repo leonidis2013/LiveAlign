@@ -127,18 +127,31 @@ public:
         }
 
         // the parts: a line where each starts, its name at the top
-        g.setFont (font (10.5f, true));
-        for (size_t k = 0; k < log.parts.size(); ++k)
+        // Names that would run into the one before go down a row (up to four rows; then the oldest row is reused).
+        const auto partFont = font (10.5f, true);
+        g.setFont (partFont);
         {
-            const auto& pt = log.parts[k];
-            const double next = k + 1 < log.parts.size() ? log.parts[k + 1].t : t1;
-            if (next < t0 || pt.t > t0 + tw) continue;
-            const float x = juce::jmax (plot.getX(), xAt (pt.t));
-            g.setColour (p.textDim.withAlpha (0.7f));
-            if (pt.t >= t0) g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
-            g.setColour (p.text);
-            g.drawText (pt.name, juce::Rectangle<float> (x + 4.0f, plot.getY() + 2.0f, juce::jmax (40.0f, xAt (next) - x - 6.0f), 14.0f),
-                        juce::Justification::centredLeft, true);
+            float rowEnd[4] = { -1e9f, -1e9f, -1e9f, -1e9f };
+            for (size_t k = 0; k < log.parts.size(); ++k)
+            {
+                const auto& pt = log.parts[k];
+                const double next = k + 1 < log.parts.size() ? log.parts[k + 1].t : t1;
+                if (next < t0 || pt.t > t0 + tw) continue;
+                const float x = juce::jmax (plot.getX(), xAt (pt.t));
+                g.setColour (p.textDim.withAlpha (0.7f));
+                if (pt.t >= t0) g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
+                const float want = juce::jmin (160.0f, juce::GlyphArrangement::getStringWidth (partFont, pt.name) + 6.0f);
+                int row = 0;
+                for (int j = 0; j < 4; ++j) if (rowEnd[j] <= x + 2.0f) { row = j; break; } else if (rowEnd[j] < rowEnd[row]) row = j;
+                const float w = juce::jmin (want, plot.getRight() - x - 4.0f);
+                if (w < 12.0f) continue;
+                juce::Rectangle<float> box (x + 4.0f, plot.getY() + 2.0f + row * 15.0f, w, 14.0f);
+                rowEnd[row] = box.getRight() + 4.0f;
+                g.setColour (p.panel.withAlpha (0.85f));
+                g.fillRoundedRectangle (box.expanded (2.0f, 0.0f), 3.0f);
+                g.setColour (p.text);
+                g.drawText (pt.name, box, juce::Justification::centredLeft, true);
+            }
         }
 
         juce::Path la, lc, mx, roll;

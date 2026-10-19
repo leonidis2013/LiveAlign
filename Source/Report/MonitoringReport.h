@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #pragma once
-// The live monitoring report: a PDF of an event monitored with LiveAlign. A cover with the contents and the mic, then:
+// The live monitoring report: a PDF of an event monitored with LiveAlign. A cover with the contents (the mic and the
+// levels are under the first chapter's heading), then:
 // the sound level over the event (LAeq, LCeq, the rolling LAeq against the limit, the loudest moments), the show log
 // (each part of the event, and a row per minute), the monitoring mic and
 // its calibration with the system as it was set, the venue plan with the monitoring mic (landscape), and the
@@ -80,7 +81,7 @@ inline juce::Image levelChart (const SplLog& log, int w = 1700, int h = 640)
     }
     g.setColour (juce::Colour (0xffd2478f).withAlpha (0.35f));
     g.strokePath (mx, juce::PathStrokeType (1.5f));
-    g.setColour (juce::Colour (0xff2563d6).withAlpha (0.55f));
+    g.setColour (accent.withAlpha (0.35f));   // the accent family: light teal every 5 s, teal for the rolling LAeq
     g.strokePath (thin, juce::PathStrokeType (1.8f));
     g.setColour (accent);
     g.strokePath (roll, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
@@ -113,10 +114,15 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
 
     // the event's date (when it was logged), unless the session's name already says it
     const auto eventDate = log.empty() ? LiveAlignProcessor::today() : juce::Time ((juce::int64) (log.start() * 1000.0)).formatted ("%d %b %Y");
+    // the cover: the title and the contents only
     L.y = cover (L, "LIVE MONITORING REPORT", p.venueName, sessionName.contains (eventDate) ? sessionName : sessionName + "   -   " + eventDate);
+    const float contentsY = L.y + 14.0f;
     const auto* lockerMic = p.locker.find (mm.lockerId);
     const float offsetNow = p.isMonitorMode() ? p.settings.micSplOffset[0].load() : mm.splOffset;
+    // what the report is about: under the first chapter's heading (after the contents)
+    L.intro = [&]
     {
+        L.sub ("About this report");
         std::vector<std::pair<juce::String, juce::String>> kv;
         if (opt.author.isNotEmpty()) kv.push_back ({ "Prepared by", opt.author });
         kv.push_back ({ "Monitoring mic", mm.name + (mm.position.isNotEmpty() ? " at " + mm.position : juce::String()) });
@@ -127,8 +133,7 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
                                           + juce::Time ((juce::int64) (log.end() * 1000.0)).formatted ("%H:%M") });
         kv.push_back ({ "Levels", mm.splCalibrated ? juce::String ("dB SPL (the mic was calibrated)") : juce::String ("dBFS: the mic was not calibrated") });
         L.keyValues (kv);
-    }
-    const float contentsY = L.y + 14.0f;
+    };
 
     if (has ("level"))
     {
@@ -165,9 +170,8 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
                 overAny |= n > 0;
             }
             if (! limits.isEmpty()) L.para ("Limits. " + limits.joinIntoString (". ") + ".", 9.5f, overAny ? warn : ink);
-            L.need (300.0f);
             L.picture (levelChart (log), 290.0f);
-            L.para ("Blue: LAeq every " + juce::String (juce::roundToInt (log.interval)) + " seconds. Teal: the rolling " + juce::String (log.limitMinutes) + "-minute "
+            L.para ("Light teal: LAeq every " + juce::String (juce::roundToInt (log.interval)) + " seconds. Teal (thick): the rolling " + juce::String (log.limitMinutes) + "-minute "
                     + log.limitName() + ". Pink: the loudest moment (LAF max) in each " + juce::String (juce::roundToInt (log.interval)) + " seconds." + juce::String (log.limitLaeq > 0.0 ? " Red dashes: the limit." : ""), 8.0f, dim);
             // the loudest 15-minute windows (quarter hours)
             std::vector<juce::StringArray> rows;
@@ -268,7 +272,7 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
     {
         L.chapter ("Venue plan", true);
         L.para ("Where the monitoring mic was (a sketch, not to scale).", 9.0f, dim);
-        L.picture (plan, L.bottom() - L.y - 10.0f);
+        L.picture (cropToContent (plan), L.bottom() - L.y - 10.0f, 26.0f);   // trimmed and a little wider than the text, so its labels print larger
     }
 
     if (has ("traces"))
@@ -288,6 +292,9 @@ inline juce::String writeMonitoringReport (LiveAlignProcessor& p, const juce::Fi
         for (const auto* t : rta) rows.push_back ({ t->name, "RTA", t->created });
         if (! rows.empty()) L.table ({ 3.0f, 1.4f, 1.6f }, { "Trace", "Kind", "Captured" }, rows, 8.5f);
     }
+
+    // nothing portrait was written (every section left out): what the report is about still gets its page
+    if (L.intro) L.chapter ("About this report");
 
     L.need (60.0f);
     L.y += 10.0f;

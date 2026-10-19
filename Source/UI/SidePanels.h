@@ -103,6 +103,17 @@ public:
     explicit InputPanel (Settings& s) : settings (s) {}
 
     void setMicLabel (const juce::String& l) { if (l != micLabel) { micLabel = l; repaint(); } }
+    // A show: the reference is the desk's feed (the programme the transfer function compares the mic with).
+    void setShowMode (bool on) { if (on != showMode) { showMode = on; repaint(); } }
+
+    // What the reference signal is, not just where it comes from.
+    juce::String refLabel() const
+    {
+        const int src = settings.refSource.load();
+        if (src == 0) return "Ref  off";
+        if (src == 1) return showMode ? "Ref  none (pick the desk feed)" : "Ref  test signal (internal copy)";
+        return juce::String (showMode ? "Ref  desk feed, In " : "Ref  signal, In ") + juce::String (src - 1);
+    }
 
     // The audio's health, on the last line (level: 0 fine, 1 a warning, 2 a fault); the detail is the tooltip.
     void setHealth (const juce::String& text, int level, const juce::String& detail)
@@ -129,7 +140,7 @@ public:
         r.removeFromTop (30);
         drawMeter (g, r.removeFromTop (26), micLabel, mic, micColour (settings.focusMic()));
         r.removeFromTop (6);
-        drawMeter (g, r.removeFromTop (26), "Ref  " + refSourceName (settings.refSource.load()), ref, pal().inputCol);
+        drawMeter (g, r.removeFromTop (26), refLabel(), ref, pal().inputCol);
         if (healthText.isNotEmpty())
         {
             r.removeFromTop (4);
@@ -145,6 +156,7 @@ public:
     }
 
 private:
+    bool showMode = false;
     struct Meter
     {
         float rmsDb = -120.0f, peakDb = -120.0f, holdDb = -120.0f;

@@ -106,6 +106,7 @@ struct SpeakerSource
     xo::Processing proc;           // suggested settings for the speaker processor
     double trimDb = 0.0;           // level trim from Level balance, on top of proc.gainDb (kept for a linked speaker too)
     double directivityQ = 0.0;     // directivity factor for the critical distance (0 = typical for its role)
+    double coverH = 0.0, coverV = 0.0;   // the data sheet's coverage angles (degrees) the Q came from (0: not entered)
     bool hpProtective = false;     // its high-pass is the protective one for a system with no sub (not a crossover)
     juce::String ampGain, limiter; // as set on its amp channel and in the processor (free text: "+32 dB", "+12 dBu"), for the sheet
 
@@ -123,6 +124,14 @@ struct SpeakerSource
         }
     }
     double qFactor() const { return directivityQ > 0.0 ? directivityQ : typicalQ (role); }
+    // Directivity factor from the coverage angles (horizontal x vertical, -6 dB, degrees), after Molloy:
+    // Q = 180 / asin (sin (h/2) sin (v/2)). Wider than 180 degrees counts as 180 (a half-space, Q 2).
+    static double qFromAngles (double h, double v)
+    {
+        const double hh = std::clamp (h, 5.0, 180.0), vv = std::clamp (v, 5.0, 180.0);
+        const double a = std::asin (std::sin (hh * 3.14159265358979 / 360.0) * std::sin (vv * 3.14159265358979 / 360.0)) * 180.0 / 3.14159265358979;
+        return std::round (180.0 / a * 10.0) / 10.0;
+    }
     juce::String sheetEntered;     // the processor sheet line as it was when ticked "entered" (a change unticks it)
     juce::String groupSheetEntered;   // a group's lead: its group line on a processor with a group stage, as ticked
 
@@ -137,9 +146,13 @@ struct SpeakerSource
 
 // Time alignment of one speaker (`align`) to another (`ref`) at a listening spot where their coverage meets:
 // arrivals and levels measured there, and the delay that makes `align` arrive with `ref`.
+// Either end can be a set: the speaker's whole group (its lead and every speaker linked to it, such as the left and
+// right of a stereo pair) plays together, as in the show. The delay then goes on every member of the align set, each
+// keeping its own small trim (its offset from the others).
 struct Alignment
 {
     int ref = 0, align = 1;
+    bool refSet = false, alignSet = false;   // the end is the speaker's whole group, playing together
     juce::String spot;              // named position (Row 3, Under balcony, Centre line ...)
     double precedenceMs = 0.0;      // extra delay so the sound still seems to come from `ref`
     bool hasRef = false, hasAlign = false;
@@ -247,12 +260,12 @@ struct SpeakerSystem
     {
         SpeakerSystem s;
         SpeakerSource left, right, sub;
-        left.name = "Main L";
+        left.name = "Stereo (L)";
         left.role = (int) SpeakerRole::Main;
         left.channel = (int) SpeakerChannel::Left;
         left.output = 1;
         right = left;
-        right.name = "Main R";
+        right.name = "Stereo (R)";
         right.channel = (int) SpeakerChannel::Right;
         right.output = 2;
         right.linkTo = 0;
@@ -320,6 +333,65 @@ struct SpeakerSystem
             o.addIfNotAlreadyThere (juce::String (out));
         }
         return (o.size() == 1 ? "Output " : "Outputs ") + o.joinIntoString (", ");
+    }
+
+    // ---- time alignment ends: one speaker, or a set (its whole group playing together) ----
+    // Who plays for an alignment end: the speaker alone, or every member of its group (the lead first).
+    std::vector<int> endMembers (int i, bool set) const
+    {
+        if (i < 0 || i >= (int) sources.size()) return {};
+        if (! set) return { i };
+        return groupOf (i);
+    }
+    bool endHas (int i, bool set, int k) const
+    {
+        const auto m = endMembers (i, set);
+        return std::find (m.begin(), m.end(), k) != m.end();
+    }
+    // A name with a " (L)" or " (R)" suffix: the base ("Stereo") and the side ("L").
+    static bool splitSide (const juce::String& n, juce::String& base, juce::String& side)
+    {
+        for (const char* s : { "L", "R" })
+            if (n.endsWith (" (" + juce::String (s) + ")")) { base = n.dropLastCharacters (4).trimEnd(); side = s; return base.isNotEmpty(); }
+        return false;
+    }
+    // The set's name: "Stereo" for "Stereo (L)" and "Stereo (R)", otherwise the names joined ("Fill A + Fill B").
+    // `together` adds who plays: "Stereo (L + R together)", "Fill A + Fill B (together)".
+    juce::String setName (const std::vector<int>& members, bool together = false) const
+    {
+        if (members.empty()) return {};
+        if (members.size() == 1) return nameOf (members.front());
+        juce::StringArray names, sides;
+        juce::String base;
+        bool shared = true;
+        for (int k : members)
+        {
+            names.add (nameOf (k));
+            juce::String b, sd;
+            if (! splitSide (nameOf (k), b, sd) || (base.isNotEmpty() && b != base) || sides.contains (sd)) shared = false;
+            else { base = b; sides.add (sd); }
+        }
+        if (shared) return together ? base + " (" + sides.joinIntoString (" + ") + " together)" : base;
+        return names.joinIntoString (" + ") + (together ? " (together)" : "");
+    }
+    juce::String endName (int i, bool set, bool together = false) const
+    {
+        if (i < 0 || i >= (int) sources.size()) return "?";
+        return setName (endMembers (i, set), together);
+    }
+    // The generator output that plays `members`: their shared output, or 0 (all outputs; the others are muted at the
+    // console or processor).
+    int sharedOutput (const std::vector<int>& members) const
+    {
+        int o = -1;
+        for (int k : members)
+        {
+            if (k < 0 || k >= (int) sources.size()) continue;
+            const int ko = sources[(size_t) k].output;
+            if (ko == 0 || (o >= 0 && ko != o)) return 0;
+            o = ko;
+        }
+        return juce::jmax (0, o);
     }
 
     // The group's response for the crossover: the members' magnitudes power-averaged (one cabinet's quirk, such as a
@@ -505,7 +577,8 @@ struct SpeakerSystem
             auto& s = sources[(size_t) i];
             const auto& from = sources[(size_t) m].proc;
             bool aligned = false;
-            for (const auto& a : alignments) aligned = aligned || (a.align == i && a.measured());
+            // its own trim: a single-speaker alignment gave it its own delay (a set's delay goes on every member alike)
+            for (const auto& a : alignments) aligned = aligned || (a.align == i && ! a.alignSet && a.measured());
             const double keepDelay = s.proc.delayMs;
             s.proc = from;
             if (aligned) s.proc.delayMs = keepDelay;
@@ -596,7 +669,10 @@ struct SpeakerSystem
     double overlapFreq (int a, int b) const
     {
         if (! pairValid()) return 500.0;
-        if ((a == xoHigh && b == xoLow) || (a == xoLow && b == xoHigh))
+        // the crossover pair, or any sub with any top (Sub to Stereo (R), a second sub): they meet at the crossover
+        const auto isSub = [this] (int i) { return i >= 0 && i < (int) sources.size() && sources[(size_t) i].role == (int) SpeakerRole::Sub; };
+        const bool subAndTop = a >= 0 && b >= 0 && a < (int) sources.size() && b < (int) sources.size() && isSub (a) != isSub (b);
+        if ((a == xoHigh && b == xoLow) || (a == xoLow && b == xoHigh) || subAndTop)
         {
             const auto& f = sources[(size_t) xoHigh].proc.hp.active() ? sources[(size_t) xoHigh].proc.hp : sources[(size_t) xoLow].proc.lp;
             if (f.active()) return f.freq;
@@ -647,6 +723,8 @@ struct SpeakerSystem
             auto* c = e->createNewChildElement ("Alignment");
             c->setAttribute ("ref", a.ref);
             c->setAttribute ("align", a.align);
+            if (a.refSet) c->setAttribute ("refSet", true);
+            if (a.alignSet) c->setAttribute ("alignSet", true);
             c->setAttribute ("spot", a.spot);
             c->setAttribute ("precedenceMs", a.precedenceMs);
             c->setAttribute ("hasRef", a.hasRef);
@@ -707,6 +785,7 @@ struct SpeakerSystem
             c->setAttribute ("nearField", s.nearField);
             if (s.trimDb != 0.0) c->setAttribute ("trimDb", s.trimDb);
             if (s.directivityQ > 0.0) c->setAttribute ("directivityQ", s.directivityQ);
+            if (s.coverH > 0.0 && s.coverV > 0.0) { c->setAttribute ("coverH", s.coverH); c->setAttribute ("coverV", s.coverV); }
             if (s.hpProtective) c->setAttribute ("hpProtective", true);
             if (s.ampGain.isNotEmpty()) c->setAttribute ("ampGain", s.ampGain);
             if (s.limiter.isNotEmpty()) c->setAttribute ("limiter", s.limiter);
@@ -797,6 +876,8 @@ struct SpeakerSystem
             s.nearField = c->getBoolAttribute ("nearField");
             s.trimDb = juce::jlimit (-24.0, 24.0, c->getDoubleAttribute ("trimDb"));
             s.directivityQ = juce::jlimit (0.0, 50.0, c->getDoubleAttribute ("directivityQ"));
+            s.coverH = juce::jlimit (0.0, 360.0, c->getDoubleAttribute ("coverH"));
+            s.coverV = juce::jlimit (0.0, 360.0, c->getDoubleAttribute ("coverV"));
             s.hpProtective = c->getBoolAttribute ("hpProtective");
             s.ampGain = c->getStringAttribute ("ampGain");
             s.limiter = c->getStringAttribute ("limiter");
@@ -877,6 +958,8 @@ struct SpeakerSystem
             Alignment a;
             a.ref = c->getIntAttribute ("ref");
             a.align = c->getIntAttribute ("align", 1);
+            a.refSet = c->getBoolAttribute ("refSet", false);       // earlier versions: single speakers only
+            a.alignSet = c->getBoolAttribute ("alignSet", false);
             if (a.ref < 0 || a.align < 0 || a.ref >= (int) sources.size() || a.align >= (int) sources.size()) continue;
             a.spot = c->getStringAttribute ("spot");
             a.precedenceMs = juce::jlimit (0.0, 30.0, c->getDoubleAttribute ("precedenceMs"));

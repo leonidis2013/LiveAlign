@@ -211,14 +211,15 @@ struct SessionInfo
 {
     juce::String id, name, created, notes;
     int kind = 0;                              // 0 a tuning visit, 1 show monitoring (the menu and the generator follow it)
+    bool started = true;                       // false: a new venue's placeholder, until New session says what it is for
     std::unique_ptr<juce::XmlElement> body;   // traces, checks, delays (null for the open session)
 
     SessionInfo() = default;
-    SessionInfo (const SessionInfo& o) : id (o.id), name (o.name), created (o.created), notes (o.notes), kind (o.kind),
+    SessionInfo (const SessionInfo& o) : id (o.id), name (o.name), created (o.created), notes (o.notes), kind (o.kind), started (o.started),
                                          body (o.body != nullptr ? std::make_unique<juce::XmlElement> (*o.body) : nullptr) {}
     SessionInfo& operator= (const SessionInfo& o)
     {
-        id = o.id; name = o.name; created = o.created; notes = o.notes; kind = o.kind;
+        id = o.id; name = o.name; created = o.created; notes = o.notes; kind = o.kind; started = o.started;
         body = o.body != nullptr ? std::make_unique<juce::XmlElement> (*o.body) : nullptr;
         return *this;
     }

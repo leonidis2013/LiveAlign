@@ -394,10 +394,17 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
 
     // where each source is usable: within 6 dB of its own passband (half-octave smoothed)
     const double highRef = passbandDb (high, opt);
-    // the low source's passband: the octave at the bottom of the search range (40 - 80 Hz for a sub), where it plays
-    // fully; lower than that many subs are already rolling off (a protective high-pass), which would read it too quiet
-    const double lowRef = medianDb (low, std::max (25.0, opt.fMin), std::max (35.0, opt.fMin * 2.0));
     const auto hs = detail::smoothedDb (high, 0.5), ls = detail::smoothedDb (low, 0.5);
+    // the low source's passband: the loudest of its smoothed response through its own range (from the bottom of the
+    // search up to 120 Hz for a sub). Not a median over a fixed octave: a sub that is already rolling off at 40 Hz
+    // (a protective high-pass, or a small one) would read too quiet and be turned up too much.
+    // The loudest of the octave-smoothed response: a single narrow bump (a port or room resonance) does not set it.
+    double lowRef = -200.0;
+    {
+        const auto ls1 = detail::smoothedDb (low, 1.0);
+        for (size_t i = 0; i < f.size(); ++i)
+            if (f[i] >= std::max (25.0, opt.fMin) && f[i] <= std::max (120.0, opt.fMin * 3.0)) lowRef = std::max (lowRef, ls1[i]);
+    }
     double highFrom = f.back(), lowTo = f.front();
     for (size_t i = f.size(); i-- > 0;)
     {
@@ -405,24 +412,61 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
         if (hs[i] < highRef - 6.0) break;
         highFrom = f[i];
     }
+    // the low source is usable from where it first comes within 6 dB of its passband to where it then falls 6 dB
+    // below it (scanning up: a sub that starts already rolled off is not "done" at the first frequency)
+    double lowFrom = 0.0;
+    bool inBand = false;
     for (size_t i = 0; i < f.size(); ++i)
     {
-        if (f[i] < opt.fMin / 1.2) continue;
+        if (f[i] < opt.fMin / 1.6) continue;
+        if (! inBand) { if (ls[i] >= lowRef - 6.0) { inBand = true; lowFrom = f[i]; lowTo = f[i]; } continue; }
         if (ls[i] < lowRef - 6.0) break;
         lowTo = f[i];
     }
+    // where the sum should be flat to: from the low source's lower -3 dB point up (below it the system rolls off
+    // with the sub, which is no fault of the crossover)
+    double lowFlatFrom = lowFrom;
+    for (size_t i = 0; i < f.size(); ++i) if (f[i] >= lowFrom && ls[i] >= lowRef - 3.0) { lowFlatFrom = f[i]; break; }
     best.highUsableFrom = highFrom;
     best.lowUsableTo = lowTo;
 
+    // where each plays within 3 dB of full level: the crossover goes between these (crossing where one of them is
+    // already well down its own roll-off leans on a speaker past its comfort; practice keeps both near full level)
+    double highFrom3 = highFrom, lowTo3 = lowTo;
+    for (size_t i = f.size(); i-- > 0;)
+    {
+        if (f[i] > opt.fMax * 1.5) continue;
+        if (hs[i] < highRef - 3.0) break;
+        highFrom3 = f[i];
+    }
+    {
+        bool in3 = false;
+        for (size_t i = 0; i < f.size(); ++i)
+        {
+            if (f[i] < opt.fMin / 1.6) continue;
+            if (! in3) { if (ls[i] >= lowRef - 3.0) { in3 = true; lowTo3 = f[i]; } continue; }
+            if (ls[i] < lowRef - 3.0) break;
+            lowTo3 = f[i];
+        }
+    }
     // search the overlap inside the range; with a gap, around the gap
     double fLo, fHi;
     std::string note;
-    if (highFrom <= lowTo) { fLo = highFrom; fHi = lowTo; }
+    if (highFrom3 <= lowTo3)
+    {
+        // both at full level here; keep clear of the top of the sub's range (where it is already turning down, and its
+        // own roll-off adds phase), the usual practice: no higher than a third of an octave under its -3 dB point
+        fLo = highFrom3;
+        fHi = std::max (fLo * 1.12, lowTo3 / 1.26);
+    }
+    else if (highFrom <= lowTo) { fLo = lowTo3; fHi = highFrom3; }   // near full level they do not meet: between the two -3 dB points
     else
     {
-        fLo = lowTo;
-        fHi = highFrom;
-        note = "The two speakers barely overlap: expect a dip around the crossover.";
+        // a gap: cross inside it (a quarter of an octave either way at most); outside, one speaker is far down
+        fLo = lowTo / 1.2;
+        fHi = highFrom * 1.2;
+        note = "The two speakers barely overlap (a gap from " + std::to_string ((int) std::lround (lowTo)) + " to " + std::to_string ((int) std::lround (highFrom))
+               + " Hz): expect a dip around the crossover.";
     }
     fLo = std::max (fLo, opt.fMin);
     fHi = std::min (fHi, opt.fMax);
@@ -434,8 +478,11 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
                + " dB apart, more than the 15 dB the level match covers: bring the " + (highRef > lowRef ? "low" : "high")
                + " speaker's amp up (or the other down) and measure again.";
     const double g = std::pow (10.0, gainDb / 20.0);
+    // the target the sum is judged against: flat at the high source's level from the low source's -3 dB point up;
+    // below it, the louder of the two (the system's own low-end roll-off)
+    const double flat = std::pow (10.0, highRef / 20.0);
     std::vector<double> ref (f.size());
-    for (size_t i = 0; i < f.size(); ++i) ref[i] = std::max (std::abs (high.h[i]), std::abs (low.h[i]) * g);
+    for (size_t i = 0; i < f.size(); ++i) ref[i] = f[i] >= lowFlatFrom ? flat : std::max (std::abs (high.h[i]), std::abs (low.h[i]) * g);
 
     double bestCost = 1e9;
     for (int type = 1; type <= 3; ++type)
@@ -504,8 +551,18 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
 }
 
 // Cost and efficiency of a given (manual) setting, for the live readout.
+// Where a low source (a sub) is within 3 dB of its loudest, scanning up from `fMin` (its lower -3 dB point).
+inline double lowerFlatFrom (const Response& low, double fMin = 25.0)
+{
+    const auto ls = detail::smoothedDb (low, 0.5);
+    double top = -200.0;
+    for (size_t i = 0; i < low.f.size(); ++i) if (low.f[i] >= fMin && low.f[i] <= 120.0) top = std::max (top, ls[i]);
+    for (size_t i = 0; i < low.f.size(); ++i) if (low.f[i] >= fMin && ls[i] >= top - 3.0) return low.f[i];
+    return fMin;
+}
+
 inline double assess (const Response& high, const Response& low, const Processing& ph, const Processing& pl, double fc, double& efficiency,
-                      double minCoherence = 0.0, double* reliability = nullptr)
+                      double minCoherence = 0.0, double* reliability = nullptr, double* peakFromFlatDb = nullptr)
 {
     efficiency = 0.0;
     if (high.empty() || low.empty() || high.f.size() != low.f.size()) return 0.0;
@@ -522,6 +579,16 @@ inline double assess (const Response& high, const Response& low, const Processin
     const double share = detail::reliableBand (band, high, low, a, b, minCoherence);
     if (reliability != nullptr) *reliability = share;
     if (band.idx.size() < 3) return 0.0;
+    if (peakFromFlatDb != nullptr)
+    {
+        // the sum against flat (the high source's own level), from the low source's -3 dB point up: what you hear
+        const double flatDb = medianDb (high, 375.0, 1500.0) + ph.gainDb;
+        const double from = lowerFlatFrom (low);
+        double worst = 0.0;
+        for (size_t j : band.idx)
+            if (high.f[j] >= from) worst = std::max (worst, std::abs (20.0 * std::log10 (std::max (std::abs (a[j] + b[j]), 1e-9)) - flatDb));
+        *peakFromFlatDb = worst;
+    }
     return detail::evaluate (high.f, a, b, ref, band, 0.0, 1.0, efficiency);
 }
 } // namespace la::xo

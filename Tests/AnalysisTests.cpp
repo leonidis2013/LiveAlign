@@ -3,6 +3,8 @@
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <sstream>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -788,6 +790,52 @@ static void testEqFit()
 }
 
 // The crossover pair follows the roles, not the order of the list.
+// The user's pair, from the makers' data sheets (modelled responses): JBL CBT70J-1 tops (-10 dB at 60 Hz) and a Yamaha
+// DXS12mkII sub (-10 dB at 42 and 150 Hz). Practice puts the crossover around 80 - 100 Hz; the sum should be flat.
+static void testCrossoverDataSheets()
+{
+    using namespace la::xo;
+    auto load = [] (const char* name)
+    {
+        std::ifstream in (std::string ("Tests/data/") + name);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        return parseFreqTable (ss.str());
+    };
+    const auto topT = load ("JBL_CBT70J-1_spec_model.txt"), subT = load ("Yamaha_DXS12mkII_spec_model.txt");
+    check (topT.freq.size() > 100 && subT.freq.size() > 100, "Data sheets: both files read");
+    if (topT.freq.size() < 100 || subT.freq.size() < 100) return;
+    const auto grid = analysisGrid();
+    const auto top = fromTable (topT, 0.0, 0.0, grid), sub = fromTable (subT, 0.0, 0.0, grid);
+    Capabilities caps;     // Butterworth and Linkwitz-Riley, 12 - 48 dB/oct
+    Options opt;           // 40 - 250 Hz
+    const auto r = optimise (top, sub, caps, opt);
+    check (r.valid, "Data sheets: a crossover is found");
+    check (r.highUsableFrom <= r.lowUsableTo, "Data sheets: they overlap (the sub is not cut off at the start of its range)", r.highUsableFrom, r.lowUsableTo);
+    check (r.lowUsableTo > 110.0 && r.lowUsableTo < 160.0, "Data sheets: the sub is usable to about 130 Hz", r.lowUsableTo, 130.0);
+    check (r.filter.freq >= 70.0 && r.filter.freq <= 115.0, "Data sheets: the crossover lands where practice puts it (70 - 115 Hz)", r.filter.freq, 90.0);
+    check (std::abs (r.gainLowDb) < 1.5, "Data sheets: no big sub boost (both are 0 dB in their passbands)", r.gainLowDb, 0.0);
+    // the sum, as heard, against flat
+    Processing ph, pl;
+    ph.hp = r.filter;
+    ph.hp.freq = r.filter.freq;
+    pl.lp = r.filter;
+    pl.gainDb = r.gainLowDb;
+    pl.invert = r.invertLow;
+    if (r.delayLowMs >= 0.0) pl.delayMs = r.delayLowMs; else ph.delayMs = -r.delayLowMs;
+    double eff = 0.0, peak = 99.0;
+    assess (top, sub, ph, pl, r.filter.freq, eff, 0.0, nullptr, &peak);
+    // The modelled tops are already 3 dB down at 80 Hz with a 4th-order roll-off of their own, so even the best
+    // alignment (checked by brute force: 0.13 - 0.24 dB mean, a dip of up to 2 dB) leaves a few dB at worst and some
+    // phase spread through the overlap.
+    check (peak < 3.5, "Data sheets: the sum within 3.5 dB of flat through the crossover", peak, 2.0);
+    check (r.costDb < 0.5, "Data sheets: and close to flat on average", r.costDb, 0.3);
+    check (eff > 0.8, "Data sheets: and mostly in phase", eff, 0.85);
+    std::printf ("  data sheets: %s %d dB/oct at %.1f Hz, low delay %.2f ms%s, sub %+.1f dB, overlap %.0f - %.0f Hz, within %.2f dB of flat, %.0f%% in phase\n",
+                 typeName (r.filter.type), r.filter.slope, r.filter.freq, r.delayLowMs, r.invertLow ? " inverted" : "", r.gainLowDb,
+                 r.highUsableFrom, r.lowUsableTo, peak, eff * 100.0);
+}
+
 static void testCrossoverPair()
 {
     using namespace la::xo;
@@ -1177,6 +1225,7 @@ int main()
     testCrossover();
     testEqFit();
     testCrossoverPair();
+    testCrossoverDataSheets();
     testRoomAcoustics();
     testFeedbackDetector();
     testPolarity();

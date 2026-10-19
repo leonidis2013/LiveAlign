@@ -71,7 +71,11 @@ public:
         };
         speakerChangedButton.setTooltip ("Mark the speaker system as changed (moved, replaced or re-cabled) so it is checked again");
         addAndMakeVisible (speakerChangedButton);
-        goButton.onClick = [this] { if (nextPage >= 0 && onGoTo) onGoTo (nextPage); };
+        goButton.onClick = [this]
+        {
+            if (nextPage == 0) { if (onNewSession) onNewSession(); }   // Home itself: no session yet, start one
+            else if (nextPage >= 0 && onGoTo) onGoTo (nextPage);
+        };
         addChildComponent (goButton);
         recheckButton.onClick = [this] { if (onRecheck) onRecheck(); };
         recheckButton.setTooltip ("For a system already tuned: one guided pass that measures each speaker close up, then each one and the whole "
@@ -139,7 +143,8 @@ public:
             const auto& list = proc.getSessions();
             const int cur = proc.currentSession();
             const auto name = cur >= 0 && cur < (int) list.size() ? list[(size_t) cur].name : juce::String ("Session");
-            drawPanel (g, nextCard.toFloat(), name + (proc.monitoringSession() ? "  -  show" : "  -  tuning"));
+            drawPanel (g, nextCard.toFloat(), ! proc.sessionStarted() ? juce::String ("No session yet")
+                                                : name + (proc.monitoringSession() ? "  -  show" : "  -  tuning"));
         }
         // the next thing to do, and what needs attention
         {
@@ -154,7 +159,8 @@ public:
             g.drawText (nextPage >= 0 ? "NEXT" : "ALL DONE", b.removeFromTop (14), juce::Justification::centredLeft);
             g.setColour (p.text);
             g.setFont (font (13.5f, true));
-            g.drawText (nextPage >= 0 ? juce::String (pageName (nextPage)) + ": " + nextWhat : juce::String ("The tuning is done. The reports and the processor sheet are ready."),
+            g.drawText (nextPage == 0 ? nextWhat
+                        : nextPage >= 0 ? juce::String (pageName (nextPage)) + ": " + nextWhat : juce::String ("The tuning is done. The reports and the processor sheet are ready."),
                         b, juce::Justification::centredLeft, true);
             juce::StringArray att;
             for (int i = 0; i < kNumPages; ++i) if (steps[(size_t) i].status == StepStatus::Attention) att.add (juce::String (pageName (i)) + ": " + steps[(size_t) i].shortText);
@@ -205,7 +211,7 @@ public:
                         right.withTrimmedRight (8), juce::Justification::centredRight, true);
             // what the session is for
             {
-                const auto tag = juce::String (s.kind == 1 ? "SHOW" : "TUNING");
+                const auto tag = juce::String (! s.started ? "NOT STARTED" : s.kind == 1 ? "SHOW" : "TUNING");
                 const auto tf = font (9.5f, true);
                 const float tw = juce::GlyphArrangement::getStringWidth (tf, tag) + 12.0f;
                 const float nameW = juce::jmin ((float) r.getWidth() - tw - 8.0f, juce::GlyphArrangement::getStringWidth (font (13.0f, open), s.name));

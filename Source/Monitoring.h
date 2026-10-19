@@ -16,7 +16,7 @@ namespace la
 {
 struct MonitorMic
 {
-    juce::String name { "FOH mic" }, position { "FOH" }, lockerId;
+    juce::String name { "FOH mic" }, position, lockerId;   // position: its monitoring point (none until one is picked or points exist)
     int input = 0;                  // interface input (0-based)
     int aim = Cal90;                // which calibration file: pointing up at FOH is usual
     MicCalSet cal;

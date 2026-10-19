@@ -155,7 +155,7 @@ public:
         }
         g.setColour (p.textFaint);
         g.setFont (font (10.5f));
-        g.drawText ("Saved on this computer: " + MicLocker::file().getFullPathName(), pathLine, juce::Justification::centredLeft, true);
+        g.drawText ("Locker file: " + MicLocker::file().getFullPathName(), pathLine, juce::Justification::centredRight, true);
 
         const auto* m = current();
         if (m == nullptr) return;
@@ -207,7 +207,6 @@ public:
         editCard = r;
         {
             auto c = listCard.reduced (14, 0).withTrimmedTop (36);
-            pathLine = c.removeFromBottom (24);
             auto b = c.removeFromBottom (40).withSizeKeepingCentre (c.getWidth(), 30);
             addButton.setBounds (b.removeFromLeft (120));
             b.removeFromLeft (8);
@@ -216,6 +215,8 @@ public:
         }
         {
             auto c = editCard.reduced (16, 0).withTrimmedTop (40);
+            pathLine = c.removeFromBottom (22);   // where the locker is kept: small, bottom right, out of the way
+            c.removeFromBottom (4);
             auto field = [&] (const juce::String& name, juce::Component& comp, int h = 30)
             {
                 auto row = c.removeFromTop (h);

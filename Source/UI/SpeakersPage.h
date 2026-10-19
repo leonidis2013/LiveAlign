@@ -383,7 +383,7 @@ private:
 };
 
 //==============================================================================
-// The time alignments of the system, one row each: which speaker is lined up to which, where, and the delay.
+// The time alignments of the system, one row each: which speaker or set is lined up to which, where, and the delay.
 class AlignmentList : public juce::Component
 {
 public:
@@ -414,7 +414,7 @@ public:
             auto top = r.removeFromTop (r.getHeight() * 0.55f);
             g.setFont (font (12.5f, true));
             g.setColour (sourceColour (a.align));
-            const auto alignName = name (a.align), refName = name (a.ref);
+            const auto alignName = sys.endName (a.align, a.alignSet), refName = sys.endName (a.ref, a.refSet);
             g.drawText (alignName, top, juce::Justification::bottomLeft, true);
             const float w1 = (float) juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), alignName);
             g.setColour (p.textDim);
@@ -457,24 +457,19 @@ public:
     }
 
 private:
-    juce::String name (int i) const
-    {
-        if (i < 0 || i >= (int) sys.sources.size()) return "?";
-        return sys.sources[(size_t) i].name.isNotEmpty() ? sys.sources[(size_t) i].name : "Speaker " + juce::String (i + 1);
-    }
     const SpeakerSystem& sys;
     int selected = 0, hoverRow = -1;
 };
 
 //==============================================================================
-// Time alignment: the two speakers' impulse responses at the spot, one above the other on the same time base (the
+// Time alignment: the two ends' impulse responses at the spot (a speaker, or a set playing together), one above the other on the same time base (the
 // first one measured is time zero), each with its arrival marked, so the offset between them is seen rather than
 // read. Below them, what that offset asks for in the processor.
 class AlignImpulseView : public juce::Component
 {
 public:
     std::function<const Alignment*()> alignment;
-    std::function<juce::String (int)> nameOf;
+    std::function<juce::String (int)> endName;   // 0 the reference end, 1 the end to align (a speaker or a set)
     std::function<double()> neededMs;
     int measuringWhich = -1;   // 0 the reference, 1 the one to align, while it plays
 
@@ -512,7 +507,7 @@ public:
             head.removeFromLeft (8);
             g.setColour (p.text);
             g.setFont (font (12.5f, true));
-            g.drawText ((which == 0 ? "Reference: " : "To align: ") + (nameOf ? nameOf (spk) : juce::String()), head.removeFromLeft (220), juce::Justification::centredLeft, true);
+            g.drawText ((which == 0 ? "Reference: " : "To align: ") + (endName ? endName (which) : juce::String()), head.removeFromLeft (220), juce::Justification::centredLeft, true);
             g.setColour (measuringWhich == which ? p.accent : has ? p.good : p.textDim);
             g.setFont (font (11.0f, measuringWhich == which));
             const auto at = which == 0 ? refAt : alAt;
@@ -582,16 +577,17 @@ public:
         {
             const double need = neededMs ? neededMs() : 0.0;
             g.setColour (need >= -0.005 ? p.text : p.warn);
-            g.drawFittedText (need >= -0.005 ? (nameOf ? nameOf (a->align) : juce::String()) + " arrives " + juce::String (alAt - refAt, 2) + " ms "
-                                                   + (alAt >= refAt ? "after " : "before ") + (nameOf ? nameOf (a->ref) : juce::String()) + ": delay it "
+            const auto alName = endName ? endName (1) : juce::String(), refName = endName ? endName (0) : juce::String();
+            g.drawFittedText (need >= -0.005 ? alName + " arrives " + juce::String (alAt - refAt, 2) + " ms "
+                                                   + (alAt >= refAt ? "after " : "before ") + refName + ": delay it "
                                                    + juce::String (need, 2) + " ms" + (a->phaseValid ? " (matched by phase through the crossover)." : ".")
-                                             : (nameOf ? nameOf (a->ref) : juce::String()) + " is the later one: delay it " + juce::String (-need, 2) + " ms instead (Apply swaps them).",
+                                             : refName + " is the later one: delay it " + juce::String (-need, 2) + " ms instead (Apply swaps them).",
                               footer, juce::Justification::centredLeft, 2);
         }
         else
         {
             g.setColour (p.textDim);
-            g.drawFittedText ("Measure each speaker alone; time zero is the first arrival measured.", footer, juce::Justification::centredLeft, 2);
+            g.drawFittedText ("Measure each end on its own (a set plays all its speakers at once); time zero is the first arrival measured.", footer, juce::Justification::centredLeft, 2);
         }
     }
 
@@ -645,14 +641,19 @@ public:
         for (int n = 1; n <= 8; ++n) countBox.addItem (n == 1 ? juce::String ("1 cabinet") : juce::String (n) + " cabinets", n);
         countBox.setTooltip ("How many cabinets this output feeds (two subs side by side, a column of two ...)");
         countBox.onChange = [this] { if (auto* s = current()) { s->count = juce::jmax (1, countBox.getSelectedId()); systemChanged (false); } };
-        coverBox.setTooltip ("How widely it covers (its directivity, Q): from the data sheet's horizontal x vertical angles. "
-                             "Room acoustics uses it for the critical distance.");
+        coverBox.setTooltip ("Its coverage: the data sheet's horizontal x vertical angles (to -6 dB). From them comes its directivity (Q): "
+                             "how much of its sound goes straight to the audience rather than into the room. Room acoustics uses it for "
+                             "the critical distance (where the room's sound gets as loud as the speaker's), and coverage for its hints. "
+                             "Not in the list? Pick \"Enter the angles...\" (a wide column such as a CBT: 150 x 20).");
         coverBox.onChange = [this]
         {
             auto* s = current();
             const int id = coverBox.getSelectedId();
-            if (s == nullptr || id <= 0) return;
+            if (s == nullptr || id <= 0 || id == 99) return;
+            if (id == 98) { enterCoverAngles(); return; }
             s->directivityQ = id == 1 ? 0.0 : coverPatterns()[(size_t) (id - 2)].q;
+            s->coverH = id == 1 ? 0.0 : coverPatterns()[(size_t) (id - 2)].h;
+            s->coverV = id == 1 ? 0.0 : coverPatterns()[(size_t) (id - 2)].v;
             systemChanged (false);
         };
         linkBox.setTooltip ("Its group: speakers in a group share the crossover, level, polarity and EQ (Main L, Main R and the centre; "
@@ -845,7 +846,7 @@ public:
         alList.onSelect = [this] (int i) { selectAlignment (i); };
         addChildComponent (alList);
         alAddButton.onClick = [this] { addAlignment(); };
-        alAddButton.setTooltip ("Line up a fill, a delay, or one side of a left / right pair with another speaker");
+        alAddButton.setTooltip ("Line up the next set: Stereo (L + R together) to the sub first, then each fill or delay to Stereo");
         alRemoveButton.onClick = [this]
         {
             if (alSelected < 0 || alSelected >= (int) sys.alignments.size() || phase != Phase::Idle) return;
@@ -853,16 +854,37 @@ public:
             alSelected = juce::jmax (0, alSelected - 1);
             systemChanged (false);
         };
-        alAlignBox.setTooltip ("The speaker that gets the delay (a fill, a delay, or one side of a left / right pair)");
-        alRefBox.setTooltip ("The speaker it is lined up to (usually the main)");
-        alAlignBox.onChange = [this] { if (auto* a = currentAlignment()) { a->align = alAlignBox.getSelectedItemIndex(); a->hasAlign = false; a->hasRef = false; systemChanged (false); } };
-        alRefBox.onChange = [this] { if (auto* a = currentAlignment()) { a->ref = alRefBox.getSelectedItemIndex(); a->hasAlign = false; a->hasRef = false; systemChanged (false); } };
+        alAlignBox.setTooltip ("What gets the delay: a set (every speaker in it plays at once, as in the show, and each keeps its own trim), "
+                               "or a single speaker for a small trim of its own");
+        alRefBox.setTooltip ("What it is lined up to: usually Stereo (L + R together). Stereo (L + R together) to Sub: both sides play at once, as in the show");
+        alAlignBox.onChange = [this]
+        {
+            auto* a = currentAlignment();
+            const int id = alAlignBox.getSelectedId();
+            if (a == nullptr || id <= 0) return;
+            a->align = endIndexOfId (id);
+            a->alignSet = endIsSetId (id);
+            a->hasAlign = a->hasRef = false;
+            a->phaseValid = false;
+            systemChanged (false);
+        };
+        alRefBox.onChange = [this]
+        {
+            auto* a = currentAlignment();
+            const int id = alRefBox.getSelectedId();
+            if (a == nullptr || id <= 0) return;
+            a->ref = endIndexOfId (id);
+            a->refSet = endIsSetId (id);
+            a->hasAlign = a->hasRef = false;
+            a->phaseValid = false;
+            systemChanged (false);
+        };
         alSignalBox.addItemList ({ "Pink noise", "Sweep", "Music from the console" }, 1);
         alSignal = juce::jlimit (0, 2, UserPrefs::get ("alignSignal", "0").getIntValue());
         alSignalBox.setSelectedItemIndex (alSignal, juce::dontSendNotification);
-        alSignalBox.setTooltip ("What plays while each speaker is measured. Pink noise (the default) or a sweep from the generator; or music "
-                                "from the console when noise is not possible: route it to one speaker at a time on the console, with the "
-                                "console's feed on an input as the reference (Mics, Reference).");
+        alSignalBox.setTooltip ("What plays while each end is measured. Pink noise (the default) or a sweep from the generator; or music "
+                                "from the console when noise is not possible: route it to one end at a time on the console (both sides of a "
+                                "set at once), with the console's feed on an input as the reference (Mics, Reference).");
         alSignalBox.onChange = [this]
         {
             alSignal = alSignalBox.getSelectedItemIndex();
@@ -872,8 +894,8 @@ public:
         addChildComponent (alSignalBox);
         alSpotBox.setEditableText (true);
         alSpotBox.setTextWhenNothingSelected ("Where they meet");
-        alSpotBox.setTooltip ("Where both speakers cover the seats: front rows for a front fill, under the balcony for a delay, "
-                              "the centre line for left / right. Type a new name to add a position.");
+        alSpotBox.setTooltip ("Where both ends cover the seats: FOH for Stereo to the sub, front rows for a front fill, under the "
+                              "balcony for a delay. Type a new name to add a position.");
         alSpotBox.onChange = [this]
         {
             auto* a = currentAlignment();
@@ -890,12 +912,12 @@ public:
         alExtraSlider.setRange (0.0, 20.0, 0.1);
         alExtraSlider.setTextValueSuffix (" ms");
         alExtraSlider.setTooltip ("Extra delay on top of the alignment so the sound still seems to come from the main "
-                                  "(precedence effect). 0 for left / right; often 5 to 10 ms for delay speakers.");
+                                  "(precedence effect). 0 for the sub and for front fills; often 5 to 10 ms for delay speakers.");
         alExtraSlider.onValueChange = [this] { if (auto* a = currentAlignment()) { a->precedenceMs = alExtraSlider.getValue(); refreshApply(); changedOutside(); alList.repaint(); } };
         alMeasureButton.onClick = [this] { if (phase == Phase::Idle) alignmentAction(); else cancelMeasure ("Stopped."); };
         // the two impulse panes, with a Play button on each
         alImpulse.alignment = [this] { return currentAlignment(); };
-        alImpulse.nameOf = [this] (int i) { return nameOf (i); };
+        alImpulse.endName = [this] (int which) { const auto* a = currentAlignment(); return a != nullptr ? sideName (*a, which) : juce::String(); };
         alImpulse.neededMs = [this] { const auto* a = currentAlignment(); return a != nullptr ? a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs) : 0.0; };
         addChildComponent (alImpulse);
         for (int w = 0; w < 2; ++w)
@@ -905,11 +927,12 @@ public:
                 if (phase != Phase::Idle) { cancelMeasure ("Stopped."); return; }
                 startArrivalOne (alSelected, w);
             };
-            alPlayButtons[w].setTooltip (w == 0 ? "Play the reference speaker alone and capture its arrival" : "Play the speaker to align alone and capture its arrival");
+            alPlayButtons[w].setTooltip (w == 0 ? "Play the reference on its own (all of a set at once) and capture its arrival"
+                                                : "Play the one to align on its own (all of a set at once) and capture its arrival");
             addChildComponent (alPlayButtons[w]);
         }
         alGuide.page = this;
-        alMeasureButton.setTooltip ("The next step of this alignment: play each speaker on its own, apply the delay, then check them together");
+        alMeasureButton.setTooltip ("The next step of this alignment: play each end on its own, apply the delay, then check them together");
         alApplyButton.onClick = [this] { applyAlignment(); };
         alRedoButton.onClick = [this]
         {
@@ -917,7 +940,7 @@ public:
             status = "Starting this alignment again.";
             systemChanged (false);
         };
-        alRedoButton.setTooltip ("Measure this pair again from the first step");
+        alRedoButton.setTooltip ("Measure this alignment again from the first step");
         for (auto* c : std::initializer_list<juce::Component*> { &alAddButton, &alRemoveButton, &alAlignBox, &alRefBox, &alSpotBox, &alExtraSlider,
                                                                  &alMeasureButton, &alRedoButton })
             addChildComponent (*c);
@@ -1022,7 +1045,7 @@ public:
     {
         if (! allMeasured()) return "Measure each speaker";
         if (sys.pairValid() && ! crossoverSet()) return "Find the crossover";
-        if (alignmentNeeded() && ! alignmentDone()) return "Time-align the fills";
+        if (alignmentNeeded() && ! alignmentDone()) return "Time-align the speakers";
         return {};
     }
     void chooseStep() { openStepAt (! allMeasured() ? 0 : ! crossoverSet() ? 1 : ! alignmentDone() ? 2 : openStep); }
@@ -1263,11 +1286,18 @@ public:
     void newAlignment() { addAlignment(); }
     void measureAlignment (int i) { selectAlignment (i); startArrival (i); }
     void applyAlignmentNow() { applyAlignment(); }
+    // For the preview's simulated console: the speakers playing in the time alignment now (the others muted).
+    std::vector<int> alignmentPlayingForPreview() const
+    {
+        const auto* a = alignmentAt (arrivalAlignment);
+        if (phase == Phase::Idle || ! arrivalMode || a == nullptr) return {};
+        return checkMode ? bothMembers (*a) : sideMembers (*a, arrivalWhich);
+    }
     void checkAlignment (int i) { selectAlignment (i); startCheck (i); }
     juce::String statusText() const { return status; }
     juce::String sheetLine (int i) const { return sheet::signature (sys, i); }
 
-    // ---- Time alignment, guided: each speaker alone at the spot where they meet, then both together ----
+    // ---- Time alignment, guided: each end alone at the spot where they meet (a set plays all its speakers), then both together ----
     struct AlignGuide : public GuidedSource
     {
         SpeakersPage* page = nullptr;
@@ -1282,7 +1312,7 @@ public:
         juce::String guidedTitle() const override
         {
             const auto* a = page->currentAlignment();
-            return a != nullptr ? "Time alignment: " + page->nameOf (a->align) + " to " + page->nameOf (a->ref) : juce::String ("Time alignment");
+            return a != nullptr ? "Time alignment: " + page->sideName (*a, 1) + " to " + page->sideName (*a, 0) : juce::String ("Time alignment");
         }
         std::vector<GuideSpot> guidedSpots() override
         {
@@ -1294,7 +1324,7 @@ public:
             if (! pr.positions.contains (spot)) pr.positions.add (spot);
             const int marker = pr.plan.ensureMarker (spot);
             const int now = stageNow();
-            const juce::String labels[] = { page->nameOf (a->ref) + " alone", page->nameOf (a->align) + " alone", "Both together" };
+            const juce::String labels[] = { page->sideName (*a, 0) + " alone", page->sideName (*a, 1) + " alone", "Both together" };
             for (int k = 0; k < 3; ++k)
             {
                 GuideSpot sp;
@@ -1327,19 +1357,23 @@ public:
             if (a == nullptr) return "Add an alignment first.";
             const int st = stageNow();
             if (page->alSignal == 2)
-                return st == 2 ? "First: route the music to both " + page->nameOf (a->ref) + " and " + page->nameOf (a->align) + " on the console."
-                               : "First: route the music only to " + page->nameOf (st == 0 ? a->ref : a->align) + " on the console.";
+                return st == 2 ? "First: route the music to both " + page->sideName (*a, 0) + " and " + page->sideName (*a, 1) + " on the console."
+                               : "First: route the music only to " + page->sideName (*a, st, true) + " on the console.";
             if (st == 2)
             {
                 const double need = a->neededMs (page->sys.sources[(size_t) a->ref].proc.delayMs);
+                const int side = need < -0.005 ? 0 : 1;
                 juce::String t = "First: enter " + juce::String (juce::jmax (0.0, std::abs (need)), 2) + " ms delay on "
-                                 + page->nameOf (need < -0.005 ? a->ref : a->align) + " in the processor";
-                if (const auto m = page->muteText ({ a->ref, a->align }); m.isNotEmpty()) t << ", and " << m.replace ("Mute", "mute");
+                                 + page->sideName (*a, side) + " in the processor";
+                if (page->sideMembers (*a, side).size() > 1) t << " (on each of its speakers, keeping their own trims)";
+                if (const auto m = page->muteText (page->bothMembers (*a)); m.isNotEmpty()) t << ", and " << m.replace ("Mute", "mute");
                 else t << ", and unmute both.";
                 return t;
             }
-            if (const auto m = page->muteText ({ st == 0 ? a->ref : a->align }); m.isNotEmpty()) return "First: " + m;
-            return "Only " + page->nameOf (st == 0 ? a->ref : a->align) + " plays. The mic stays at the same spot for both speakers.";
+            if (const auto m = page->muteText (page->sideMembers (*a, st)); m.isNotEmpty()) return "First: " + m;
+            if (page->sideMembers (*a, st).size() > 1)
+                return "Only " + page->sideName (*a, st, true) + " plays, all at once as in the show. The mic stays at the same spot for both ends.";
+            return "Only " + page->sideName (*a, st) + " plays. The mic stays at the same spot for both ends.";
         }
         bool guidedStart() override
         {
@@ -1524,10 +1558,12 @@ public:
             else if (sys.lastResult.valid)
             {
                 const auto& r = sys.lastResult;
-                t << "Best: " << xo::typeName (r.filter.type) << " " << r.filter.slope << " dB/oct at " << freqLabel (r.filter.freq) << " Hz, "
-                  << "low " << (r.delayLowMs >= 0 ? "delayed " : "early ") << juce::String (std::abs (r.delayLowMs), 2) << " ms"
-                  << (r.invertLow ? ", low inverted" : "") << ".\n"
-                  << "Overlap " << freqLabel (r.highUsableFrom) << " - " << freqLabel (r.lowUsableTo) << " Hz.";
+                const auto& hiName = sys.groupName (sys.xoHigh), loName = sys.groupName (sys.xoLow);
+                t << "Best: " << xo::typeName (r.filter.type) << " " << r.filter.slope << " dB/oct at " << freqLabel (r.filter.freq) << " Hz; "
+                  << "delay the " << (r.delayLowMs >= 0 ? loName : hiName) << " " << juce::String (std::abs (r.delayLowMs), 2) << " ms"
+                  << (r.invertLow ? ", " + loName + " polarity inverted" : juce::String()) << ".\n"
+                  << (r.highUsableFrom <= r.lowUsableTo ? "They overlap from " + freqLabel (r.highUsableFrom) + " to " + freqLabel (r.lowUsableTo) + " Hz."
+                                                        : "A gap from " + freqLabel (r.lowUsableTo) + " to " + freqLabel (r.highUsableFrom) + " Hz.");
                 if (! r.note.empty()) t << " " << juce::String (r.note);
                 if (sys.pairNearField()) t << "\nMeasured close up: the delay between them is set in Time alignment.";
                 c = p.text;
@@ -1551,8 +1587,8 @@ public:
                 const juce::Colour qc = q > 0.9 ? p.good : q > 0.75 ? p.warn : p.bad;
                 g.setColour (qc);
                 g.setFont (font (12.0f, true));
-                g.drawText ("Sum through the crossover: " + juce::String (juce::roundToInt (q * 100.0)) + "% in phase, "
-                                + juce::String (liveDev, 1) + " dB from flat"
+                g.drawText ("Sum through the crossover: " + juce::String (juce::roundToInt (q * 100.0)) + "% in phase, within "
+                                + juce::String (liveDev, 1) + " dB of flat"
                                 + (liveReliable < 0.8 ? juce::String (" (") + juce::String (juce::roundToInt (liveReliable * 100.0)) + "% reliable)" : juce::String()),
                             liveLine, juce::Justification::centredLeft, true);
             }
@@ -1621,7 +1657,7 @@ public:
                 row.removeFromLeft (6);
                 linkBox.setBounds (row);
                 c.removeFromTop (8);
-                field ("Covers", coverBox, 26);
+                field ("Coverage", coverBox, 26);
             }
             else
             {
@@ -1822,7 +1858,7 @@ private:
                               "A mono sub is fed from both sides (L+R), so it measures with all outputs playing.", r.withHeight (60), juce::Justification::topLeft, 3);
             return;
         }
-        static const char* heads[] = { "OUTPUT", "SPEAKER", "ROLE", "CHANNEL", "CABINETS", "COVERS", "GROUP" };
+        static const char* heads[] = { "OUTPUT", "SPEAKER", "ROLE", "CHANNEL", "CABINETS", "COVERAGE", "GROUP" };
         const int w[] = { 70, 150, 110, 90, 80, 120, 0 };
         auto head = r.removeFromTop (20);
         g.setColour (p.textDim);
@@ -1919,11 +1955,14 @@ private:
                 coverBox.addItem (juce::String (pats[k].name) + " (Q " + juce::String (juce::roundToInt (pats[k].q)) + ")", (int) k + 2);
                 if (s->directivityQ > 0.0 && std::abs (s->directivityQ - pats[k].q) < 0.01) sel = (int) k + 2;
             }
-            if (s->directivityQ > 0.0 && sel == 1)   // a value from an older venue that is not in the list
+            if (s->directivityQ > 0.0 && sel == 1)   // angles entered, or a value from an older venue that is not in the list
             {
-                coverBox.addItem ("Q " + juce::String (s->directivityQ, 1), 99);
+                coverBox.addItem (s->coverH > 0.0 && s->coverV > 0.0
+                                      ? juce::String (juce::roundToInt (s->coverH)) + " x " + juce::String (juce::roundToInt (s->coverV)) + " (Q " + juce::String (s->directivityQ, 1) + ")"
+                                      : "Q " + juce::String (s->directivityQ, 1), 99);
                 sel = 99;
             }
+            coverBox.addItem ("Enter the angles...", 98);
             coverBox.setSelectedId (sel, juce::dontSendNotification);
         }
         linkBox.clear (juce::dontSendNotification);
@@ -1984,7 +2023,7 @@ private:
             };
             switch (r)
             {
-                case 1: { const int l = add ("Main L", SpeakerRole::Main, SpeakerChannel::Left); add ("Main R", SpeakerRole::Main, SpeakerChannel::Right, l); break; }
+                case 1: { const int l = add ("Stereo (L)", SpeakerRole::Main, SpeakerChannel::Left); add ("Stereo (R)", SpeakerRole::Main, SpeakerChannel::Right, l); break; }
                 // a speaker joins the group of its kind when there is one (its settings shared; "Own settings" splits it off)
                 case 2:
                 {
@@ -2025,6 +2064,38 @@ private:
             safe->systemChanged (true);
         });
     }
+
+    // The data sheet's coverage angles, for a speaker whose pattern is not in the list (a wide column, say).
+    void enterCoverAngles()
+    {
+        auto* s = current();
+        if (s == nullptr) return;
+        angleWindow = std::make_unique<juce::AlertWindow> ("Coverage angles",
+            "From the data sheet: the horizontal and vertical coverage (to -6 dB), in degrees. A CBT-style column is about 150 x 20; "
+            "a small point source 90 x 60.", juce::MessageBoxIconType::NoIcon, this);
+        angleWindow->addTextEditor ("h", s->coverH > 0.0 ? juce::String (juce::roundToInt (s->coverH)) : juce::String ("90"), "Horizontal");
+        angleWindow->addTextEditor ("v", s->coverV > 0.0 ? juce::String (juce::roundToInt (s->coverV)) : juce::String ("60"), "Vertical");
+        angleWindow->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        angleWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<SpeakersPage> safe (this);
+        const int index = selected;
+        angleWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe, index] (int result)
+        {
+            if (safe == nullptr || safe->angleWindow == nullptr) return;
+            const double h = safe->angleWindow->getTextEditorContents ("h").getDoubleValue();
+            const double v = safe->angleWindow->getTextEditorContents ("v").getDoubleValue();
+            safe->angleWindow->setVisible (false);
+            if (result == 1 && h >= 5.0 && v >= 5.0 && index >= 0 && index < (int) safe->sys.sources.size())
+            {
+                auto& src = safe->sys.sources[(size_t) index];
+                src.coverH = std::min (h, 360.0);
+                src.coverV = std::min (v, 360.0);
+                src.directivityQ = SpeakerSource::qFromAngles (h, v);
+            }
+            safe->systemChanged (false);   // and back to what is set, on Cancel
+        }), false);
+    }
+    std::unique_ptr<juce::AlertWindow> angleWindow;
 
     // Something about the sources changed: rebuild what depends on them.
     void systemChanged (bool responses)
@@ -2144,9 +2215,10 @@ private:
         const auto& pl = sys.sources[(size_t) sys.xoLow].proc;
         if (! ph.hp.active()) return;
         double eff = 0.0;
-        const double cost = xo::assess (h, l, ph, pl, ph.hp.freq, eff, settings.coherenceBlank.load(), &liveReliable);
+        double peak = 0.0;
+        xo::assess (h, l, ph, pl, ph.hp.freq, eff, settings.coherenceBlank.load(), &liveReliable, &peak);
         liveEff = eff;
-        liveDev = juce::jmax (0.0, cost - 1.5 * (1.0 - eff));
+        liveDev = peak;   // the largest step from flat through the crossover, as heard (not the optimiser's score)
         liveValid = true;
         repaint();
     }
@@ -2276,7 +2348,18 @@ private:
         juce::String why;
         for (int t : targets)
             if (t >= 0 && t < (int) sys.sources.size() && sys.sources[(size_t) t].output == 0) { why = nameOf (t) + " plays from All outputs. "; break; }
-        if (why.isEmpty()) why = "These speakers share an output. ";
+        if (why.isEmpty())
+        {
+            int first = -1;
+            bool split = false;
+            for (int t : targets)
+            {
+                if (t < 0 || t >= (int) sys.sources.size()) continue;
+                const int o = sys.sources[(size_t) t].output;
+                if (first < 0) first = o; else split = split || o != first;
+            }
+            why = split ? "These play from different outputs, so the generator plays all outputs. " : "These speakers share an output. ";
+        }
         juce::Component::SafePointer<SpeakersPage> safe (this);
         juce::AlertWindow::showAsync (juce::MessageBoxOptions()
                                           .withIconType (juce::MessageBoxIconType::InfoIcon)
@@ -2351,7 +2434,7 @@ private:
     {
         if (polarityMode && phase != Phase::Idle && measuring >= 0)
             return phase == Phase::Settling ? "Playing pink noise from " + nameOf (measuring) + "..." : "Checking the polarity of " + cabinetName (measuring, polarityCab) + "...";
-        const auto who = nameOf (measuring);
+        const auto who = measuringName();
         switch (phase)
         {
             case Phase::Settling: return arrivalMode ? "Playing pink noise through " + who + " (arrival at " + spotName() + ")..."
@@ -2395,7 +2478,7 @@ private:
                 if (arrivalMode && snap != nullptr && mic < (int) snap->mics.size())
                     if (auto* a = alignmentAt (arrivalAlignment))
                     {
-                        a->checkFreq = sys.overlapFreq (a->ref, a->align);
+                        a->checkFreq = overlapOf (*a);
                         if (checkMode)
                         {
                             if (isXoPair (*a) && a->refTf.freq.size() > 8 && a->alignTf.freq.size() > 8)
@@ -2435,7 +2518,7 @@ private:
                 if (a == nullptr) { cancelMeasure ("The alignment was removed."); return; }
                 if (! valid)
                 {
-                    cancelMeasure ("No clear arrival of " + nameOf (measuring) + " at " + proc.mics.nameOf (mic)
+                    cancelMeasure ("No clear arrival of " + measuringName() + " at " + proc.mics.nameOf (mic)
                                    + ". Check that it is playing and the mic hears it, then measure again.");
                     return;
                 }
@@ -2870,8 +2953,8 @@ private:
             if (a != nullptr)
             {
                 const bool playing = phase != Phase::Idle && arrivalMode && ! checkMode && arrivalWhich == w;
-                alPlayButtons[w].setButtonText (playing ? "Stop" : "Play " + nameOf (w == 0 ? a->ref : a->align));
-                alPlayButtons[w].setEnabled (a->ref != a->align && (phase == Phase::Idle || playing) && (proc.isStandalone() || proc.uiAsStandalone));
+                alPlayButtons[w].setButtonText (playing ? "Stop" : "Play " + sideName (*a, w));
+                alPlayButtons[w].setEnabled (endsValid (*a) && (phase == Phase::Idle || playing) && (proc.isStandalone() || proc.uiAsStandalone));
             }
             alImpulse.measuringWhich = phase != Phase::Idle && arrivalMode && ! checkMode ? arrivalWhich : -1;
         }
@@ -2887,7 +2970,8 @@ private:
 
     bool crossoverSet() const { return sys.pairValid() && sys.sources[(size_t) sys.xoHigh].proc.hp.active(); }
 
-    // Time alignment is needed when there are fills or delays, or separate left and right mains.
+    // Time alignment is needed when there are fills or delays, or a crossover pair measured close up (Stereo to Sub).
+    // A symmetrical left / right pair is one set (Stereo) and needs no delay of its own; a trim between them stays optional.
     bool alignmentNeeded() const
     {
         bool left = false, right = false, fill = false;
@@ -2897,7 +2981,7 @@ private:
             left = left || (src.role == (int) SpeakerRole::Main && src.channel == (int) SpeakerChannel::Left);
             right = right || (src.role == (int) SpeakerRole::Main && src.channel == (int) SpeakerChannel::Right);
         }
-        juce::ignoreUnused (left, right);   // a symmetrical left / right pair needs no delay; aligning it stays optional
+        juce::ignoreUnused (left, right);   // a symmetrical left / right pair is one set: aligning L to R stays optional
         return fill || sys.pairNearField();   // a crossover pair measured close up gets its timing here
     }
 
@@ -2940,7 +3024,7 @@ private:
             return nameOf (sys.xoHigh) + " / " + nameOf (sys.xoLow) + "  -  " + xo::typeShort (f.type) + juce::String (f.slope) + " @ "
                    + freqLabel (f.freq) + " Hz";
         }
-        if (sys.alignments.empty()) return alignmentNeeded() ? "Fills, delays or L / R to line up" : "Optional";
+        if (sys.alignments.empty()) return alignmentNeeded() ? "Stereo, sub and fills to line up" : "Optional";
         int done = 0;
         for (const auto& a : sys.alignments)
             if (a.measured() && a.ref < (int) sys.sources.size() && a.align < (int) sys.sources.size()
@@ -3165,10 +3249,60 @@ private:
 
     // ---- time alignment ----
     Alignment* alignmentAt (int i) { return i >= 0 && i < (int) sys.alignments.size() ? &sys.alignments[(size_t) i] : nullptr; }
+    const Alignment* alignmentAt (int i) const { return i >= 0 && i < (int) sys.alignments.size() ? &sys.alignments[(size_t) i] : nullptr; }
     Alignment* currentAlignment() { return alignmentAt (alSelected); }
     const Alignment* currentAlignment() const { return alSelected >= 0 && alSelected < (int) sys.alignments.size() ? &sys.alignments[(size_t) alSelected] : nullptr; }
 
     static juce::String spotOf (const Alignment& a) { return a.spot.isNotEmpty() ? a.spot : juce::String ("the mic position"); }
+
+    // An alignment end: one speaker, or a set (the speaker's whole group, its lead and every speaker linked to it,
+    // playing together). "Stereo" for Stereo (L) and Stereo (R); otherwise the names joined with " + ".
+    std::vector<int> endMembers (int idx, bool set) const { return sys.endMembers (idx, set); }
+    juce::String endName (int idx, bool set) const { return sys.endName (idx, set); }
+    // 0 the reference end, 1 the end to align. `together` names who plays: "Stereo (L + R together)".
+    std::vector<int> sideMembers (const Alignment& a, int which) const { return which == 0 ? endMembers (a.ref, a.refSet) : endMembers (a.align, a.alignSet); }
+    juce::String sideName (const Alignment& a, int which, bool together = false) const
+    {
+        return which == 0 ? sys.endName (a.ref, a.refSet, together && a.refSet) : sys.endName (a.align, a.alignSet, together && a.alignSet);
+    }
+    // Every speaker that plays when both ends play together (for the check, and its mutes).
+    std::vector<int> bothMembers (const Alignment& a) const
+    {
+        auto out = sideMembers (a, 0);
+        for (int k : sideMembers (a, 1)) if (std::find (out.begin(), out.end(), k) == out.end()) out.push_back (k);
+        return out;
+    }
+    // Two different ends that share no speaker.
+    bool endsValid (const Alignment& a) const
+    {
+        const int n = (int) sys.sources.size();
+        if (a.ref < 0 || a.align < 0 || a.ref >= n || a.align >= n || a.ref == a.align) return false;
+        const auto r = sideMembers (a, 0);
+        for (int k : sideMembers (a, 1)) if (std::find (r.begin(), r.end(), k) != r.end()) return false;
+        return true;
+    }
+    // What is playing now, for the status line: the alignment end (or both, for the check), else the speaker measured.
+    juce::String measuringName() const
+    {
+        if (arrivalMode && arrivalAlignment >= 0 && arrivalAlignment < (int) sys.alignments.size())
+        {
+            const auto& a = sys.alignments[(size_t) arrivalAlignment];
+            return checkMode ? sideName (a, 0) + " and " + sideName (a, 1) : sideName (a, arrivalWhich, true);
+        }
+        return nameOf (measuring);
+    }
+    // The frequency where the two ends overlap, for the check: the crossover for the crossover pair, else 500 Hz.
+    double overlapOf (const Alignment& a) const { return isXoPair (a) ? sys.overlapFreq (sys.xoHigh, sys.xoLow) : 500.0; }
+
+    // Combo box ids for the ends: a single speaker i is i + 1, a set led by i is kSetId + i + 1 (stable as speakers change).
+    static constexpr int kSetId = 100;
+    static int endIndexOfId (int id) { return id > kSetId ? id - kSetId - 1 : id - 1; }
+    static bool endIsSetId (int id) { return id > kSetId; }
+    int endIdOf (int idx, bool set) const
+    {
+        if (set && sys.inGroup (idx)) return kSetId + sys.master (idx) + 1;
+        return idx + 1;
+    }
 
     juce::String spotName() const
     {
@@ -3184,30 +3318,83 @@ private:
         repaint();
     }
 
-    // A sensible first pair: left / right mains, else a fill or delay to the main.
+    // The next alignment, by sets: Stereo (L + R together) to the sub first (the crossover pair's timing), then each
+    // fill or delay (or fill set) to Stereo. A left / right pair is one set and is not lined up against itself; a
+    // single speaker can still be picked by hand for a trim of its own.
     void addAlignment()
     {
         if ((int) sys.alignments.size() >= SpeakerSystem::kMaxAlignments || sys.sources.size() < 2) return;
         const auto& src = sys.sources;
-        auto find = [&src] (auto pred) { for (int i = 0; i < (int) src.size(); ++i) if (pred (src[(size_t) i])) return i; return -1; };
-        auto used = [this] (int ref, int al) { for (const auto& a : sys.alignments) if (a.ref == ref && a.align == al) return true; return false; };
-        Alignment a;
-        const int left = find ([] (const SpeakerSource& s) { return s.role == (int) SpeakerRole::Main && s.channel == (int) SpeakerChannel::Left; });
-        const int right = find ([] (const SpeakerSource& s) { return s.role == (int) SpeakerRole::Main && s.channel == (int) SpeakerChannel::Right; });
-        int mainIdx = find ([] (const SpeakerSource& s) { return s.role == (int) SpeakerRole::Main; });
+        const int n = (int) src.size();
+        // already lined up: an alignment whose ends play the same speakers (either way round)
+        auto used = [this] (int r, bool rs, int al, bool as)
+        {
+            const auto R = endMembers (r, rs), A = endMembers (al, as);
+            for (const auto& x : sys.alignments)
+            {
+                const auto r2 = endMembers (x.ref, x.refSet), a2 = endMembers (x.align, x.alignSet);
+                if ((r2 == R && a2 == A) || (r2 == A && a2 == R)) return true;
+            }
+            return false;
+        };
+        // a speaker as an end: its whole group as a set when it has one
+        auto asEnd = [this] (int i, int& idx, bool& set) { set = sys.inGroup (i); idx = set ? sys.master (i) : i; };
+
+        int mainIdx = -1;
+        for (int i = 0; i < n && mainIdx < 0; ++i) if (src[(size_t) i].role == (int) SpeakerRole::Main) mainIdx = i;
+        for (int i = 0; i < n && mainIdx < 0; ++i) if (src[(size_t) i].role != (int) SpeakerRole::Sub) mainIdx = i;
         if (mainIdx < 0) mainIdx = 0;
-        a.ref = mainIdx;
+        int mainEnd = mainIdx;
+        bool mainSet = false;
+        asEnd (mainIdx, mainEnd, mainSet);
+
+        Alignment a;
         a.align = -1;
-        // the crossover pair measured close up comes first: its timing is set here
-        if (sys.pairNearField() && ! used (sys.xoHigh, sys.xoLow) && ! used (sys.xoLow, sys.xoHigh)) { a.ref = sys.xoHigh; a.align = sys.xoLow; }
-        for (int i = 0; i < (int) src.size() && a.align < 0; ++i)
-            if ((src[(size_t) i].role == (int) SpeakerRole::Fill || src[(size_t) i].role == (int) SpeakerRole::Delay) && ! used (mainIdx, i)) a.align = i;
-        if (a.align < 0 && left >= 0 && right >= 0 && ! used (left, right)) { a.ref = left; a.align = right; }
-        if (a.align < 0) a.align = mainIdx == 0 ? 1 : 0;
+        auto tryPair = [&]
+        {
+            if (! sys.pairValid() || a.align >= 0) return;
+            int hi, lo;
+            bool hs, ls;
+            asEnd (sys.xoHigh, hi, hs);
+            asEnd (sys.xoLow, lo, ls);
+            Alignment t;
+            t.ref = hi; t.refSet = hs; t.align = lo; t.alignSet = ls;
+            if (endsValid (t) && ! used (hi, hs, lo, ls)) a = t;
+        };
+        // 1. the crossover pair measured close up: its timing is set here (Stereo, both sides at once, to the sub)
+        if (sys.pairNearField()) tryPair();
+        // 2. each fill or delay (a fill set as one) to the main set
+        for (int i = 0; i < n && a.align < 0; ++i)
+        {
+            const int role = src[(size_t) i].role;
+            if (role != (int) SpeakerRole::Fill && role != (int) SpeakerRole::Delay) continue;
+            int idx;
+            bool set;
+            asEnd (i, idx, set);
+            if (idx != i) continue;   // a member: its lead stands for the set
+            Alignment t;
+            t.ref = mainEnd; t.refSet = mainSet; t.align = idx; t.alignSet = set;
+            if (endsValid (t) && ! used (mainEnd, mainSet, idx, set)) a = t;
+        }
+        // 3. the crossover pair at FOH (measured from one spot), then anything else not lined up yet
+        if (sys.realPair() && sys.xoNeeded()) tryPair();
+        for (int i = 0; i < n && a.align < 0; ++i)
+        {
+            int idx;
+            bool set;
+            asEnd (i, idx, set);
+            if (idx != i) continue;
+            Alignment t;
+            t.ref = mainEnd; t.refSet = mainSet; t.align = idx; t.alignSet = set;
+            if (endsValid (t) && ! used (mainEnd, mainSet, idx, set)) a = t;
+        }
+        if (a.align < 0) { a.ref = mainIdx; a.refSet = false; a.align = mainIdx == 0 ? 1 : 0; a.alignSet = false; }   // picked by hand from here
+
         const auto& al = src[(size_t) a.align];
+        const bool sub = al.role == (int) SpeakerRole::Sub || src[(size_t) a.ref].role == (int) SpeakerRole::Sub;
         const bool pair = al.role == (int) SpeakerRole::Main;
-        a.spot = al.role == (int) SpeakerRole::Sub ? juce::String ("FOH") : pair ? juce::String ("Centre") : al.role == (int) SpeakerRole::Fill ? juce::String ("Front rows")
-                                                : al.role == (int) SpeakerRole::Delay ? juce::String ("Delay area") : juce::String ("Overlap");
+        a.spot = sub ? juce::String ("FOH") : pair ? juce::String ("Centre") : al.role == (int) SpeakerRole::Fill ? juce::String ("Front rows")
+                                            : al.role == (int) SpeakerRole::Delay ? juce::String ("Delay area") : juce::String ("Overlap");
         if (a.spot.isNotEmpty() && ! proc.positions.contains (a.spot)) proc.positions.add (a.spot);
         a.precedenceMs = al.role == (int) SpeakerRole::Delay ? 5.0 : 0.0;
         sys.alignments.push_back (a);
@@ -3216,15 +3403,26 @@ private:
         systemChanged (false);
     }
 
+    // Each end's choices: every speaker on its own (for a trim), and every group of more than one as a set.
+    void fillEndBox (juce::ComboBox& b) const
+    {
+        b.clear (juce::dontSendNotification);
+        for (int i = 0; i < (int) sys.sources.size(); ++i) b.addItem (nameOf (i), i + 1);
+        bool any = false;
+        for (int i = 0; i < (int) sys.sources.size(); ++i)
+        {
+            if (sys.master (i) != i || ! sys.inGroup (i)) continue;
+            if (! any) { b.addSeparator(); any = true; }
+            b.addItem (sys.endName (i, true, true), kSetId + i + 1);
+        }
+    }
+
     void refreshAlignment()
     {
         alSelected = juce::jlimit (0, juce::jmax (0, (int) sys.alignments.size() - 1), alSelected);
         alList.setSelected (alSelected);
-        for (auto* b : { &alAlignBox, &alRefBox })
-        {
-            b->clear (juce::dontSendNotification);
-            for (int i = 0; i < (int) sys.sources.size(); ++i) b->addItem (nameOf (i), i + 1);
-        }
+        fillEndBox (alAlignBox);
+        fillEndBox (alRefBox);
         alSpotBox.clear (juce::dontSendNotification);
         for (int i = 0; i < proc.positions.size(); ++i) alSpotBox.addItem (proc.positions[i], i + 1);
         const auto* a = currentAlignment();
@@ -3233,8 +3431,8 @@ private:
         alAddButton.setEnabled ((int) sys.alignments.size() < SpeakerSystem::kMaxAlignments && sys.sources.size() > 1);
         if (a != nullptr)
         {
-            alAlignBox.setSelectedItemIndex (a->align, juce::dontSendNotification);
-            alRefBox.setSelectedItemIndex (a->ref, juce::dontSendNotification);
+            alAlignBox.setSelectedId (endIdOf (a->align, a->alignSet), juce::dontSendNotification);
+            alRefBox.setSelectedId (endIdOf (a->ref, a->refSet), juce::dontSendNotification);
             alSpotBox.setText (a->spot, juce::dontSendNotification);
             alExtraSlider.setValue (a->precedenceMs, juce::dontSendNotification);
         }
@@ -3245,42 +3443,56 @@ private:
     void refreshApply()
     {
         const auto* a = currentAlignment();
-        const bool ok = a != nullptr && a->measured() && a->ref != a->align && a->ref < (int) sys.sources.size() && a->align < (int) sys.sources.size();
+        const bool ok = a != nullptr && a->measured() && endsValid (*a);
         alApplyButton.setEnabled (ok);
         if (! ok) { alApplyButton.setButtonText ("Apply delay"); return; }
         const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
         const bool applied = need >= -0.005 && std::abs (sys.sources[(size_t) a->align].proc.delayMs - need) < 0.01;
         alApplyButton.setEnabled (! applied);
-        alApplyButton.setButtonText (need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + nameOf (a->ref) : applied ? "Applied: " + juce::String (need, 2) + " ms on " + nameOf (a->align)
-                                                                               : "Apply " + juce::String (need, 2) + " ms to " + nameOf (a->align));
+        alApplyButton.setButtonText (need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + sideName (*a, 0) : applied ? "Applied: " + juce::String (need, 2) + " ms on " + sideName (*a, 1)
+                                                                               : "Apply " + juce::String (need, 2) + " ms to " + sideName (*a, 1));
     }
 
+    // The delay goes on the align end. A set: every member moves by the same amount, so each keeps its own trim (its
+    // offset from the align end's delay); the align end itself gets exactly the delay needed.
     void applyAlignment()
     {
         proc.noteAsFound();
         auto* a = currentAlignment();
-        if (a == nullptr || ! a->measured()) return;
+        if (a == nullptr || ! a->measured() || ! endsValid (*a)) return;
         double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
         juce::String swapped;
         if (need < -0.005)
         {
-            // the aligned speaker is already the later one: delay the other one instead
+            // the aligned end is already the later one: delay the other one instead
             std::swap (a->ref, a->align);
+            std::swap (a->refSet, a->alignSet);
             std::swap (a->refArrivalMs, a->alignArrivalMs);
             std::swap (a->refLevelDb, a->alignLevelDb);
             std::swap (a->refBandDb, a->alignBandDb);
             std::swap (a->refTf, a->alignTf);
+            std::swap (a->refIr, a->alignIr);
+            std::swap (a->refIrZero, a->alignIrZero);
             std::swap (a->refDelayAtMeasure, a->alignDelayAtMeasure);
             a->xoOffsetMs = -a->xoOffsetMs;
             if (a->phaseValid) a->phaseDelayMs = -a->phaseDelayMs;
-            swapped = " (" + nameOf (a->ref) + " was the later one, so " + nameOf (a->align) + " is delayed instead)";
+            swapped = " (" + sideName (*a, 0) + " was the later one, so " + sideName (*a, 1) + " is delayed instead)";
             need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
         }
         if (need >= -0.005)
         {
-            sys.sources[(size_t) a->align].proc.delayMs = juce::jmax (0.0, need);
+            const double target = juce::jmax (0.0, need);
+            const double shift = target - sys.sources[(size_t) a->align].proc.delayMs;
+            const auto members = sideMembers (*a, 1);
+            for (int k : members)
+            {
+                auto& d = sys.sources[(size_t) k].proc.delayMs;
+                d = k == a->align ? target : juce::jmax (0.0, d + shift);
+            }
             proc.noteTunedConditions();
-            status = nameOf (a->align) + " delay set to " + juce::String (juce::jmax (0.0, need), 2) + " ms" + swapped + ". Enter it in the processor, then check them together.";
+            status = sideName (*a, 1) + " delay set to " + juce::String (target, 2) + " ms" + swapped
+                     + (members.size() > 1 ? " (each of its speakers keeps its own trim)" : juce::String())
+                     + ". Enter it in the processor, then check them together.";
             graph.rebuild();
         }
         systemChanged (false);
@@ -3327,10 +3539,10 @@ private:
         g.setColour (p.textDim);
         g.setFont (font (11.5f));
         g.drawFittedText (alSignal == 2
-                              ? "Music from the console: send it to only the speaker each step names (mute the other on the console), "
-                                "with the console's feed on the reference input. Put " + proc.mics.nameOf (sys.measureMic) + " where both speakers cover the seats."
-                              : "Put " + proc.mics.nameOf (sys.measureMic) + " where both speakers cover the seats (centre line for left / right, "
-                                "FOH for the main and sub). Measure with the processor set as shown here: filters, delays and polarity in place.",
+                              ? "Music from the console: send it to only what each step names (both sides of a set at once; mute the rest on the console), "
+                                "with the console's feed on the reference input. Put " + proc.mics.nameOf (sys.measureMic) + " where both ends cover the seats."
+                              : "Put " + proc.mics.nameOf (sys.measureMic) + " where both ends cover the seats (FOH for Stereo and the sub, "
+                                "the front rows for a fill). A set plays all its speakers at once. Measure with the processor set as shown here.",
                           alHint, juce::Justification::topLeft, 3);
 
         const auto* a = currentAlignment();
@@ -3338,7 +3550,7 @@ private:
         if (a != nullptr)
         {
             const int stage = alignmentStage();
-            const juce::String names[] = { "Play " + nameOf (a->ref) + " on its own", "Mute it, play " + nameOf (a->align) + " on its own",
+            const juce::String names[] = { "Play " + sideName (*a, 0) + " on its own", "Mute it, play " + sideName (*a, 1) + " on its own",
                                            "Set the delay", "Unmute both and check" };
             auto r = alSteps;
             for (int i = 0; i < 4; ++i)
@@ -3363,22 +3575,28 @@ private:
 
         juce::String t;
         juce::Colour c = p.textDim;
-        if (a == nullptr) t = "Add an alignment: a fill or delay to the main, the sub to the main, or the right main to the left.";
-        else if (a->ref != a->align && alignmentStage() <= 1)
+        if (a == nullptr) t = "Add an alignment: Stereo (L + R together) to the sub first, then each fill or delay to Stereo.";
+        else if (endsValid (*a) && alignmentStage() <= 1)
         {
-            const auto& sr = sys.sources[(size_t) (alignmentStage() == 0 ? a->ref : a->align)];
-            const auto who = nameOf (alignmentStage() == 0 ? a->ref : a->align), other = nameOf (alignmentStage() == 0 ? a->align : a->ref);
-            if (alignmentStage() == 0)
-                t << "In your processor, unmute " << who << " and mute every other speaker. Press Play " << who << ": LiveAlign plays pink noise and finds when it arrives at " << spotOf (*a) << ".";
+            const int st = alignmentStage();
+            const int out = sys.sharedOutput (sideMembers (*a, st));
+            const auto who = sideName (*a, st), other = sideName (*a, 1 - st);
+            const bool set = sideMembers (*a, st).size() > 1;
+            if (st == 0)
+                t << "In your processor, unmute " << (set ? sideName (*a, st, true) : who) << " and mute every other speaker. Press Play " << who
+                  << ": LiveAlign plays pink noise and finds when it arrives at " << spotOf (*a) << ".";
             else
-                t << "Now mute " << other << " and unmute " << who << ". Press Play " << who << ".";
-            t << (sr.output > 0 ? "\nThe generator plays output " + juce::String (sr.output) + "." : "\nThe generator plays all outputs: the processor's mutes pick the speaker.");
+                t << "Now mute " << other << " and unmute " << (set ? sideName (*a, st, true) : who) << ". Press Play " << who << ".";
+            if (set) t << " Both sides play at once, as in the show.";
+            t << (out > 0 ? "\nThe generator plays output " + juce::String (out) + "." : "\nThe generator plays all outputs: the processor's mutes pick what plays.");
             c = p.text;
         }
-        else if (a->ref != a->align && a->measured() && alignmentStage() >= 3)
+        else if (endsValid (*a) && a->measured() && alignmentStage() >= 3)
         {
             const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
-            t << nameOf (a->align) << " delay " << juce::String (need, 2) << " ms is set. Enter it in the processor if you have not, unmute both and press Check.";
+            t << sideName (*a, 1) << " delay " << juce::String (need, 2) << " ms is set";
+            if (sideMembers (*a, 1).size() > 1) t << " (on each of its speakers, each keeping its own trim)";
+            t << ". Enter it in the processor if you have not, unmute both and press Check.";
             if (a->checked())
             {
                 const double got = a->sumGainDb(), ideal = a->idealSumGainDb();
@@ -3389,11 +3607,11 @@ private:
             }
             else c = p.text;
         }
-        else if (a->ref == a->align) { t = "Pick two different speakers."; c = p.warn; }
+        else if (! endsValid (*a)) { t = "Pick two different ends: a set cannot include the speaker it is lined up with."; c = p.warn; }
         else if (! a->measured()) { t = "Not measured at " + spotOf (*a) + " yet."; c = p.warn; }
         else
         {
-            const auto refName = nameOf (a->ref), alName = nameOf (a->align);
+            const auto refName = sideName (*a, 0), alName = sideName (*a, 1);
             const double diff = a->alignArrivalMs - a->refArrivalMs;
             const double refDelay = sys.sources[(size_t) a->ref].proc.delayMs;
             const double need = a->neededMs (refDelay);
@@ -3413,7 +3631,8 @@ private:
             {
                 const float d = a->alignLevelDb - a->refLevelDb;
                 t << "\nLevel here: " << alName << " " << signedText (d, 1) << " dB against " << refName;
-                const bool lr = sys.sources[(size_t) a->align].role == (int) SpeakerRole::Main && sys.sources[(size_t) a->ref].role == (int) SpeakerRole::Main;
+                const bool lr = ! a->refSet && ! a->alignSet && sys.sources[(size_t) a->align].role == (int) SpeakerRole::Main
+                                && sys.sources[(size_t) a->ref].role == (int) SpeakerRole::Main;
                 if (lr && std::abs (d) > 1.0f) t << " (a stereo pair should match within 1 dB)";
                 t << ".";
             }
@@ -3428,14 +3647,14 @@ private:
     void startArrival (int index)
     {
         auto* a = alignmentAt (index);
-        if (a == nullptr || a->ref == a->align) return;
+        if (a == nullptr || ! endsValid (*a)) return;
         if (settings.refSource.load() == 0)
         {
             status = "Set a reference on Mic setup (the loopback, or the generator) to measure arrivals.";
             repaint();
             return;
         }
-        if (alSignal == 2 || muteText ({ a->ref }).isNotEmpty() || muteText ({ a->align }).isNotEmpty())
+        if (alSignal == 2 || muteText (sideMembers (*a, 0)).isNotEmpty() || muteText (sideMembers (*a, 1)).isNotEmpty())
         {
             // the mutes change between the two: one at a time
             startArrivalOne (index, 0);
@@ -3472,7 +3691,8 @@ private:
         }
         arrivalWhich = next.second;
         measuring = arrivalWhich == 0 ? a->ref : a->align;
-        settings.genOutput = sys.sources[(size_t) measuring].output;
+        // a set: every member plays, from their shared output or all outputs (the rest muted at the console)
+        settings.genOutput = sys.sharedOutput (sideMembers (*a, arrivalWhich));
         startSignal();
         settings.running = true;
         phase = Phase::Settling;
@@ -3483,9 +3703,16 @@ private:
         repaint();
     }
 
-    bool isXoPair (const Alignment& a) const
+    // The crossover pair: one end is (or is a set containing) the high side, the other the low side.
+    // `highFirst` says which way round: the reference end has the high side.
+    bool isXoPair (const Alignment& a, bool* highFirst = nullptr) const
     {
-        return sys.pairValid() && ((a.ref == sys.xoHigh && a.align == sys.xoLow) || (a.ref == sys.xoLow && a.align == sys.xoHigh));
+        if (! sys.pairValid()) return false;
+        const bool rh = sys.endHas (a.ref, a.refSet, sys.xoHigh), rl = sys.endHas (a.ref, a.refSet, sys.xoLow);
+        const bool ah = sys.endHas (a.align, a.alignSet, sys.xoHigh), al = sys.endHas (a.align, a.alignSet, sys.xoLow);
+        if (rh && al && ! rl && ! ah) { if (highFirst != nullptr) *highFirst = true; return true; }
+        if (rl && ah && ! rh && ! al) { if (highFirst != nullptr) *highFirst = false; return true; }
+        return false;
     }
 
     // Average magnitude of a transfer function around f (1/3 octave either side), dB.
@@ -3550,12 +3777,12 @@ private:
         if (auto* a = alignmentAt (arrivalAlignment))
         {
             a->measuredOn = LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
-            status = "Measured " + nameOf (arrivalWhich == 0 ? a->ref : a->align) + " at " + spotName() + ".";
+            status = "Measured " + sideName (*a, arrivalWhich, true) + " at " + spotName() + ".";
             // the crossover pair: the delay that makes them add up best through the crossover, from their phase
             a->phaseValid = false;
             if (isXoPair (*a) && a->refTf.freq.size() > 8 && a->alignTf.freq.size() > 8)
             {
-                const double f = sys.overlapFreq (a->ref, a->align);
+                const double f = overlapOf (*a);
                 double d = 0.0;
                 if (Alignment::phaseMatch (a->refTf, a->alignTf, f / 2.0, f * 2.0, d)) { a->phaseValid = true; a->phaseDelayMs = d; }
                 if (a->phaseValid) status = "Measured both: matched their phase through the crossover (" + freqLabel (f) + " Hz).";
@@ -3591,12 +3818,12 @@ private:
         const auto* a = currentAlignment();
         switch (alignmentStage())
         {
-            case 0: return "Measure " + nameOf (a->ref) + " and " + nameOf (a->align);
-            case 1: return "Measure " + nameOf (a->align);
+            case 0: return "Measure " + sideName (*a, 0) + " and " + sideName (*a, 1);
+            case 1: return "Measure " + sideName (*a, 1);
             case 2:
             {
                 const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
-                return need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + nameOf (a->ref) : "Apply " + juce::String (need, 2) + " ms to " + nameOf (a->align);
+                return need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + sideName (*a, 0) : "Apply " + juce::String (need, 2) + " ms to " + sideName (*a, 1);
             }
             case 3: return alSignal == 2 ? juce::String ("Check: music on both") : juce::String ("Check: play both");
             case 4: return "Check again";
@@ -3621,8 +3848,8 @@ private:
     {
         a.xoOffsetMs = 0.0;
         if (! sys.pairNearField()) return;
-        if (a.ref == sys.xoHigh && a.align == sys.xoLow) a.xoOffsetMs = sys.xoRelDelayMs;
-        else if (a.ref == sys.xoLow && a.align == sys.xoHigh) a.xoOffsetMs = -sys.xoRelDelayMs;
+        bool highFirst = true;
+        if (isXoPair (a, &highFirst)) a.xoOffsetMs = highFirst ? sys.xoRelDelayMs : -sys.xoRelDelayMs;
     }
 
     // ---- the signal for time alignment: pink noise, a sweep, or music from the console ----
@@ -3651,7 +3878,7 @@ private:
     void startArrivalOne (int index, int which)
     {
         auto* a = alignmentAt (index);
-        if (a == nullptr || a->ref == a->align) return;
+        if (a == nullptr || ! endsValid (*a)) return;
         if (settings.refSource.load() == 0)
         {
             status = "Set a reference on Mic setup (the loopback, or the generator) to measure arrivals.";
@@ -3659,10 +3886,10 @@ private:
             return;
         }
         if (! signalReady()) return;
-        const int who = which == 0 ? a->ref : a->align;
-        if (alSignal != 2 && ! mutesConfirmed && muteText ({ who }).isNotEmpty())
+        const auto who = sideMembers (*a, which);   // a set: all its speakers play at once
+        if (alSignal != 2 && ! mutesConfirmed && muteText (who).isNotEmpty())
         {
-            withMutes ({ who }, [this, index, which] { startArrivalOne (index, which); });
+            withMutes (who, [this, index, which] { startArrivalOne (index, which); });
             return;
         }
         (which == 0 ? a->hasRef : a->hasAlign) = false;
@@ -3680,15 +3907,16 @@ private:
         nextArrival();
     }
 
-    // Both speakers together: the level where they overlap, against each alone.
+    // Both ends together (every speaker of a set): the level where they overlap, against each alone.
     void startCheck (int index)
     {
         auto* a = alignmentAt (index);
-        if (a == nullptr || ! a->measured()) return;
+        if (a == nullptr || ! a->measured() || ! endsValid (*a)) return;
         if (! signalReady()) return;
-        if (alSignal != 2 && ! mutesConfirmed && muteText ({ a->ref, a->align }).isNotEmpty())
+        const auto both = bothMembers (*a);
+        if (alSignal != 2 && ! mutesConfirmed && muteText (both).isNotEmpty())
         {
-            withMutes ({ a->ref, a->align }, [this, index] { startCheck (index); });
+            withMutes (both, [this, index] { startCheck (index); });
             return;
         }
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
@@ -3696,8 +3924,7 @@ private:
         checkMode = true;
         arrivalAlignment = index;
         measuring = a->ref;
-        const int o1 = sys.sources[(size_t) a->ref].output, o2 = sys.sources[(size_t) a->align].output;
-        settings.genOutput = o1 == o2 ? o1 : 0;   // both speakers: one shared output, or all of them
+        settings.genOutput = sys.sharedOutput (both);   // both ends: one shared output, or all of them
         startSignal();
         settings.running = true;
         phase = Phase::Settling;
@@ -3833,15 +4060,15 @@ private:
                     << filters << "; delay " << dly << "; polarity " << pol << "; gain " << gain << "\n";
         }
 
-        // time alignment: where each pair was lined up, and whether the delay is in the table above
+        // time alignment: where each pair of ends (a speaker or a set) was lined up, and whether the delay is in the table above
         bool head = false;
         for (const auto& a : sys.alignments)
         {
             if (! a.measured() || a.ref >= (int) sys.sources.size() || a.align >= (int) sys.sources.size()) continue;
             if (! head) { out << (forScreen ? "#TIME ALIGNMENT\n" : "\nTime alignment:\n"); head = true; }
             const double need = a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs);
-            out << nameOf (a.align) << " to " << nameOf (a.ref) << " at " << spotOf (a) << ": ";
-            if (need < -0.005) out << "delay " << nameOf (a.ref) << " " << juce::String (-need, 2) << " ms instead, not applied yet";
+            out << sideName (a, 1) << " to " << sideName (a, 0) << " at " << spotOf (a) << ": ";
+            if (need < -0.005) out << "delay " << sideName (a, 0) << " " << juce::String (-need, 2) << " ms instead, not applied yet";
             else
             {
                 out << "delay " << juce::String (need, 2) << " ms";
@@ -3882,7 +4109,7 @@ private:
     juce::ComboBox countBox, linkBox;
     juce::ComboBox roleBox, channelBox, outputBox, micBox, highBox, lowBox, rangeBox, typeBox, slopeBox, coverBox;
     // Coverage patterns (horizontal x vertical) and their directivity factor, Q = 180 / asin (sin (h/2) sin (v/2)) (Molloy).
-    struct CoverPattern { const char* name; double q; };
+    struct CoverPattern { const char* name; double q, h = 0.0, v = 0.0; };
     static const std::vector<CoverPattern>& coverPatterns()
     {
         static const std::vector<CoverPattern> v = [] {
@@ -3893,12 +4120,15 @@ private:
                 return std::round (180.0 / juce::radiansToDegrees (a) * 10.0) / 10.0;
             };
             r.push_back ({ "Nearly all round (sub, omni)", 2.0 });
-            r.push_back ({ "120 x 60", q (120, 60) });
-            r.push_back ({ "90 x 90", q (90, 90) });
-            r.push_back ({ "90 x 60", q (90, 60) });
-            r.push_back ({ "90 x 40", q (90, 40) });
-            r.push_back ({ "60 x 40", q (60, 40) });
-            r.push_back ({ "60 x 30", q (60, 30) });
+            r.push_back ({ "150 x 20 (wide column)", q (150, 20), 150, 20 });
+            r.push_back ({ "150 x 40 (wide column)", q (150, 40), 150, 40 });
+            r.push_back ({ "120 x 60", q (120, 60), 120, 60 });
+            r.push_back ({ "120 x 30 (column)", q (120, 30), 120, 30 });
+            r.push_back ({ "90 x 90", q (90, 90), 90, 90 });
+            r.push_back ({ "90 x 60", q (90, 60), 90, 60 });
+            r.push_back ({ "90 x 40", q (90, 40), 90, 40 });
+            r.push_back ({ "60 x 40", q (60, 40), 60, 40 });
+            r.push_back ({ "60 x 30", q (60, 30), 60, 30 });
             r.push_back ({ "Line array (narrow vertical)", 30.0 });
             return r;
         }();

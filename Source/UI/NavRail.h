@@ -29,17 +29,17 @@ constexpr int kNumPages = 22;
 // The navigation pane: Home, then groups that open to their pages. Venue (Details, Speakers, Plan and points), Mics
 // (this venue's mics, the locker), Tuning (the steps in order), Monitoring and Reports. The group that holds the open
 // page is open; the others show one line with their state. The pane is the one way between the steps.
-constexpr int kNavOrder[] = { 0, -1, 18, 2, 3, 1, 16, -2, 4, 20, 5, 6, 19, 7, 8, 9, 21, 10, -3, 11, 12, -4, 13, 14, 15 };
+constexpr int kNavOrder[] = { 0, -1, 18, 2, 3, 1, 16, -2, 4, 5, 20, 6, 19, 7, 8, 9, 21, 10, -3, 11, 12, -4, 13, 14, 15 };
 // The tuning steps in order: speaker response, gain and headroom, crossover, level, aim and coverage, time alignment,
 // room acoustics, Room EQ, the listening check, the feedback test.
-constexpr int kTuningOrder[] = { 4, 20, 5, 6, 19, 7, 8, 9, 21, 10 };
+constexpr int kTuningOrder[] = { 4, 5, 20, 6, 19, 7, 8, 9, 21, 10 };
 struct NavGroup { const char* name; int icon; std::vector<int> pages; };
 inline const std::vector<NavGroup>& navGroups()
 {
     static const std::vector<NavGroup> g {
         { "Venue", 18, { 18, 2, 3 } },
         { "Mics", 1, { 1, 16 } },
-        { "Tuning", 4, { 4, 20, 5, 6, 19, 7, 8, 9, 21, 10 } },
+        { "Tuning", 4, { 4, 5, 20, 6, 19, 7, 8, 9, 21, 10 } },
         { "Monitoring", 12, { 11, 12 } },
         { "Reports", 14, { 13, 14, 15 } } };
     return g;

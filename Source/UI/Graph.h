@@ -29,7 +29,11 @@ inline juce::String freqLabel (double f)
 {
     if (f >= 1000.0)
     {
+        // the nominal third-octave names (1.25k, 3.15k, 6.3k), not a rounding of the exact centre
+        struct Nominal { double v; const char* name; };
+        static const Nominal nominal[] = { { 1.25, "1.25k" }, { 1.6, "1.6k" }, { 2.5, "2.5k" }, { 3.15, "3.15k" }, { 6.3, "6.3k" }, { 12.5, "12.5k" } };
         const double k = f / 1000.0;
+        for (const auto& n : nominal) if (std::abs (k / n.v - 1.0) < 0.02) return n.name;
         return std::abs (k - std::round (k)) < 0.05 ? juce::String ((int) std::round (k)) + "k" : juce::String (k, 1) + "k";
     }
     return f < 100.0 && std::abs (f - std::round (f)) > 0.05 ? juce::String (f, 1) : juce::String ((int) std::round (f));
