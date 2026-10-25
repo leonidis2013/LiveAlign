@@ -915,10 +915,11 @@ void LiveAlignEditor::applyPrefs()
     prefsSerial = ap.serial;
     processor.applyAppPrefs();
     const int sense = juce::roundToInt (ap.value ("fbSense"));
-    // Normal is what monitoring always used; Low waits longer for a bigger peak, High takes a smaller, shorter one
-    static const double prom[] = { 18.0, 15.0, 12.0 };
-    static const int frames[] = { 24, 18, 12 };
-    liveFb.setOptions ({ 80.0, 12000.0, prom[juce::jlimit (0, 2, sense)], frames[juce::jlimit (0, 2, sense)], 3, 1.0 / 12.0 });
+    // Low waits longer for a bigger peak, High takes a smaller, shorter one. At every setting a ring must hold one pitch
+    // and its level with no overtones, so held notes, vibrato and fading notes in the music are not taken for feedback.
+    static const double prom[] = { 21.0, 18.0, 15.0 };
+    static const double secs[] = { 4.0, 3.0, 2.0 };
+    liveFb.setOptions ({ 80.0, 12000.0, prom[juce::jlimit (0, 2, sense)], 12, 3, 1.0 / 12.0, secs[juce::jlimit (0, 2, sense)], 1.0 / 48.0, 6.0, true });
     la::pdf::Document::useA4() = ap.value ("paperA4") > 0.5;
     generator.sync();
 }
@@ -1638,7 +1639,7 @@ void LiveAlignEditor::timerCallback()
             if (fbWatch.watching() && snap.wfFrame != liveFbFrame && ! snap.wfLine.empty())
             {
                 liveFbFrame = snap.wfFrame;
-                for (const auto& r : liveFb.push (snap.wfFreq, snap.wfLine))
+                for (const auto& r : liveFb.push (snap.wfFreq, snap.wfLine, juce::Time::getMillisecondCounterHiRes() / 1000.0))
                 {
                     fbWatch.add ({ r.freq, r.prominenceDb, r.cutDb, juce::Time::getCurrentTime().formatted ("%H:%M:%S") });
                     processor.splLog.addHit ((double) juce::Time::currentTimeMillis() / 1000.0, (float) r.freq, (float) r.cutDb);

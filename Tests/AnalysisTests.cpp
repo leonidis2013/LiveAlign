@@ -1006,6 +1006,41 @@ static void testFeedbackDetector()
     int none = 0;
     for (int k = 0; k < 20; ++k) none += (int) det3.push (f, frame (0.0, 0.0)).size();
     check (none == 0, "Feedback: noise alone gives no rings", none, 0);
+
+    // Live (a show): held notes, vibrato and fading notes are music, a steady pure tone is feedback.
+    Options live { 80.0, 12000.0, 18.0, 12, 3, 1.0 / 12.0, 3.0, 1.0 / 48.0, 6.0, true };
+    auto tones = [&] (const std::vector<std::pair<double, double>>& t)   // (Hz, dB above the floor)
+    {
+        std::vector<float> db (f.size());
+        for (size_t i = 0; i < f.size(); ++i)
+        {
+            double v = -40.0 - 3.0 * std::log2 (f[i] / 1000.0) + nd (rng);
+            for (const auto& [hz, lv] : t) v = std::max (v, -40.0 + lv - 60.0 * std::abs (std::log2 (f[i] / hz)) * 24.0 / 2.0);
+            db[i] = (float) v;
+        }
+        return db;
+    };
+    const double dt = 0.1;   // 10 frames a second
+    auto run = [&] (auto make, int frames)
+    {
+        Detector d (live);
+        std::vector<Ring> got;
+        for (int k = 0; k < frames; ++k) for (const auto& r : d.push (f, make (k), k * dt)) got.push_back (r);
+        return got;
+    };
+    const auto ring = run ([&] (int) { return tones ({ { 2500.0, 26.0 } }); }, 50);
+    check (ring.size() == 1, "Feedback, live: a steady pure tone for 5 s is a ring", (double) ring.size(), 1);
+    const auto shortRing = run ([&] (int) { return tones ({ { 2500.0, 26.0 } }); }, 20);
+    check (shortRing.empty(), "Feedback, live: not before 3 s", (double) shortRing.size(), 0);
+    const auto note = run ([&] (int) { return tones ({ { 330.0, 26.0 }, { 660.0, 22.0 }, { 990.0, 18.0 } }); }, 60);
+    check (note.empty(), "Feedback, live: a held note with overtones (330 / 660 / 990 Hz) is music", (double) note.size(), 0);
+    const auto vibrato = run ([&] (int k) { return tones ({ { 440.0 * std::pow (2.0, (1.0 / 24.0) * std::sin (k * 0.9)), 26.0 } }); }, 60);
+    check (vibrato.empty(), "Feedback, live: a tone with vibrato is a voice", (double) vibrato.size(), 0);
+    const auto fading = run ([&] (int k) { return tones ({ { 1000.0, 30.0 - 0.4 * (k % 30) } }); }, 60);
+    check (fading.empty(), "Feedback, live: notes that die away are music", (double) fading.size(), 0);
+    const auto overMusic = run ([&] (int k) { return tones ({ { 330.0, 26.0 }, { 660.0, 22.0 }, { 3150.0, k > 10 ? 27.0 : 0.0 } }); }, 60);
+    check (overMusic.size() == 1 && std::abs (overMusic[0].freq / 3150.0 - 1.0) < 0.02, "Feedback, live: a ring under a held chord is still caught",
+           overMusic.empty() ? 0.0 : overMusic[0].freq, 3150.0);
 }
 
 // A speaker measured close up: Butterworth high-pass `hpOrder` at `hp` Hz and low-pass `lpOrder` at `lp` Hz

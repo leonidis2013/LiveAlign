@@ -220,7 +220,9 @@ private:
     std::unique_ptr<la::ui::ListenStrip> listenStrip;   // the listening level, above Settings on every page
     void updateConditionsPanel();
     void updateTunedPanel();
-    la::fb::Detector liveFb { { 80.0, 12000.0, 15.0, 18, 3, 1.0 / 12.0 } };   // stricter than the feedback test: music has peaks too
+    // stricter than the feedback test: music and speech have peaks too. A ring stands 18 dB out for 3 s at one pitch,
+    // holding its level, with no overtones (a held note has them, a singer's vibrato moves, a note dies away)
+    la::fb::Detector liveFb { { 80.0, 12000.0, 18.0, 12, 3, 1.0 / 12.0, 3.0, 1.0 / 48.0, 6.0, true } };
     juce::uint64 liveFbFrame = 0;
     juce::uint32 lastTrackRequest = 0;
     juce::ComboBox micPicker;
