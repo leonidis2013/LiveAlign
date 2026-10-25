@@ -129,6 +129,15 @@ public:
     // The venue's details, shown on the right once a venue is open (the editor owns them).
     void setDetails (juce::Component* c) { details = c; if (c != nullptr) addChildComponent (*c); resized(); }
 
+    // Nothing left to do in this session: what that means for its kind.
+    juce::String doneText() const
+    {
+        if (proc.monitoringSession())
+            return proc.tuningRoom().tuned ? juce::String ("The show is being logged. The monitoring report is ready (Reports).")
+                                           : juce::String ("The show is being logged; the monitoring report is ready. The venue is not tuned yet, so there is no tuning to compare the show with.");
+        return "The tuning is done. The reports and the processor sheet are ready.";
+    }
+
     // A venue is open (or this is the VST3, which only monitors): until then Home shows the venues and a way in.
     bool started() const { return proc.venueOpen || ! (proc.isStandalone() || proc.uiAsStandalone); }
 
@@ -156,11 +165,11 @@ public:
             b = b.reduced (14, 6).withTrimmedRight (goButton.isVisible() ? goButton.getWidth() + 10 : 0);
             g.setColour (p.accent);
             g.setFont (font (10.5f, true));
-            g.drawText (nextPage >= 0 ? "NEXT" : "ALL DONE", b.removeFromTop (14), juce::Justification::centredLeft);
+            g.drawText (nextPage >= 0 ? "NEXT" : proc.monitoringSession() ? "SHOW LOGGED" : "ALL DONE", b.removeFromTop (14), juce::Justification::centredLeft);
             g.setColour (p.text);
             g.setFont (font (13.5f, true));
             g.drawText (nextPage == 0 ? nextWhat
-                        : nextPage >= 0 ? juce::String (pageName (nextPage)) + ": " + nextWhat : juce::String ("The tuning is done. The reports and the processor sheet are ready."),
+                        : nextPage >= 0 ? juce::String (pageName (nextPage)) + ": " + nextWhat : doneText(),
                         b, juce::Justification::centredLeft, true);
             juce::StringArray att;
             for (int i = 0; i < kNumPages; ++i) if (steps[(size_t) i].status == StepStatus::Attention) att.add (juce::String (pageName (i)) + ": " + steps[(size_t) i].shortText);
@@ -391,7 +400,7 @@ private:
             VenueEntry e;
             e.name = proc.venueName;
             e.sessions = (int) proc.getSessions().size();
-            e.tuned = proc.room.tuned ? 1 : 0;
+            e.tuned = proc.tuningRoom().tuned ? 1 : 0;
             shownVenues.push_back (e);
         }
         for (const auto& v : allVenues)
@@ -418,7 +427,7 @@ private:
         {
             shownVenues.front().name = proc.venueName;
             shownVenues.front().sessions = (int) proc.getSessions().size();
-            shownVenues.front().tuned = proc.room.tuned ? 1 : 0;
+            shownVenues.front().tuned = proc.tuningRoom().tuned ? 1 : 0;
         }
         if (shownVenues.empty())
         {

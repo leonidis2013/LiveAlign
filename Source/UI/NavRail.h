@@ -29,7 +29,7 @@ constexpr int kNumPages = 22;
 // The navigation pane: Home, then groups that open to their pages. Venue (Details, Speakers, Plan and points), Mics
 // (this venue's mics, the locker), Tuning (the steps in order), Monitoring and Reports. The group that holds the open
 // page is open; the others show one line with their state. The pane is the one way between the steps.
-constexpr int kNavOrder[] = { 0, -1, 18, 2, 3, 1, 16, -2, 4, 5, 20, 6, 19, 7, 8, 9, 21, 10, -3, 11, 12, -4, 13, 14, 15 };
+constexpr int kNavOrder[] = { 0, -1, 18, 2, 3, 1, -2, 4, 5, 20, 6, 19, 7, 8, 9, 21, 10, -3, 11, 12, -4, 13, 14, 15 };
 // The tuning steps in order: speaker response, gain and headroom, crossover, level, aim and coverage, time alignment,
 // room acoustics, Room EQ, the listening check, the feedback test.
 constexpr int kTuningOrder[] = { 4, 5, 20, 6, 19, 7, 8, 9, 21, 10 };
@@ -38,7 +38,7 @@ inline const std::vector<NavGroup>& navGroups()
 {
     static const std::vector<NavGroup> g {
         { "Venue", 18, { 18, 2, 3 } },
-        { "Mics", 1, { 1, 16 } },
+        { "Mics", 1, { 1 } },
         { "Tuning", 4, { 4, 5, 20, 6, 19, 7, 8, 9, 21, 10 } },
         { "Monitoring", 12, { 11, 12 } },
         { "Reports", 14, { 13, 14, 15 } } };
@@ -259,6 +259,10 @@ public:
         settingsButton.onClick = [this] { if (onSettings) onSettings(); };
         settingsButton.setTooltip ("Audio, measurement, display, units, tuning defaults, generator safety, monitoring, reports and updates");
         addAndMakeVisible (settingsButton);
+        // the mic locker: every mic you own, across venues; at the bottom with Settings, not inside a venue's pages
+        lockerButton.onClick = [this] { if (onLocker) onLocker(); };
+        lockerButton.setTooltip ("The mic locker: every mic you own, with its calibration files and sound level, kept across venues");
+        addAndMakeVisible (lockerButton);
         updateButton.onClick = [this] { if (onUpdate) onUpdate(); };
         addChildComponent (updateButton);
         rebuildRows();
@@ -289,12 +293,15 @@ public:
     }
     bool pageVisible (int page) const { return page >= 0 && page < kNumPages && visible[page]; }
     void setPageVisible (int page, bool v) { if (visible[page] != v) { visible[page] = v; rebuildRows(); repaint(); } }
-    void setLockerAvailable (bool) {}
+    void setLockerAvailable (bool a) { if (lockerButton.isVisible() != a) { lockerButton.setVisible (a); resized(); } }
     void setSettingsActive (bool a)
     {
         settingsButton.setColour (juce::TextButton::buttonColourId, a ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
     }
-    void setLockerActive (bool) {}
+    void setLockerActive (bool a)
+    {
+        lockerButton.setColour (juce::TextButton::buttonColourId, a ? pal().accent.withAlpha (0.35f) : pal().panelRaised);
+    }
     // Shown above the venue when a newer version is out.
     void setUpdate (const juce::String& version)
     {
@@ -402,6 +409,7 @@ public:
         r.removeFromBottom (kVenueH + 16);
         settingsButton.setBounds (r.removeFromBottom (30));
         r.removeFromBottom (6);
+        if (lockerButton.isVisible()) { lockerButton.setBounds (r.removeFromBottom (30)); r.removeFromBottom (6); }
         if (updateButton.isVisible()) { updateButton.setBounds (r.removeFromBottom (30)); r.removeFromBottom (6); }
         if (footer != nullptr && footer->isVisible()) { r.removeFromBottom (4); footer->setBounds (r.removeFromBottom (footerH)); }
         scroll = juce::jlimit (0, juce::jmax (0, contentHeight() - listArea().getHeight()), scroll);
@@ -473,7 +481,8 @@ private:
             if (! any) continue;
             y += 4;
             add (-1, g, kRowH);
-            if (g == openGroup)
+            // a group of one page (Mics) is just its row: clicking it opens the page
+            if (g == openGroup && gs[(size_t) g].pages.size() > 1)
                 for (int pg : gs[(size_t) g].pages) if (visible[pg]) add (pg, g, kItemH);
         }
         content = y + 4;
@@ -606,7 +615,7 @@ private:
 
     juce::Rectangle<int> listArea() const
     {
-        const int bottom = (footer != nullptr && footer->isVisible() ? footer->getY() : updateButton.isVisible() ? updateButton.getY() : settingsButton.getY()) - 8;
+        const int bottom = (footer != nullptr && footer->isVisible() ? footer->getY() : updateButton.isVisible() ? updateButton.getY() : lockerButton.isVisible() ? lockerButton.getY() : settingsButton.getY()) - 8;
         return { 0, kTop, getWidth() - 1, juce::jmax (0, bottom - kTop) };
     }
     int contentHeight() const { return content; }
@@ -633,7 +642,7 @@ private:
     juce::Point<int> hoverPoint;
     juce::String venueName, sessionName;
     bool dirty = false;
-    juce::TextButton settingsButton { "SETTINGS" }, updateButton;
+    juce::TextButton settingsButton { "SETTINGS" }, lockerButton { "MIC LOCKER" }, updateButton;
     juce::Component* footer = nullptr;
     int footerH = 0;
 public:

@@ -506,6 +506,7 @@ void LiveAlignEditor::showPage (int page)
     lockerPage->setVisible (page == (int) Page::Locker);
     settingsPage->setVisible (page == (int) Page::Settings);
     nav.setSettingsActive (page == (int) Page::Settings);
+    nav.setLockerActive (page == (int) Page::Locker);
     if (page == (int) Page::Settings) settingsPage->refresh();
     feedbackPage->setVisible (page == (int) Page::Feedback);
     acousticsPage->setVisible (page == (int) Page::Acoustics);
@@ -1537,6 +1538,7 @@ bool LiveAlignEditor::pageInSession (int page) const
 void LiveAlignEditor::applySessionKind()
 {
     for (int i = 0; i < kNumPages; ++i) if (i != (int) Page::Settings) nav.setPageVisible (i, pageInSession (i));
+    nav.setLockerAvailable (pageInSession ((int) Page::Locker));
     // the plan opens on the session's layer: a show's monitoring points, a tuning visit's tuning points (the other is a click away)
     planPage->setLayer (processor.monitoringSession() ? 1 : 0);
     inputPanel.setShowMode (processor.monitoringSession());
