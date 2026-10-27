@@ -21,6 +21,7 @@
 #include "ListenOutput.h"
 #include "InterfaceGuard.h"
 #include "Monitoring.h"
+#include "Analysis/SplMeter.h"
 #include "AudioHealth.h"
 #include "TraceStore.h"
 
@@ -687,6 +688,71 @@ static void interfaceTests()
 }
 
 // ---- the show log: a row per minute, the parts, CSV, saved and loaded
+// The show log's interval values come from the meter itself (IEC 61672-1): LAeq over the interval is the energy mean of
+// the signal, not the mean of readings of the Slow meter, and LAF max is the Fast meter's running maximum.
+static void splIntervalTests()
+{
+    const double fs = 48000.0;
+    SplMeter m;
+    m.prepare (fs);
+    const double loudDb = -20.0, quietDb = -60.0;
+    double phase = 0.0;
+    auto sine = [&phase, fs] (std::vector<float>& out, double seconds, double db)
+    {
+        const double amp = std::pow (10.0, db / 20.0);   // a sine at `db` dBFS (AES17: a full-scale sine reads 0 dBFS)
+        out.assign ((size_t) std::lround (seconds * fs), 0.0f);
+        for (auto& v : out) { v = (float) (amp * std::sin (phase)); phase += 2.0 * kPi * 1000.0 / fs; }
+    };
+    std::vector<float> buf;
+    // a quiet run-in, so the frames are flowing when the pattern starts; then loud 1 s, quiet 4 s (plus the frame
+    // length, so the last of the quiet part has been seen)
+    sine (buf, 1.0, quietDb);
+    m.push (buf.data(), (int) buf.size());
+    m.takeInterval();
+    sine (buf, 1.0, loudDb);
+    m.push (buf.data(), (int) buf.size());
+    // the Slow meter's readings, once a second, as the old log sampled them
+    double slowSum = std::pow (10.0, m.slowDb (SplMeter::A) / 10.0);
+    for (int s = 0; s < 4; ++s)
+    {
+        sine (buf, 1.0, quietDb);
+        m.push (buf.data(), (int) buf.size());
+        slowSum += std::pow (10.0, m.slowDb (SplMeter::A) / 10.0);
+    }
+    sine (buf, 0.1, quietDb);
+    m.push (buf.data(), (int) buf.size());
+    const auto iv = m.takeInterval();
+    const double energyMean = 10.0 * std::log10 ((1.0 * std::pow (10.0, loudDb / 10.0) + (iv.seconds - 1.0) * std::pow (10.0, quietDb / 10.0)) / iv.seconds)
+                              + aWeightDb (1000.0);
+    check (near (iv.seconds, 5.1, 0.05), "SPL interval: the audio in it", iv.seconds, 5.1);
+    check (near (iv.laeq, energyMean, 0.3), "SPL interval: LAeq is the energy mean of the signal", iv.laeq, energyMean);
+    check (near (iv.lafMax, loudDb + aWeightDb (1000.0), 0.3), "SPL interval: LAF max is the loud level", iv.lafMax, loudDb);
+    // (the C filter's high-pass rings a little at the sudden onset: a few tenths over)
+    check (near (iv.lcPeak, loudDb + cWeightDb (1000.0) + 3.01, 0.5), "SPL interval: LCpeak is the loud sine's peak", iv.lcPeak, loudDb + 3.01);
+    check (near (iv.lceq, energyMean - aWeightDb (1000.0) + cWeightDb (1000.0), 0.3), "SPL interval: LCeq likewise", iv.lceq, energyMean);
+    const double slowMean = 10.0 * std::log10 (slowSum / 5.0);
+    std::printf ("SPL interval: LAeq %.2f (energy mean %.2f, the Slow readings' mean %.2f), LAF max %.2f\n", iv.laeq, energyMean, slowMean, iv.lafMax);
+    // taken: the next interval starts afresh, and holds only what came after
+    sine (buf, 2.0, quietDb);
+    m.push (buf.data(), (int) buf.size());
+    const auto next = m.takeInterval();
+    check (near (next.laeq, quietDb + aWeightDb (1000.0), 0.3) && near (next.lafMax, quietDb + aWeightDb (1000.0), 0.5),
+           "SPL interval: taking it starts the next one afresh", next.laeq, quietDb);
+    check (near (next.seconds, 2.0, 0.05), "SPL interval: the next one's audio", next.seconds, 2.0);
+    // the Leq since the reset is untouched by the interval
+    check (m.leqSeconds() > 7.9, "SPL interval: the Leq since the reset keeps running", m.leqSeconds(), 8.0);
+
+    // and the log takes a measured interval as one point, timed at its start
+    SplLog log;
+    log.addInterval (1000.0, 80.0f, 88.0f, 85.0f, NAN, NAN, 110.0f);
+    log.addInterval (1005.0, 86.0f, 94.0f, 91.0f);
+    log.addInterval (1010.0, -200.0f, -200.0f, -200.0f);   // no audio: not a point
+    const double want = 10.0 * std::log10 ((std::pow (10.0, 8.0) + std::pow (10.0, 8.6)) / 2.0);
+    check (log.points.size() == 2 && near (log.points[0].t, 1000.0, 1e-9) && near (log.leq (false), want, 0.01) && near (log.maxLaf(), 91.0, 1e-6)
+           && near (log.maxPeak(), 110.0, 1e-6) && ! std::isfinite (log.points[1].lcPk),
+           "show log: a measured interval is one point", log.leq (false), want);
+}
+
 static void showLogTests()
 {
     SplLog log;
@@ -933,6 +999,152 @@ static void healthTests()
     }
 }
 
+// A modelled speaker as a measured table (minimum phase): `hp` Butterworth high-pass of `hpOrder`, `lp` low-pass of `lpOrder`.
+static FreqTable modelled (double hp, int hpOrder, double lp, int lpOrder, double levelDb = 0.0)
+{
+    FreqTable t;
+    const xo::Filter h { xo::Butterworth, hpOrder * 6, hp }, l { xo::Butterworth, lpOrder * 6, lp };
+    for (double f = 20.0; f <= 20000.0; f *= std::pow (2.0, 1.0 / 24.0))
+    {
+        const auto v = (hp > 0.0 ? xo::response (h, true, f) : cplx (1.0, 0.0)) * (lp > 0.0 ? xo::response (l, false, f) : cplx (1.0, 0.0));
+        t.freq.push_back (f);
+        t.db.push_back (20.0 * std::log10 (std::max (std::abs (v), 1e-9)) + levelDb);
+        t.phase.push_back (std::arg (v) * 180.0 / kPi);
+    }
+    return t;
+}
+
+// The crossover search over the whole chain: speakers' own filters, the processor's outputs, protection.
+static void chainCrossoverTests()
+{
+    // Fixture A: a passive top (-10 dB at 60 Hz, flat above 150 Hz, safe high-pass 55 Hz 24 dB/oct) and a powered
+    // sub (band-pass about 40 - 150 Hz) whose own LR24 low-pass is always in, at 80 / 100 / 120 Hz; the processor
+    // offers Butterworth and Linkwitz-Riley 6 - 48 dB/oct.
+    SpeakerSystem sys;
+    sys.sources = { speaker ("Top", SpeakerRole::Main, SpeakerChannel::Mono, 1), speaker ("Sub", SpeakerRole::Sub, SpeakerChannel::Mono, 3) };
+    auto& top = sys.sources[0];
+    auto& sub = sys.sources[1];
+    top.response = modelled (75.0, 2, 0.0, 0);        // -10 dB near 60 Hz, flat above 150
+    top.imported = true;
+    top.minSafeHpHz = 55.0;
+    top.minSafeHpSlope = 24;
+    // the sub's published curve: its band-pass with the onboard LR24 low-pass at 100 Hz in it (as a maker would publish)
+    {
+        auto bare = modelled (40.0, 4, 220.0, 4);   // with its own 100 Hz low-pass in, about 40 - 150 Hz at -10 dB
+        const xo::Filter own { xo::LinkwitzRiley, 24, 100.0 };
+        for (size_t i = 0; i < bare.freq.size(); ++i)
+        {
+            const auto v = xo::response (own, false, bare.freq[i]);
+            bare.db[i] += 20.0 * std::log10 (std::max (std::abs (v), 1e-9));
+            bare.phase[i] += std::arg (v) * 180.0 / kPi;
+        }
+        sub.response = bare;
+        sub.imported = true;
+        sub.onboard.present = true;
+        sub.onboard.lowPass = true;
+        sub.onboard.type = xo::LinkwitzRiley;
+        sub.onboard.slope = 24;
+        sub.onboard.choices = { 80.0, 100.0, 120.0 };
+        sub.onboard.bypassable = false;
+        sub.onboard.measuredAtHz = 100.0;
+        sub.onboard.setHz = 100.0;
+    }
+    for (int i = 0; i < 8; ++i) sys.caps.slopes[i] = true;
+    sys.caps.types[xo::Butterworth] = sys.caps.types[xo::LinkwitzRiley] = true;
+    sys.caps.types[xo::Bessel] = false;
+    sys.xoHigh = 0; sys.xoLow = 1; sys.xoChosen = true;
+    const auto grid = xo::analysisGrid();
+    const auto h = sys.groupResponse (0, grid), l = sys.groupResponse (1, grid);
+    check (! h.empty() && ! l.empty(), "chain: both responses on the grid");
+    // the onboard filter was taken out of the published curve: the bare sub is near full level at 100 Hz
+    {
+        size_t i100 = 0;
+        for (size_t i = 0; i < grid.size(); ++i) if (std::abs (grid[i] - 100.0) < std::abs (grid[i100] - 100.0)) i100 = i;
+        const double at100 = 20.0 * std::log10 (std::abs (l.h[i100])), at60 = 20.0 * std::log10 (std::abs (l.h[i100 - 36]));
+        check (at100 > at60 - 4.0, "chain: the sub's own low-pass is removed from its published curve", at100 - at60, 0.0);
+    }
+    for (int goal = 0; goal <= 2; ++goal)
+    {
+        xo::Options opt;
+        std::string why;
+        const SpeakerSystem chain = sys;
+        opt.candidates = [chain, goal] (double fLo, double fHi) { return chain.chainCandidates (fLo, fHi, goal); };
+        check (! sys.chainCandidates (opt.fMin, opt.fMax, goal, &why).empty(), "chain: there are settings to try", 1.0, 1.0);
+        const auto r = xo::optimise (h, l, sys.caps, opt);
+        const juce::String g = goal == 0 ? "smoothest" : goal == 1 ? "balanced" : "max headroom";
+        check (r.valid, ("chain (" + g + "): a crossover is found").toRawUTF8());
+        check (r.lowExtra.active() && (near (r.lowExtra.freq, 80.0, 0.1) || near (r.lowExtra.freq, 100.0, 0.1) || near (r.lowExtra.freq, 120.0, 0.1)),
+               ("chain (" + g + "): the sub's own low-pass at one of 80 / 100 / 120 Hz").toRawUTF8(), r.lowExtra.freq, 100.0);
+        check (near (r.fc, r.lowExtra.freq, 0.1), ("chain (" + g + "): the crossover is at that setting").toRawUTF8(), r.fc, r.lowExtra.freq);
+        if (r.tag == SpeakerSystem::TagOnboardOut) check (! r.lowFilter.active(), ("chain (" + g + "): the processor's sub low-pass is OUT").toRawUTF8());
+        check (r.filter.active() && near (r.filter.freq, r.fc, 0.1), ("chain (" + g + "): the top's high-pass in the processor at the crossover").toRawUTF8(), r.filter.freq, r.fc);
+        check (r.filter.freq >= 55.0, ("chain (" + g + "): never under the top's safe high-pass").toRawUTF8(), r.filter.freq, 55.0);
+        if (goal == 1)
+        {
+            // this model's top is still 1 dB down at 100 Hz, so 120 Hz sums a touch flatter than 100: either is right
+            check (r.fc >= 99.0 && r.fc <= 121.0, "chain (balanced): 100 or 120 Hz", r.fc, 100.0);
+            check (r.filter.type == xo::LinkwitzRiley && r.filter.slope == 24, "chain (balanced): LR24 on the top's high-pass, matching the sub's own LR24", r.filter.type * 100 + r.filter.slope, 224);
+            const auto text = sys.chainSettingsText (r);
+            const juce::String fcText = juce::String (juce::roundToInt (r.fc)) + " Hz";
+            check (text.contains ("Sub: onboard LPF " + fcText) && text.contains ("LPF OUT") && text.contains ("HPF " + fcText + " LR24"),
+                   ("chain (balanced): the settings per device: " + text).toRawUTF8());
+        }
+        std::printf ("  chain %s: %s %d at %.1f Hz, sub own LPF %.0f, proc LPF %s, tag %d, delay %.2f, cost %.2f eff %.2f\n", g.toRawUTF8(), xo::typeName (r.filter.type), r.filter.slope, r.fc,
+                     r.lowExtra.freq, r.lowFilter.active() ? "in" : "OUT", r.tag, r.delayLowMs, r.costDb, r.efficiency);
+        if (std::getenv ("XO_PROBE") != nullptr)
+            for (const auto& c : sys.chainCandidates (opt.fMin, opt.fMax, goal))
+            {
+                if (c.tag != SpeakerSystem::TagOnboardOut || ! c.hp.active() || c.hp.slope != 24) continue;
+                xo::Options o1 = opt;
+                o1.candidates = [c] (double, double) { return std::vector<xo::Candidate> { c }; };
+                const auto rr = xo::optimise (h, l, sys.caps, o1);
+                std::printf ("    %s %d @ %.0f: cost %.3f eff %.2f extra %.2f delay %.2f inv %d\n", xo::typeShort (c.hp.type), c.hp.slope, c.fc, rr.costDb, rr.efficiency, c.extraCost, rr.delayLowMs, (int) rr.invertLow);
+            }
+    }
+
+    // No regression: a pair with no onboard filters gives exactly the same result through the chain as the plain search
+    {
+        SpeakerSystem plain;
+        plain.sources = { speaker ("Top", SpeakerRole::Main, SpeakerChannel::Mono, 1), speaker ("Sub", SpeakerRole::Sub, SpeakerChannel::Mono, 3) };
+        plain.sources[0].response = modelled (70.0, 2, 0.0, 0);
+        plain.sources[1].response = modelled (35.0, 4, 160.0, 4, 6.0);
+        plain.sources[0].imported = plain.sources[1].imported = true;
+        plain.xoHigh = 0; plain.xoLow = 1; plain.xoChosen = true;
+        const auto ph = plain.groupResponse (0, grid), pl = plain.groupResponse (1, grid);
+        xo::Options a, b;
+        const SpeakerSystem chain = plain;
+        b.candidates = [chain] (double fLo, double fHi) { return chain.chainCandidates (fLo, fHi, 0); };
+        const auto ra = xo::optimise (ph, pl, plain.caps, a), rb = xo::optimise (ph, pl, plain.caps, b);
+        check (ra.valid && rb.valid && ra.filter.type == rb.filter.type && ra.filter.slope == rb.filter.slope && near (ra.fc, rb.fc, 1e-6)
+               && near (ra.delayLowMs, rb.delayLowMs, 1e-6) && ra.invertLow == rb.invertLow && near (ra.gainLowDb, rb.gainLowDb, 1e-9),
+               "chain: no onboard filters gives exactly the plain search's result", ra.fc, rb.fc);
+    }
+
+    // the processor's frequency steps: only settings it can take
+    {
+        xo::Capabilities c;
+        c.freqStepOct = 1.0 / 3.0;
+        c.freqLo = 20.0;
+        check (near (c.snapFreq (95.0), 20.0 * std::pow (2.0, 7.0 / 3.0), 0.01), "processor: frequencies snap to its steps", c.snapFreq (95.0), 100.8);
+        c.freqStepOct = 0.0;
+        c.freqStepHz = 1.0;
+        check (near (c.snapFreq (95.4), 95.0, 1e-9), "processor: 1 Hz steps", c.snapFreq (95.4), 95.0);
+    }
+
+    // the limiter target, with the arithmetic
+    {
+        SpeakerSystem ls;
+        ls.sources = { speaker ("Top", SpeakerRole::Main, SpeakerChannel::Mono, 1) };
+        ls.sources[0].rmsVoltLimit = 48.0;
+        ls.sources[0].ampGain = "+32 dB";
+        ls.caps.limiterUnit = 1;
+        ls.caps.fullScaleDbu = 20.0;
+        const auto t = sheet::limiterTarget (ls, ls.sources[0]);
+        // 48 V = 35.8 dBu; minus 32 = 3.8 dBu; 0 dBFS = 20 dBu -> -16.2 dBFS
+        check (t.contains ("35.8 dBu") && t.contains ("3.8 dBu") && t.contains ("-16.2 dBFS"), ("sheet: limiter target with the maths: " + t).toRawUTF8());
+    }
+}
+
 int main()
 {
     // a message thread (this one), for the audio device manager's change messages and device list listeners
@@ -956,9 +1168,11 @@ int main()
     climateTests();
     listenTests();
     interfaceTests();
+    splIntervalTests();
     showLogTests();
     healthTests();
     traceMathTests();
+    chainCrossoverTests();
     home.deleteRecursively();
     juce::DeletedAtShutdown::deleteAll();
     juce::MessageManager::deleteInstance();

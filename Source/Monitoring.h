@@ -119,7 +119,19 @@ struct SplLog
     juce::String limit2Name() const { return limitC ? "LAeq" : "LCeq"; }
     juce::String limit2Unit() const { return limitC ? "dBA" : "dBC"; }
 
-    // A reading (A and C slow, A fast, dB) taken about once a second, with the room sensor's reading if there is one.
+    // A whole interval, as the sound level meter measured it (IEC 61672-1: LAeq and LCeq integrate the squared signal
+    // over the interval, LAF max is the running maximum of the Fast meter, LCpeak the largest instantaneous value).
+    // `t`: when the interval started. This is how the app logs; the point's time is its start.
+    void addInterval (double t, float laeq, float lceq, float lafMax, float tempC = NAN, float rh = NAN, float lcPeak = NAN)
+    {
+        if (! std::isfinite (laeq) || laeq < -150.0f) return;
+        points.push_back ({ t, laeq, lceq, lafMax, std::isfinite (tempC) ? tempC : NAN, std::isfinite (rh) ? rh : NAN,
+                            std::isfinite (lcPeak) && lcPeak > -150.0f ? lcPeak : NAN });
+    }
+
+    // Readings (A and C slow, A fast, dB) taken about once a second, power-averaged into a point per interval: an
+    // approximation, kept for logs built from readings (the tests and the screenshot tool). The app itself logs with
+    // addInterval.
     void add (double t, float laS, float lcS, float laF, float tempC = NAN, float rh = NAN, float lcPeak = NAN)
     {
         if (! std::isfinite (laS) || laS < -150.0f) return;

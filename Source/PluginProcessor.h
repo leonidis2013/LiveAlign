@@ -30,7 +30,7 @@
 // LiveAlign runs as a standalone app (system setup and tuning: drives the PA with the generator and measures through
 // up to eight mics) and as a VST3 (monitoring in a host such as LiveProfessor). The audio thread only reads inputs,
 // runs the generator and hands samples to the analysis thread.
-class LiveAlignProcessor : public juce::AudioProcessor
+class LiveAlignProcessor : public juce::AudioProcessor, private juce::Timer
 {
 public:
     static constexpr int kMaxInputs = 16, kMaxOutputs = 8;
@@ -264,6 +264,21 @@ public:
     HealthLine healthLine (double nowSec, double delayDriftMsPerMin = 0.0) const;
     la::MonitorMic monitorMic;          // the monitoring mic (venue)
 
+    // ---- the show's watchers ----
+    // The sound level log, the feedback watch and the delay tracking run here (a timer on the message thread over the
+    // analysis thread), so they carry on with the window closed or behind another one. The editor sets the toggles
+    // and shows what they found.
+    std::atomic<bool> feedbackWatching { true };    // the Watch toggle on the Monitor page
+    std::atomic<bool> monitorPageShown { false };   // the editor is on the Monitor page (the watch runs there while tuning too)
+    std::atomic<bool> delayTracking { false };      // the Track toggle on the Monitor page
+    // Rings the watch caught that no window has shown yet (message thread). Each is already in the show log.
+    std::vector<la::FeedbackHit> takeFeedbackHits() { std::vector<la::FeedbackHit> out; out.swap (newHits); return out; }
+    void resetFeedbackWatch() { newHits.clear(); analyzer.requestFeedbackReset(); }
+    // The loopback check plays on the output the loopback cable is on (venue): 1-based, 0 = the last output of the
+    // interface.
+    int loopbackOutput = 0;
+    int loopbackOutputResolved() const { const int n = juce::jmax (1, numOutputs()); return loopbackOutput > 0 ? juce::jmin (loopbackOutput, n) : n; }
+
     // ---- monitoring mode ----
     // Monitoring uses its own mic: while it is on, analysis slot 1 is the monitor mic (its input, calibration,
     // sound level and delay) and the tuning mics are put aside, then restored. The VST3 is always in this mode.
@@ -285,6 +300,9 @@ public:
 
 private:
     static BusesProperties defaultBuses();
+    void timerCallback() override;      // the show's watchers (see above), ten times a second
+    std::vector<la::FeedbackHit> newHits;
+    juce::uint32 lastTrackRequest = 0;
     std::unique_ptr<juce::XmlElement> sessionBody() const;
     void loadSessionBody (const juce::XmlElement*);
     void saveMicCalibrations (juce::XmlElement&) const;

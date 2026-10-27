@@ -17,7 +17,7 @@ namespace la
 struct LockerMic
 {
     juce::String id, name, notes;
-    juce::String model, serial;    // e.g. "UMIK-1", "7012345"
+    juce::String model, serial;    // the maker's model name, the serial
     MicCalSet cals;                // 0 and 90 degree calibration files (either may be missing)
     bool noCalFile = false;        // this mic has no file (treated as flat)
     bool hasSpl = false;           // sound level calibrated at least once
@@ -34,7 +34,7 @@ struct LockerMic
         return s.isNotEmpty() ? s : juce::String ("Unnamed mic");
     }
 
-    // Model and serial for tags and reports ("UMIK-1 #7012345"), empty when neither is set.
+    // Model and serial for tags and reports ("Model #7012345"), empty when neither is set.
     juce::String modelSerial() const
     {
         juce::String s = model;

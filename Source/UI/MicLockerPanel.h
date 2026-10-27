@@ -44,7 +44,7 @@ public:
             addAndMakeVisible (e);
         };
         setupEditor (nameEditor, "Optional: shown instead of model and serial");
-        setupEditor (modelEditor, "e.g. UMIK-1, ECM8000, M30");
+        setupEditor (modelEditor, "The maker's model name");
         setupEditor (serialEditor, "Serial number");
         setupEditor (notesEditor, "Notes: windscreen, cable, last checked ...");
         notesEditor.setMultiLine (true);

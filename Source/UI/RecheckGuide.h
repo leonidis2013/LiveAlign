@@ -144,7 +144,14 @@ public:
         if (t.kind > 0) proc.setMicPosition (mic, pointFor (t));
         now = t;
         const int out = t.kind == 2 ? 0 : proc.system.sources[(size_t) t.spk].output;
-        const bool ok = runner.start (out, mic, t.kind == 0 ? proc.speakerAim : -1, [this, t] (const MeasureRunner::Result& r) { finished (t, r); });
+        // at the points: every placed mic in the same pass (each is checked against what was measured at its point)
+        std::vector<int> mics { mic };
+        if (t.kind > 0)
+            for (int m = 0; m < proc.tuningMicCount(); ++m)
+                if (m != mic && proc.mics.position[(size_t) m].isNotEmpty() && proc.positions.contains (proc.mics.position[(size_t) m])) mics.push_back (m);
+        double lo = 60.0, hi = 12000.0;
+        if (t.kind != 2) proc.system.playRange (t.spk, lo, hi);
+        const bool ok = runner.start (out, mics, t.kind == 0 ? proc.speakerAim : -1, [this, t] (const std::vector<MeasureRunner::Result>& rs) { finished (t, rs); }, lo, hi);
         if (! ok) status = runner.lastError();
         else startTimerHz (15);
         return ok;
@@ -202,15 +209,29 @@ private:
         return e;
     }
 
-    void finished (const Task& t, const MeasureRunner::Result& r)
+    void finished (const Task& t, const std::vector<MeasureRunner::Result>& rs)
     {
         stopTimer();
-        if (! r.ok) { status = r.error; return; }
+        if (rs.empty() || ! rs.front().ok) { status = rs.empty() ? juce::String ("No result.") : rs.front().error; return; }
         problems.erase (t.id());
+        if (t.kind == 0) judge (t, rs.front(), pointFor (t));
+        else
+            for (const auto& r : rs)
+                if (r.ok && (&r == &rs.front() || (r.point.isNotEmpty() && r.point != pointFor (t)))) judge (t, r, &r == &rs.front() ? pointFor (t) : r.point);
+        done.push_back (t.id());
+        redo = -1;
+        ++serial;
+        status = proc.recheck.lines.empty() ? juce::String ("Measured.") : proc.recheck.lines.back().text;
+        if (onChanged) onChanged();
+    }
+
+    // One mic's result against what was measured at its point when the system was tuned.
+    void judge (const Task& t, const MeasureRunner::Result& r, const juce::String& point)
+    {
         // a re-measured point replaces its earlier lines
         const auto who = t.kind == 2 ? juce::String ("Whole system") : proc.system.nameOf (t.spk);
         auto& lines = proc.recheck.lines;
-        const auto tag = t.kind == 0 ? who + " close up" : who + " at " + pointFor (t);
+        const auto tag = t.kind == 0 ? who + " close up" : who + " at " + point;
         lines.erase (std::remove_if (lines.begin(), lines.end(), [&tag] (const Recheck::Line& l) { return l.text.startsWith (tag); }), lines.end());
         auto f1 = [] (double v) { return (v >= 0.0 ? "+" : "") + juce::String (v, 1); };
         const double minCoh = juce::jmax (0.2f, proc.settings.coherenceBlank.load());
@@ -232,9 +253,9 @@ private:
         }
         else if (t.kind == 1)
         {
-            const auto* was = proc.level.latest (t.spk, pointFor (t));
+            const auto* was = proc.level.latest (t.spk, point);
             const auto& s = proc.system.sources[(size_t) t.spk];
-            if (was == nullptr) add (0, tag + ": measured (no level balance there to compare with).");
+            if (was == nullptr) { if (point == pointFor (t)) add (0, tag + ": measured (no level balance there to compare with)."); }
             else
             {
                 double lo, hi;
@@ -271,8 +292,8 @@ private:
         {
             // the whole system against the Room EQ measurement at that point (the latest round)
             const RoomMeasurement* was = nullptr;
-            for (const auto& m : proc.room.meas) if (m.position == fohPoint() && (was == nullptr || m.after)) was = &m;
-            if (was == nullptr) add (0, tag + ": measured (no Room EQ measurement there to compare with).");
+            for (const auto& m : proc.room.meas) if (m.position == point && (was == nullptr || m.after)) was = &m;
+            if (was == nullptr) { if (point == pointFor (t)) add (0, tag + ": measured (no Room EQ measurement there to compare with)."); }
             else
             {
                 double lo, hi;
@@ -297,11 +318,6 @@ private:
                 if ((! std::isfinite (rms) || rms <= tolTonal) && std::abs (off) <= 2.0) add (0, tag + ": as left (" + (std::isfinite (rms) ? juce::String (rms, 1) : juce::String ("-")) + " dB RMS).");
             }
         }
-        done.push_back (t.id());
-        redo = -1;
-        ++serial;
-        status = proc.recheck.lines.empty() ? juce::String ("Measured.") : proc.recheck.lines.back().text;
-        if (onChanged) onChanged();
     }
 
     LiveAlignProcessor& proc;

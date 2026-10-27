@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <functional>
 #include <string>
 #include <vector>
 #include "Fft.h"
@@ -269,10 +270,36 @@ inline double medianDb (const Response& r, double fLo, double fHi)
     return median (v);
 }
 
+// What the speaker processor offers, as data: never a named processor. The search chooses only what it can do.
 struct Capabilities
 {
     bool types[4] { false, true, true, false };          // Butterworth and Linkwitz-Riley by default
     bool slopes[8] { false, true, true, true, false, true, false, true };   // 6..48 in steps of 6: 12, 18, 24, 36, 48
+    double freqLo = 10.0, freqHi = 20000.0;              // the filters' frequency range
+    double freqStepHz = 0.0;                             // the frequency resolution: 0 free (1/24 oct), else steps of this many Hz
+    double freqStepOct = 0.0;                            //   or, in octaves (1/12, 1/24 ...) when the processor steps that way
+    double delayMaxMs = 0.0;                             // per-output delay limit (0: not entered)
+    int limiterUnit = 0;                                 // 0 dBu, 1 dBFS (with `fullScaleDbu` the level of 0 dBFS), 2 volts
+    double fullScaleDbu = 20.0;
+    // the nearest frequency the processor can be set to
+    double snapFreq (double hz) const
+    {
+        hz = std::clamp (hz, freqLo, freqHi);
+        if (freqStepHz > 0.0) return std::max (freqLo, std::round (hz / freqStepHz) * freqStepHz);
+        if (freqStepOct > 0.0) return std::clamp (freqLo * std::pow (2.0, std::round (std::log2 (hz / freqLo) / freqStepOct) * freqStepOct), freqLo, freqHi);
+        return hz;
+    }
+};
+
+// One setting the search tries: the filter on each side, and any filter built into a speaker that is in the chain
+// as well (a powered sub's own low-pass), at the crossover frequency `fc`.
+struct Candidate
+{
+    double fc = 100.0;
+    Filter hp, lp;                  // the processor's high-pass on the high source, low-pass on the low one (None: OUT)
+    Filter highExtra, lowExtra;     // a speaker's own (onboard) filter in the chain, modelled with it (None: none)
+    double extraCost = 0.0;         // added to the score (protection, headroom)
+    int tag = 0;                    // the caller's own marker (e.g. the stacked alternative)
 };
 
 struct Options
@@ -281,6 +308,9 @@ struct Options
     double delayMinMs = -15.0, delayMaxMs = 15.0;
     bool matchLevels = true;
     double minCoherence = 0.0;            // points measured with less coherence than this are not trusted
+    // What to try, given the search window (fLo, fHi): empty, every enabled type and slope with the same filter on
+    // both sides, 1/24 octave apart through the window.
+    std::function<std::vector<Candidate> (double fLo, double fHi)> candidates;
 };
 
 // Passband level of the high source of a pair, as the optimiser uses it.
@@ -289,7 +319,11 @@ inline double passbandDb (const Response& high, const Options& opt) { return med
 struct Result
 {
     bool valid = false;
-    Filter filter;                // same type and slope on both sides, at the crossover frequency
+    Filter filter;                // the high source's high-pass (the same type and slope on both sides, unless a chain says otherwise)
+    Filter lowFilter;             // the low source's low-pass in the processor (None: OUT, a speaker's own filter does it)
+    Filter highExtra, lowExtra;   // a speaker's own filter used at this setting (None: none)
+    double fc = 0.0;              // the crossover frequency
+    int tag = 0;                  // the winning candidate's marker
     double delayLowMs = 0.0;      // delay of the low source relative to the high one (negative: delay the high one)
     bool invertLow = false;
     double gainLowDb = 0.0;
@@ -485,24 +519,42 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
     for (size_t i = 0; i < f.size(); ++i) ref[i] = f[i] >= lowFlatFrom ? flat : std::max (std::abs (high.h[i]), std::abs (low.h[i]) * g);
 
     double bestCost = 1e9;
-    for (int type = 1; type <= 3; ++type)
-    {
-        if (! caps.types[type]) continue;
-        for (int si = 0; si < 8; ++si)
+    std::vector<Candidate> cands;
+    if (opt.candidates) cands = opt.candidates (fLo, fHi);
+    else
+        for (int type = 1; type <= 3; ++type)
         {
-            const int slope = (si + 1) * 6;
-            if (! caps.slopes[si] || ! slopeValid (type, slope)) continue;
-            for (double fc = fLo; fc <= fHi * 1.0001; fc *= std::pow (2.0, 1.0 / 24.0))
+            if (! caps.types[type]) continue;
+            for (int si = 0; si < 8; ++si)
             {
-                const Filter flt { type, slope, fc };
+                const int slope = (si + 1) * 6;
+                if (! caps.slopes[si] || ! slopeValid (type, slope)) continue;
+                double lastFc = -1.0;
+                for (double fc = fLo; fc <= fHi * 1.0001; fc *= std::pow (2.0, 1.0 / 24.0))
+                {
+                    const double fs = caps.snapFreq (fc);   // only settings the processor can take
+                    if (std::abs (fs - lastFc) < 1e-6) continue;
+                    lastFc = fs;
+                    Candidate c;
+                    c.fc = fs;
+                    c.hp = c.lp = Filter { type, slope, fs };
+                    cands.push_back (c);
+                }
+            }
+        }
+    for (const auto& cand : cands)
+    {
+        const double fc = cand.fc;
+        {
+            {
                 const auto band = detail::bandAround (f, fc);
                 if (band.idx.size() < 6) continue;
 
                 std::vector<cplx> a (f.size()), b (f.size());
                 for (size_t j : band.idx)
                 {
-                    a[j] = high.h[j] * response (flt, true, f[j]);
-                    b[j] = low.h[j] * response (flt, false, f[j]) * g;
+                    a[j] = high.h[j] * response (cand.hp, true, f[j]) * response (cand.highExtra, true, f[j]);
+                    b[j] = low.h[j] * response (cand.lp, false, f[j]) * response (cand.lowExtra, false, f[j]) * g;
                 }
                 auto trusted = band;
                 const double share = detail::reliableBand (trusted, high, low, a, b, opt.minCoherence);
@@ -518,17 +570,22 @@ inline Result optimise (const Response& high, const Response& low, const Capabil
                     }
                     for (double tau = localTau - 0.25; tau <= localTau + 0.25 + 1e-9; tau += 0.02)
                     {
+                        if (tau < opt.delayMinMs - 1e-9 || tau > opt.delayMaxMs + 1e-9) continue;
                         const double c = detail::evaluate (f, a, b, ref, trusted, tau, pol, eff);
                         if (c < localBest) { localBest = c; localTau = tau; }
                     }
-                    // gentle preference for the middle of the usable overlap, and for less delay
                     // prefer the middle of the overlap, less delay, and a region that was measured reliably
-                    const double cost = localBest + 0.25 * std::abs (std::log2 (fc / fMid)) + 0.01 * std::abs (localTau) + 3.0 * (1.0 - share);
+                    const double cost = localBest + 0.25 * std::abs (std::log2 (fc / fMid)) + 0.01 * std::abs (localTau) + 3.0 * (1.0 - share) + cand.extraCost;
                     if (cost < bestCost)
                     {
                         bestCost = cost;
                         best.valid = true;
-                        best.filter = flt;
+                        best.filter = cand.hp;
+                        best.lowFilter = cand.lp;
+                        best.highExtra = cand.highExtra;
+                        best.lowExtra = cand.lowExtra;
+                        best.fc = fc;
+                        best.tag = cand.tag;
                         best.delayLowMs = localTau;
                         best.invertLow = pol < 0.0;
                         best.gainLowDb = gainDb;
@@ -559,6 +616,75 @@ inline double lowerFlatFrom (const Response& low, double fMin = 25.0)
     for (size_t i = 0; i < low.f.size(); ++i) if (low.f[i] >= fMin && low.f[i] <= 120.0) top = std::max (top, ls[i]);
     for (size_t i = 0; i < low.f.size(); ++i) if (low.f[i] >= fMin && ls[i] >= top - 3.0) return low.f[i];
     return fMin;
+}
+
+// The summed response against flat through the crossover region: how far it strays at most, and its highest and
+// lowest points with their frequencies. Flat is the high source's own passband level (plus its gain); the range is
+// `octaves` each side of `fc`, from the low source's lower -3 dB point up (below it the system rolls off with the sub).
+struct SumShape
+{
+    bool valid = false;
+    double maxDevDb = 0.0;                  // the largest |deviation| from flat
+    double peakDb = 0.0, peakHz = 0.0;      // the highest point (dB above flat; may be negative when the sum is all below)
+    double dipDb = 0.0, dipHz = 0.0;        // the lowest point (dB, negative when below flat)
+    double fromHz = 0.0, toHz = 0.0;        // the range looked at
+    double efficiency = 0.0;                // |a + b| / (|a| + |b|) through the overlap
+    bool bump() const { return valid && peakDb >= 1.0 && peakDb >= -dipDb; }
+    bool dip() const { return valid && dipDb <= -1.0 && -dipDb > peakDb; }
+};
+
+inline SumShape sumShape (const Response& high, const Response& low, const Processing& ph, const Processing& pl, double fc, double octaves = 1.0)
+{
+    SumShape sh;
+    if (high.empty() || low.empty() || high.f.size() != low.f.size() || fc <= 0.0) return sh;
+    const double flatDb = medianDb (high, 375.0, 1500.0) + ph.gainDb;
+    const double from = std::max (lowerFlatFrom (low), fc * std::pow (2.0, -octaves)), to = fc * std::pow (2.0, octaves);
+    sh.fromHz = from;
+    sh.toHz = to;
+    double eff = 0.0, esum = 0.0;
+    bool first = true;
+    for (size_t j = 0; j < high.f.size(); ++j)
+    {
+        const double f = high.f[j];
+        if (f < from || f > to) continue;
+        const cplx a = high.h[j] * ph.at (f), b = low.h[j] * pl.at (f);
+        const double ma = std::abs (a), mb = std::abs (b), sum = std::abs (a + b);
+        const double dev = 20.0 * std::log10 (std::max (sum, 1e-9)) - flatDb;
+        if (first || dev > sh.peakDb) { sh.peakDb = dev; sh.peakHz = f; }
+        if (first || dev < sh.dipDb) { sh.dipDb = dev; sh.dipHz = f; }
+        sh.maxDevDb = std::max (sh.maxDevDb, std::abs (dev));
+        if (const double hi = std::max (ma, mb); hi > 1e-9) { const double ov = std::min (ma, mb) / hi; eff += ov * sum / (ma + mb); esum += ov; }
+        first = false;
+    }
+    sh.valid = ! first;
+    sh.efficiency = esum > 0.0 ? eff / esum : 0.0;
+    return sh;
+}
+
+// The overlap of a pair: where both play within 6 dB of each other (each half-octave smoothed and level matched as
+// the optimiser would). Returns false when there is none.
+inline bool overlapRange (const Response& high, const Response& low, double lowGainDb, double& fromHz, double& toHz)
+{
+    fromHz = toHz = 0.0;
+    if (high.empty() || low.empty() || high.f.size() != low.f.size()) return false;
+    const auto hs = detail::smoothedDb (high, 0.5), ls = detail::smoothedDb (low, 0.5);
+    double hTop = -200.0, lTop = -200.0;
+    for (size_t i = 0; i < high.f.size(); ++i)
+        if (high.f[i] >= 20.0 && high.f[i] <= 2000.0) { hTop = std::max (hTop, hs[i]); lTop = std::max (lTop, ls[i]); }
+    bool any = false;
+    for (size_t i = 0; i < high.f.size(); ++i)
+    {
+        if (high.f[i] < 20.0 || high.f[i] > 2000.0) continue;
+        // both must be playing (within 12 dB of their own loudest), and within 6 dB of each other
+        if (hs[i] < hTop - 12.0 || ls[i] < lTop - 12.0) continue;
+        const double d = std::abs (hs[i] - (ls[i] + lowGainDb));
+        if (d > 6.0) continue;
+        if (! any) fromHz = high.f[i];
+        toHz = high.f[i];
+        any = true;
+    }
+    if (fromHz > toHz) std::swap (fromHz, toHz);
+    return any;
 }
 
 inline double assess (const Response& high, const Response& low, const Processing& ph, const Processing& pl, double fc, double& efficiency,

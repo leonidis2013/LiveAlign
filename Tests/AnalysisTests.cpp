@@ -536,13 +536,13 @@ static void testGenerator()
 
 static void testFreqTable()
 {
-    const std::string umik =
+    const std::string micFile =
         "\"Sens Factor =-1.378dB, AGain =18dB, SERNO: 7023270\"\n"
         "10.054\t-2.5170\n"
         "100.000\t-0.2000\n"
         "1000.0\t0.0000\n"
         "10000\t1.5000\n";
-    auto t = parseFreqTable (umik);
+    auto t = parseFreqTable (micFile);
     check (t.freq.size() == 4, "Cal file: four points", (double) t.freq.size(), 4);
     check (t.hasSensFactor, "Cal file: sens factor found");
     near (t.sensFactorDb, -1.378, 1e-9, "Cal file: sens factor value");
@@ -658,6 +658,49 @@ static void testCrossover()
     }
     check (r.costDb < 1.0, "Summed response close to flat", r.costDb, 0.5);
     check (r.efficiency > 0.85, "Summation efficiency high", r.efficiency, 0.95);
+
+    // The delay's direction: a sub arriving 3 ms AFTER the top needs the top delayed 3 ms (delayLowMs negative)
+    {
+        Response late;
+        late.f = grid;
+        for (double f : grid) late.h.push_back (response (subNat, false, f) * std::polar (2.0, -2.0 * kPi * f * 0.003));
+        Capabilities lrOnly;
+        for (auto& b : lrOnly.types) b = false;
+        lrOnly.types[LinkwitzRiley] = true;
+        Options o2;
+        o2.fMin = 90.0; o2.fMax = 110.0;
+        const auto rl = optimise (top, late, lrOnly, o2);
+        check (rl.valid && rl.delayLowMs < 0.0, "Delay direction: a sub 3 ms late means delay the TOP (delayLowMs negative)", rl.delayLowMs, -3.0);
+        near (-rl.delayLowMs, 3.0, 0.4, "Delay direction: by about 3 ms");
+        // and the words say so
+        check (rl.delayLowMs < 0.0 ? true : false, "Delay direction: 'delay the top' is the high side");
+    }
+
+    // The sum's shape, from the sum: BW18 on both sides at 65 Hz adds up to a bump (each is -3 dB at the corner).
+    // Two speakers flat through the region (wide tops, a sub good to 160 Hz), at the same level and time.
+    {
+        Response wideTop, flatSub;
+        wideTop.f = flatSub.f = grid;
+        const Filter wideNat { Butterworth, 12, 30.0 };
+        for (double f : grid) { wideTop.h.push_back (response (wideNat, true, f)); flatSub.h.push_back (response (subNat, false, f)); }
+        Processing ph, pl;
+        ph.hp = pl.lp = Filter { Butterworth, 18, 65.0 };
+        const auto sh = sumShape (wideTop, flatSub, ph, pl, 65.0, 1.0);
+        check (sh.valid, "Sum shape: computed");
+        check (sh.maxDevDb >= 1.5, "Sum shape: two BW18 in phase stray at least 1.5 dB from flat", sh.maxDevDb, 3.0);
+        check (sh.bump() && ! sh.dip(), "Sum shape: and the wording is a bump, not a dip", sh.peakDb, 3.0);
+        check (sh.peakHz > 40.0 && sh.peakHz < 130.0, "Sum shape: the bump sits near the crossover", sh.peakHz, 65.0);
+        // overlap always reads low to high, with a 6 dB rule
+        double from = 0.0, to = 0.0;
+        check (overlapRange (top, sub, -6.0, from, to) && from < to, "Overlap: printed low to high", from, to);
+        check (from > 40.0 && to < 250.0, "Overlap: where both play within 6 dB of each other", from, 100.0);
+        // no overlap: a sub that stops well below the top
+        Response tiny;
+        tiny.f = grid;
+        const Filter subLow { Butterworth, 48, 20.0 };
+        for (double f : grid) tiny.h.push_back (response (subLow, false, f));
+        check (! overlapRange (top, tiny, 0.0, from, to), "Overlap: none when the ranges never meet");
+    }
 
     // The same pair in a room: a reflection 4 ms late puts notches in both responses. The crossover still lands
     // in the overlap, not at the edge of the range.
@@ -790,8 +833,8 @@ static void testEqFit()
 }
 
 // The crossover pair follows the roles, not the order of the list.
-// The user's pair, from the makers' data sheets (modelled responses): JBL CBT70J-1 tops (-10 dB at 60 Hz) and a Yamaha
-// DXS12mkII sub (-10 dB at 42 and 150 Hz). Practice puts the crossover around 80 - 100 Hz; the sum should be flat.
+// A real pair, from the makers' data sheets (modelled responses): a wide column top (-10 dB at 60 Hz) and a powered
+// 12 inch sub (-10 dB at 42 and 150 Hz). Practice puts the crossover around 80 - 100 Hz; the sum should be flat.
 static void testCrossoverDataSheets()
 {
     using namespace la::xo;
@@ -802,7 +845,7 @@ static void testCrossoverDataSheets()
         ss << in.rdbuf();
         return parseFreqTable (ss.str());
     };
-    const auto topT = load ("JBL_CBT70J-1_spec_model.txt"), subT = load ("Yamaha_DXS12mkII_spec_model.txt");
+    const auto topT = load ("top_column_spec_model.txt"), subT = load ("sub_12in_spec_model.txt");
     check (topT.freq.size() > 100 && subT.freq.size() > 100, "Data sheets: both files read");
     if (topT.freq.size() < 100 || subT.freq.size() < 100) return;
     const auto grid = analysisGrid();

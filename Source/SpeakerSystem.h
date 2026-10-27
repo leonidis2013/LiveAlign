@@ -56,7 +56,7 @@ struct SpeakerSource
     juce::String name;
     int role = (int) SpeakerRole::Main;
     int channel = (int) SpeakerChannel::Mono;
-    juce::String model;            // e.g. "JBL CBT 70J"
+    juce::String model;            // the maker's model name, as the user enters it
     int count = 1;                 // cabinets on this output (two subs side by side, a column of two ...)
     int linkTo = -1;               // shares its settings with this speaker (the other side of a stereo pair), -1 = own
     int output = 0;                // generator output when measuring: 0 = all outputs, 1.. = output (n - 1)
@@ -106,6 +106,51 @@ struct SpeakerSource
     xo::Processing proc;           // suggested settings for the speaker processor
     double trimDb = 0.0;           // level trim from Level balance, on top of proc.gainDb (kept for a linked speaker too)
     double directivityQ = 0.0;     // directivity factor for the critical distance (0 = typical for its role)
+
+    // A filter built into the speaker (a powered sub's own low-pass, a column's own high-pass): part of the chain.
+    // Generic: any family and slope, fixed choices or a free range, bypassable or not.
+    struct Onboard
+    {
+        bool present = false;
+        bool lowPass = false;           // false: a high-pass, true: a low-pass
+        int type = xo::Butterworth;     // xo::FilterType, or 0 for "unknown" (modelled as Butterworth)
+        int slope = 24;                 // dB/oct
+        std::vector<double> choices;    // the fixed frequencies it offers (empty: a continuous range)
+        double rangeLo = 0.0, rangeHi = 0.0;   // the continuous range (when there are no fixed choices)
+        bool bypassable = true;
+        double measuredAtHz = 0.0;      // the imported / published curve was taken with the filter set here (0: not, or unknown)
+        double latencyMs = -1.0;        // the speaker's own DSP latency (-1: unknown)
+        double setHz = 0.0;             // where it is set now (0: bypassed / none)
+        bool usable() const { return present && (! choices.empty() || rangeHi > rangeLo); }
+        // the nearest setting it can actually take
+        double snap (double hz) const
+        {
+            if (! choices.empty())
+            {
+                double best = choices.front();
+                for (double c : choices) if (std::abs (std::log2 (c / hz)) < std::abs (std::log2 (best / hz))) best = c;
+                return best;
+            }
+            return rangeHi > rangeLo ? juce::jlimit (rangeLo, rangeHi, hz) : hz;
+        }
+        xo::Filter filterAt (double hz) const { return { type == 0 ? xo::Butterworth : type, slope, hz }; }
+        juce::String text() const
+        {
+            if (! present) return {};
+            juce::String t = juce::String (lowPass ? "low-pass" : "high-pass") + " " + (type == 0 ? juce::String ("(family unknown)") : juce::String (xo::typeName (type))) + " " + juce::String (slope) + " dB/oct";
+            if (! choices.empty()) { juce::StringArray c; for (double v : choices) c.add (juce::String (juce::roundToInt (v))); t << " at " << c.joinIntoString (" / ") << " Hz"; }
+            else if (rangeHi > rangeLo) t << " " << juce::String (juce::roundToInt (rangeLo)) << " - " << juce::String (juce::roundToInt (rangeHi)) << " Hz";
+            t << (bypassable ? ", can be bypassed" : ", always in");
+            return t;
+        }
+    };
+    Onboard onboard;
+
+    // Protection, from the maker's data: the lowest high-pass it should be run with, and its voltage limit.
+    double minSafeHpHz = 0.0;      // 0: not entered
+    int minSafeHpSlope = 24;
+    double rmsVoltLimit = 0.0;     // V RMS at the terminals (0: not entered)
+    bool dspLatencyUnknown() const { return onboard.present && onboard.latencyMs < 0.0; }
     double coverH = 0.0, coverV = 0.0;   // the data sheet's coverage angles (degrees) the Q came from (0: not entered)
     bool hpProtective = false;     // its high-pass is the protective one for a system with no sub (not a crossover)
     juce::String ampGain, limiter; // as set on its amp channel and in the processor (free text: "+32 dB", "+12 dBu"), for the sheet
@@ -171,6 +216,16 @@ struct Alignment
     double lockMs = 0.0;        // the mic delay both were measured with
     bool phaseValid = false;
     double phaseDelayMs = 0.0;
+    // The crossover pair: the low side must also be inverted (found together with the delay: inverted plus half a
+    // cycle often adds up better, and the two answers differ in how the phase slopes meet outside the crossover).
+    // Relative to the polarity each end had while it was measured.
+    bool phaseInvert = false;
+    bool refInvertAtMeasure = false, alignInvertAtMeasure = false;
+    // A set as the reference end (not the crossover pair): its members are measured one at a time, and the one
+    // loudest in the align speaker's band at the spot is the reference (a fill or delay follows the nearer side).
+    // -1: the end as set (a single speaker, or the set playing together).
+    int refMemberUsed = -1;
+    int refSpeaker() const { return refMemberUsed >= 0 ? refMemberUsed : ref; }
     // the delays each speaker had (in the processor, as set here) while it was measured
     double refDelayAtMeasure = 0.0, alignDelayAtMeasure = 0.0;
     // Check: the level in the band where they overlap with each alone and with both playing (dB, -200 = not measured)
@@ -187,34 +242,85 @@ struct Alignment
         return (refArrivalMs - refDelayAtMeasure) + refProcessingMs - (alignArrivalMs - alignDelayAtMeasure) + precedenceMs + xoOffsetMs;
     }
 
-    // The delay of `align` (ms, may be negative) that makes the two transfer functions add up best between fLo and fHi.
-    static bool phaseMatch (const FreqTable& a, const FreqTable& b, double fLo, double fHi, double& bestMs)
+    // The delay of `b` (ms, may be negative) and its polarity that make the two transfer functions add up best through
+    // the crossover at fc (fc/2 to 2fc). Both polarities are tried with every delay: at a sub, inverted plus half a
+    // cycle often adds up as well as, or better than, normal. When the two polarities add up within 0.3 dB of each
+    // other, the one whose phase difference stays within 45 degrees over the wider band fc/3 to 3fc wins: its phase
+    // slopes meet rather than merely cross at the crossover. Only bins both measurements heard clearly count.
+    static bool phaseMatch (const FreqTable& a, const FreqTable& b, double fc, double& bestMs, bool& invert)
     {
-        if (! a.hasPhase() || ! b.hasPhase()) return false;
-        struct Bin { double w, ma, mb, pa, pb; };
+        if (! a.hasPhase() || ! b.hasPhase() || ! (fc > 0.0)) return false;
+        constexpr double pi = 3.14159265358979;
+        struct Bin { double w, ma, mb, pa, pb; bool inner; };
         std::vector<Bin> bins;
+        // coherence of `b` at f: its nearest bin (both tables come off the same analysis grid)
+        auto cohB = [&b] (double f)
+        {
+            if (b.extra.size() != b.freq.size() || b.freq.empty()) return 1.0;
+            const auto it = std::lower_bound (b.freq.begin(), b.freq.end(), f);
+            size_t i = (size_t) (it - b.freq.begin());
+            if (i >= b.freq.size()) i = b.freq.size() - 1;
+            if (i > 0 && std::abs (b.freq[i - 1] - f) < std::abs (b.freq[i] - f)) --i;
+            return b.extra[i];
+        };
+        size_t inner = 0;
         for (size_t i = 0; i < a.freq.size(); ++i)
         {
             const double f = a.freq[i];
-            if (f < fLo || f > fHi) continue;
+            if (f < fc / 3.0 || f > fc * 3.0) continue;
             if (a.extra.size() == a.freq.size() && a.extra[i] < 0.4) continue;
+            if (cohB (f) < 0.4) continue;
             const double db = b.dbAt (f), ph = b.phaseAt (f);
-            if (! std::isfinite (db) || ! std::isfinite (ph)) continue;
-            bins.push_back ({ f, std::pow (10.0, a.db[i] / 20.0), std::pow (10.0, db / 20.0), a.phase[i] * 3.14159265358979 / 180.0, ph * 3.14159265358979 / 180.0 });
+            if (! std::isfinite (db) || ! std::isfinite (ph) || ! std::isfinite (a.db[i]) || ! std::isfinite (a.phase[i])) continue;
+            const bool in = f >= fc / 2.0 && f <= fc * 2.0;
+            inner += in ? 1 : 0;
+            bins.push_back ({ f, std::pow (10.0, a.db[i] / 20.0), std::pow (10.0, db / 20.0), a.phase[i] * pi / 180.0, ph * pi / 180.0, in });
         }
-        if (bins.size() < 4) return false;
-        double best = -1.0;
-        for (double d = -20.0; d <= 20.0; d += 0.02)
+        if (inner < 4) return false;
+
+        // for each polarity: the delay that adds up best through fc/2 to 2fc, as the mean of |a + b|^2 / (|a| + |b|)^2
+        double bestSum[2] = { -1.0, -1.0 }, bestD[2] = { 0.0, 0.0 };
+        for (int p = 0; p < 2; ++p)
         {
-            double sum = 0.0;
+            const double flip = p == 0 ? 0.0 : pi;
+            for (double d = -20.0; d <= 20.0; d += 0.02)
+            {
+                double sum = 0.0;
+                for (const auto& x : bins)
+                {
+                    if (! x.inner) continue;
+                    const double ph = x.pb + flip - 2.0 * pi * x.w * d * 0.001;
+                    const double re = x.ma * std::cos (x.pa) + x.mb * std::cos (ph), im = x.ma * std::sin (x.pa) + x.mb * std::sin (ph);
+                    sum += (re * re + im * im) / ((x.ma + x.mb) * (x.ma + x.mb) + 1e-30);
+                }
+                if (sum > bestSum[p]) { bestSum[p] = sum; bestD[p] = d; }
+            }
+        }
+        // the share of the wider band where the phase difference stays within 45 degrees, at each polarity's best delay
+        auto slopesMeet = [&] (int p)
+        {
+            const double flip = p == 0 ? 0.0 : pi;
+            int ok = 0, n = 0;
             for (const auto& x : bins)
             {
-                const double ph = x.pb - 2.0 * 3.14159265358979 * x.w * d * 0.001;
-                const double re = x.ma * std::cos (x.pa) + x.mb * std::cos (ph), im = x.ma * std::sin (x.pa) + x.mb * std::sin (ph);
-                sum += (re * re + im * im) / ((x.ma + x.mb) * (x.ma + x.mb) + 1e-30);
+                double diff = x.pb + flip - 2.0 * pi * x.w * bestD[p] * 0.001 - x.pa;
+                diff = std::fmod (diff + pi, 2.0 * pi);
+                if (diff < 0.0) diff += 2.0 * pi;
+                diff -= pi;
+                ++n;
+                ok += std::abs (diff) <= pi / 4.0 ? 1 : 0;
             }
-            if (sum > best) { best = sum; bestMs = d; }
+            return n > 0 ? (double) ok / n : 0.0;
+        };
+        int pick = bestSum[1] > bestSum[0] ? 1 : 0;
+        const double dbApart = 10.0 * std::log10 (std::max (bestSum[0], bestSum[1]) / (std::min (bestSum[0], bestSum[1]) + 1e-30));
+        if (dbApart <= 0.3)
+        {
+            const double m0 = slopesMeet (0), m1 = slopesMeet (1);
+            if (std::abs (m0 - m1) > 1e-9) pick = m1 > m0 ? 1 : 0;
         }
+        bestMs = bestD[pick];
+        invert = pick == 1;
         return true;
     }
     // In phase, the two add up to this much more than the louder one alone.
@@ -251,6 +357,10 @@ struct SpeakerSystem
     // and each output keeps its own delay and trim. Off: every output gets its full settings.
     bool groupStage = false;
     xo::Capabilities caps;
+    static constexpr int kMaxOutputs = 8;
+    std::vector<bool> outputHasHp = std::vector<bool> (kMaxOutputs, true), outputHasLp = std::vector<bool> (kMaxOutputs, true);   // per output: a high-pass / low-pass available
+    bool outputOffersHp (int output) const { return output <= 0 || output > kMaxOutputs || outputHasHp[(size_t) (output - 1)]; }
+    bool outputOffersLp (int output) const { return output <= 0 || output > kMaxOutputs || outputHasLp[(size_t) (output - 1)]; }
     xo::Options opt;
     xo::Result lastResult;         // shown until something changes
     std::vector<Alignment> alignments;
@@ -284,15 +394,45 @@ struct SpeakerSystem
         const auto& s = sources[(size_t) i];
         // close-up measurements keep their own timing: no shift to the common reference
         const double used = s.nearField ? lockedDelayMs : s.imported ? lockedDelayMs + s.offsetMs : s.delayUsedMs;
-        return xo::fromTable (s.response, used, lockedDelayMs, grid);
+        auto r = xo::fromTable (s.response, used, lockedDelayMs, grid);
+        // the speaker's own filter was in the chain when the curve was taken (a published curve at its stated setting,
+        // a measurement at the setting of the day): take it out, so the chain can be modelled at any setting. Never
+        // more than 24 dB of it: past that the curve is noise, not the filter.
+        const double inHz = s.onboard.present ? (s.imported ? s.onboard.measuredAtHz : s.onboard.setHz) : 0.0;
+        if (inHz > 0.0)
+        {
+            const auto f = s.onboard.filterAt (inHz);
+            for (size_t j = 0; j < r.f.size(); ++j)
+            {
+                const cplx h = xo::response (f, ! s.onboard.lowPass, r.f[j]);
+                const double mag = std::abs (h);
+                r.h[j] /= mag > 0.063 ? h : h * (0.063 / mag);   // the phase always, the level by at most 24 dB
+            }
+        }
+        return r;
+    }
+
+    // The speaker's own filter as set now (its response at f), on top of the bare speaker.
+    cplx onboardAt (int i, double f) const
+    {
+        const auto& s = sources[(size_t) i];
+        if (! s.onboard.present || s.onboard.setHz <= 0.0) return { 1.0, 0.0 };
+        return xo::response (s.onboard.filterAt (s.onboard.setHz), ! s.onboard.lowPass, f);
     }
 
     xo::Response processedResponse (int i, const std::vector<double>& grid) const
     {
         auto r = rawResponse (i, grid);
-        if (! r.empty()) r = xo::processed (r, sources[(size_t) i].proc);
+        if (! r.empty())
+        {
+            r = xo::processed (r, sources[(size_t) i].proc);
+            for (size_t j = 0; j < r.f.size(); ++j) r.h[j] *= onboardAt (i, r.f[j]);
+        }
         return r;
     }
+
+    // A speaker's own filter that cannot be bypassed must be modelled wherever its response is used with its processing.
+    bool onboardFixed (int i) const { return i >= 0 && i < (int) sources.size() && sources[(size_t) i].onboard.usable() && ! sources[(size_t) i].onboard.bypassable; }
 
     // ---- groups: a lead and the speakers set to share its settings (Main L with Main R and the centre ...) ----
     static const char* rolePlural (int role)
@@ -381,6 +521,13 @@ struct SpeakerSystem
     }
     // The generator output that plays `members`: their shared output, or 0 (all outputs; the others are muted at the
     // console or processor).
+    // The reference end's processor delay now: the member the alignment was lined up to (a set measured one side at
+    // a time), otherwise its lead. What `Alignment::neededMs` takes.
+    double refDelayNow (const Alignment& a) const
+    {
+        const int i = a.refSpeaker();
+        return i >= 0 && i < (int) sources.size() ? sources[(size_t) i].proc.delayMs : 0.0;
+    }
     int sharedOutput (const std::vector<int>& members) const
     {
         int o = -1;
@@ -681,6 +828,187 @@ struct SpeakerSystem
         return 500.0;
     }
 
+    // ---- a speaker data file's extras ----
+    // Keys a response file may carry as "* key=value" lines (LiveAlign's own, or added by hand to a maker's FRD):
+    //   onboard=lpf|hpf   onboard-family=butterworth|linkwitz-riley|bessel|unknown   onboard-slope=24
+    //   onboard-freqs=80/100/120  or  onboard-range=60-200   onboard-bypass=yes|no   onboard-measured-at=100
+    //   onboard-latency-ms=1.3   min-safe-hpf=55   min-safe-hpf-slope=24   rms-volt-limit=48
+    // Files without them load as before.
+    static void applyFileExtras (SpeakerSource& s, const FreqTable& t)
+    {
+        auto has = [&t] (const char* k) { return ! t.metaValue (k).empty(); };
+        auto str = [&t] (const char* k) { return juce::String (t.metaValue (k)).trim().toLowerCase(); };
+        auto num = [&t] (const char* k) { return juce::String (t.metaValue (k)).getDoubleValue(); };
+        if (has ("onboard"))
+        {
+            SpeakerSource::Onboard o;
+            o.lowPass = str ("onboard").startsWith ("l");
+            const auto fam = str ("onboard-family");
+            o.type = fam.startsWith ("butter") ? xo::Butterworth : fam.startsWith ("link") ? xo::LinkwitzRiley : fam.startsWith ("bess") ? xo::Bessel : 0;
+            if (has ("onboard-slope")) o.slope = juce::jlimit (6, 48, ((int) num ("onboard-slope") / 6) * 6);
+            if (has ("onboard-freqs"))
+            {
+                juce::StringArray c;
+                c.addTokens (str ("onboard-freqs"), "/,; ", {});
+                for (const auto& v : c) if (v.getDoubleValue() > 0.0) o.choices.push_back (v.getDoubleValue());
+                std::sort (o.choices.begin(), o.choices.end());
+            }
+            else if (has ("onboard-range"))
+            {
+                const auto r = str ("onboard-range");
+                o.rangeLo = r.upToFirstOccurrenceOf ("-", false, false).getDoubleValue();
+                o.rangeHi = r.fromFirstOccurrenceOf ("-", false, false).getDoubleValue();
+            }
+            if (has ("onboard-bypass")) o.bypassable = ! (str ("onboard-bypass").startsWith ("n") || str ("onboard-bypass") == "0" || str ("onboard-bypass").startsWith ("f"));
+            if (has ("onboard-measured-at")) o.measuredAtHz = num ("onboard-measured-at");
+            o.latencyMs = has ("onboard-latency-ms") ? std::max (0.0, num ("onboard-latency-ms")) : -1.0;
+            o.present = ! o.choices.empty() || o.rangeHi > o.rangeLo;
+            if (o.present) o.setHz = o.snap (o.measuredAtHz > 0.0 ? o.measuredAtHz : (! o.choices.empty() ? o.choices.front() : o.rangeLo));
+            s.onboard = o;
+        }
+        if (has ("min-safe-hpf")) s.minSafeHpHz = std::max (0.0, num ("min-safe-hpf"));
+        if (has ("min-safe-hpf-slope")) s.minSafeHpSlope = juce::jlimit (6, 48, ((int) num ("min-safe-hpf-slope") / 6) * 6);
+        if (has ("rms-volt-limit")) s.rmsVoltLimit = std::max (0.0, num ("rms-volt-limit"));
+    }
+
+    // ---- the crossover search over the whole chain ----
+    // Candidate tags: what the low source's processor output does about its own filter.
+    enum XoTag { TagPlain = 0, TagOnboardOut = 1, TagStacked = 2 };
+
+    // Every setting the chain can take through the search window: the processor's filters at the frequencies it
+    // can be set to, and the speakers' own filters where they are in the chain. A speaker's filter that cannot be
+    // bypassed is modelled at each of its settings; the processor's matching filter is then OUT (the speaker's own
+    // filter does the job), and stacking the processor's filter on top is offered as a labelled alternative.
+    // `goal`: 0 smoothest sum, 1 balanced, 2 max headroom (how much a crossover near a speaker's safe limit costs).
+    // Nothing the chain cannot produce is ever offered; `why` says so when nothing is left.
+    std::vector<xo::Candidate> chainCandidates (double fLo, double fHi, int goal, std::string* why = nullptr) const
+    {
+        std::vector<xo::Candidate> out;
+        if (! pairValid()) return out;
+        const auto& hiS = sources[(size_t) xoHigh];
+        const auto& loS = sources[(size_t) xoLow];
+        const bool hpOffered = outputOffersHp (hiS.output), lpOffered = outputOffersLp (loS.output);
+        const bool loFixed = onboardFixed (xoLow) && loS.onboard.lowPass;
+        const bool hiFixed = onboardFixed (xoHigh) && ! hiS.onboard.lowPass;
+        // the headroom penalty: a crossover below a top's safe high-pass, or close to it (dB of cost per octave under)
+        const double headroomWeight = goal == 0 ? 0.0 : goal == 1 ? 1.0 : 3.0;
+        auto protectionCost = [&] (double fcHp, int hpSlope) -> double
+        {
+            if (hiS.minSafeHpHz <= 0.0) return 0.0;
+            // an equal or steeper slope at or above the safe frequency protects fully; under it, the cost grows per octave
+            const double under = std::log2 (hiS.minSafeHpHz / fcHp) + (hpSlope < hiS.minSafeHpSlope ? 0.25 : 0.0);
+            return under > 0.0 ? headroomWeight * under * 2.0 : headroomWeight * 0.15 * std::max (0.0, 1.0 - std::log2 (fcHp / hiS.minSafeHpHz));
+        };
+        // the frequencies to try on the processor side
+        std::vector<double> procFreqs;
+        {
+            double last = -1.0;
+            for (double fc = fLo; fc <= fHi * 1.0001; fc *= std::pow (2.0, 1.0 / 24.0))
+            {
+                const double fs = caps.snapFreq (fc);
+                if (std::abs (fs - last) > 1e-6) procFreqs.push_back (fs);
+                last = fs;
+            }
+        }
+        // the low side's own filter settings to try (a fixed one: each of its choices or the processor grid in its range)
+        std::vector<double> loOwn;
+        if (loFixed)
+        {
+            if (! loS.onboard.choices.empty()) loOwn = loS.onboard.choices;
+            else for (double f : procFreqs) if (f >= loS.onboard.rangeLo && f <= loS.onboard.rangeHi) loOwn.push_back (f);
+            loOwn.erase (std::remove_if (loOwn.begin(), loOwn.end(), [&] (double f) { return f < fLo / 1.5 || f > fHi * 1.5; }), loOwn.end());
+            if (loOwn.empty() && ! loS.onboard.choices.empty()) loOwn = loS.onboard.choices;   // outside the window: still the only settings it has
+        }
+        std::vector<double> hiOwn;
+        if (hiFixed)
+        {
+            if (! hiS.onboard.choices.empty()) hiOwn = hiS.onboard.choices;
+            else for (double f : procFreqs) if (f >= hiS.onboard.rangeLo && f <= hiS.onboard.rangeHi) hiOwn.push_back (f);
+        }
+        for (int type = 1; type <= 3; ++type)
+        {
+            if (! caps.types[type]) continue;
+            for (int si = 0; si < 8; ++si)
+            {
+                const int slope = (si + 1) * 6;
+                if (! caps.slopes[si] || ! xo::slopeValid (type, slope)) continue;
+                if (! loFixed && ! hiFixed)
+                {
+                    if (! hpOffered && ! lpOffered) continue;
+                    for (double fc : procFreqs)
+                    {
+                        xo::Candidate c;
+                        c.fc = fc;
+                        if (hpOffered) c.hp = { type, slope, fc };
+                        if (lpOffered) c.lp = { type, slope, fc };
+                        c.extraCost = protectionCost (fc, hpOffered ? slope : 0);
+                        out.push_back (c);
+                    }
+                    continue;
+                }
+                // the low speaker's own low-pass is always in: at each of its settings, the top's high-pass at the same
+                // frequency (OUT on the sub's output), or stacked with the processor's low-pass too
+                for (double own : loFixed ? loOwn : std::vector<double> { 0.0 })
+                    for (double hown : hiFixed ? hiOwn : std::vector<double> { 0.0 })
+                    {
+                        const double fc = own > 0.0 ? own : hown;
+                        if (fc <= 0.0) continue;
+                        const double fp = caps.snapFreq (fc);
+                        xo::Candidate c;
+                        c.fc = fc;
+                        if (own > 0.0) c.lowExtra = loS.onboard.filterAt (own);
+                        if (hown > 0.0) c.highExtra = hiS.onboard.filterAt (hown);
+                        if (hpOffered && hown <= 0.0) c.hp = { type, slope, fp };
+                        if (lpOffered && own <= 0.0) c.lp = { type, slope, fp };
+                        c.tag = TagOnboardOut;
+                        c.extraCost = protectionCost (fc, hown > 0.0 ? hiS.onboard.slope : (hpOffered ? slope : 0));
+                        // a processor filter of the same family and slope as the speaker's own keeps the two sides'
+                        // phase together through the overlap (complementary filters): preferred when the sums are close
+                        if (own > 0.0 && loS.onboard.type == type && loS.onboard.slope == slope) c.extraCost -= 0.1;
+                        if (hown > 0.0 && hiS.onboard.type == type && hiS.onboard.slope == slope) c.extraCost -= 0.1;
+                        out.push_back (c);
+                        // stacked: the processor's filter on top of the speaker's own, as a labelled alternative
+                        if ((own > 0.0 && lpOffered) || (hown > 0.0 && hpOffered))
+                        {
+                            xo::Candidate st = c;
+                            if (own > 0.0 && lpOffered) st.lp = { type, slope, fp };
+                            if (hown > 0.0 && hpOffered) st.hp = { type, slope, fp };
+                            st.tag = TagStacked;
+                            st.extraCost += 0.3;   // the plain chain first, when the two are close
+                            out.push_back (st);
+                        }
+                    }
+            }
+        }
+        if (out.empty() && why != nullptr)
+        {
+            if (! hpOffered && ! lpOffered) *why = "Neither output offers a filter: enter what the processor has (Processor details).";
+            else if (loFixed && loOwn.empty()) *why = "The " + loS.name.toStdString() + "'s own low-pass has no setting inside the search range.";
+            else *why = "No filter type and slope is enabled for your processor.";
+        }
+        return out;
+    }
+
+    // What each device is set to for the crossover: the speakers' own switches and the processor's outputs, by name.
+    juce::String chainSettingsText (const xo::Result& r) const
+    {
+        if (! r.valid || ! pairValid()) return {};
+        const auto& hiS = sources[(size_t) xoHigh];
+        const auto& loS = sources[(size_t) xoLow];
+        auto filt = [] (const xo::Filter& f, const char* what) -> juce::String
+        {
+            if (! f.active()) return juce::String (what) + " OUT";
+            return juce::String (what) + " " + juce::String (juce::roundToInt (f.freq)) + " Hz " + xo::typeShort (f.type) + juce::String (f.slope);
+        };
+        juce::StringArray parts;
+        if (r.lowExtra.active()) parts.add (loS.name + ": onboard " + filt (r.lowExtra, "LPF"));
+        if (r.highExtra.active()) parts.add (hiS.name + ": onboard " + filt (r.highExtra, "HPF"));
+        auto outName = [] (const SpeakerSource& s) { return s.output > 0 ? "Processor out " + juce::String (s.output) + " (" + s.name + ")" : "Processor (all outputs, " + s.name + ")"; };
+        parts.add (outName (loS) + ": " + filt (r.lowFilter, "LPF") + (r.lowFilter.active() ? "" : r.lowExtra.active() ? " (the speaker's own filter does it)" : ""));
+        parts.add (outName (hiS) + ": " + filt (r.filter, "HPF"));
+        return parts.joinIntoString ("  ·  ");
+    }
+
     // ---- XML ----
     static void saveFilter (juce::XmlElement& e, const juce::String& k, const xo::Filter& f)
     {
@@ -717,6 +1045,20 @@ struct SpeakerSystem
         for (bool b : caps.slopes) slopes << (b ? "1" : "0");
         e->setAttribute ("types", types);
         e->setAttribute ("slopes", slopes);
+        e->setAttribute ("procFreqLo", caps.freqLo);
+        e->setAttribute ("procFreqHi", caps.freqHi);
+        e->setAttribute ("procFreqStepHz", caps.freqStepHz);
+        e->setAttribute ("procFreqStepOct", caps.freqStepOct);
+        e->setAttribute ("procDelayMaxMs", caps.delayMaxMs);
+        e->setAttribute ("procLimiterUnit", caps.limiterUnit);
+        e->setAttribute ("procFullScaleDbu", caps.fullScaleDbu);
+        for (int o = 0; o < (int) outputHasHp.size(); ++o)
+        {
+            auto* oe = e->createNewChildElement ("Output");
+            oe->setAttribute ("n", o + 1);
+            oe->setAttribute ("hp", outputHasHp[(size_t) o]);
+            oe->setAttribute ("lp", outputHasLp[(size_t) o]);
+        }
 
         for (const auto& a : alignments)
         {
@@ -737,6 +1079,10 @@ struct SpeakerSystem
             c->setAttribute ("xoOffsetMs", a.xoOffsetMs);
             c->setAttribute ("phaseValid", a.phaseValid);
             c->setAttribute ("phaseDelayMs", a.phaseDelayMs);
+            if (a.phaseInvert) c->setAttribute ("phaseInvert", true);
+            if (a.refInvertAtMeasure) c->setAttribute ("refInvertAtMeasure", true);
+            if (a.alignInvertAtMeasure) c->setAttribute ("alignInvertAtMeasure", true);
+            if (a.refMemberUsed >= 0) c->setAttribute ("refMemberUsed", a.refMemberUsed);
             c->setAttribute ("refDelayAtMeasure", a.refDelayAtMeasure);
             c->setAttribute ("alignDelayAtMeasure", a.alignDelayAtMeasure);
             c->setAttribute ("checkFreq", a.checkFreq);
@@ -787,6 +1133,24 @@ struct SpeakerSystem
             if (s.directivityQ > 0.0) c->setAttribute ("directivityQ", s.directivityQ);
             if (s.coverH > 0.0 && s.coverV > 0.0) { c->setAttribute ("coverH", s.coverH); c->setAttribute ("coverV", s.coverV); }
             if (s.hpProtective) c->setAttribute ("hpProtective", true);
+            if (s.onboard.present)
+            {
+                auto* ob = c->createNewChildElement ("Onboard");
+                ob->setAttribute ("lowPass", s.onboard.lowPass);
+                ob->setAttribute ("type", s.onboard.type);
+                ob->setAttribute ("slope", s.onboard.slope);
+                juce::StringArray ch;
+                for (double v : s.onboard.choices) ch.add (juce::String (v));
+                ob->setAttribute ("choices", ch.joinIntoString ("/"));
+                ob->setAttribute ("rangeLo", s.onboard.rangeLo);
+                ob->setAttribute ("rangeHi", s.onboard.rangeHi);
+                ob->setAttribute ("bypassable", s.onboard.bypassable);
+                ob->setAttribute ("measuredAtHz", s.onboard.measuredAtHz);
+                ob->setAttribute ("latencyMs", s.onboard.latencyMs);
+                ob->setAttribute ("setHz", s.onboard.setHz);
+            }
+            if (s.minSafeHpHz > 0.0) { c->setAttribute ("minSafeHpHz", s.minSafeHpHz); c->setAttribute ("minSafeHpSlope", s.minSafeHpSlope); }
+            if (s.rmsVoltLimit > 0.0) c->setAttribute ("rmsVoltLimit", s.rmsVoltLimit);
             if (s.ampGain.isNotEmpty()) c->setAttribute ("ampGain", s.ampGain);
             if (s.limiter.isNotEmpty()) c->setAttribute ("limiter", s.limiter);
             if (s.sheetEntered.isNotEmpty()) c->setAttribute ("sheetEntered", s.sheetEntered);
@@ -853,6 +1217,22 @@ struct SpeakerSystem
         const auto types = e->getStringAttribute ("types", "0110"), slopes = e->getStringAttribute ("slopes", "01110101");
         for (int i = 0; i < 4 && i < types.length(); ++i) caps.types[i] = types[i] == '1';
         for (int i = 0; i < 8 && i < slopes.length(); ++i) caps.slopes[i] = slopes[i] == '1';
+        caps.freqLo = juce::jlimit (1.0, 20000.0, e->getDoubleAttribute ("procFreqLo", 10.0));
+        caps.freqHi = juce::jlimit (caps.freqLo, 40000.0, e->getDoubleAttribute ("procFreqHi", 20000.0));
+        caps.freqStepHz = juce::jlimit (0.0, 100.0, e->getDoubleAttribute ("procFreqStepHz"));
+        caps.freqStepOct = juce::jlimit (0.0, 1.0, e->getDoubleAttribute ("procFreqStepOct"));
+        caps.delayMaxMs = juce::jlimit (0.0, 10000.0, e->getDoubleAttribute ("procDelayMaxMs"));
+        caps.limiterUnit = juce::jlimit (0, 2, e->getIntAttribute ("procLimiterUnit"));
+        caps.fullScaleDbu = juce::jlimit (-10.0, 40.0, e->getDoubleAttribute ("procFullScaleDbu", 20.0));
+        outputHasHp.assign (kMaxOutputs, true);
+        outputHasLp.assign (kMaxOutputs, true);
+        for (const auto* oe : e->getChildWithTagNameIterator ("Output"))
+        {
+            const int o = oe->getIntAttribute ("n") - 1;
+            if (o < 0 || o >= kMaxOutputs) continue;
+            outputHasHp[(size_t) o] = oe->getBoolAttribute ("hp", true);
+            outputHasLp[(size_t) o] = oe->getBoolAttribute ("lp", true);
+        }
 
         for (const auto* c : e->getChildWithTagNameIterator ("Source"))
         {
@@ -879,6 +1259,25 @@ struct SpeakerSystem
             s.coverH = juce::jlimit (0.0, 360.0, c->getDoubleAttribute ("coverH"));
             s.coverV = juce::jlimit (0.0, 360.0, c->getDoubleAttribute ("coverV"));
             s.hpProtective = c->getBoolAttribute ("hpProtective");
+            if (const auto* ob = c->getChildByName ("Onboard"))
+            {
+                s.onboard.present = true;
+                s.onboard.lowPass = ob->getBoolAttribute ("lowPass");
+                s.onboard.type = juce::jlimit (0, 3, ob->getIntAttribute ("type", xo::Butterworth));
+                s.onboard.slope = juce::jlimit (6, 48, ob->getIntAttribute ("slope", 24));
+                juce::StringArray ch;
+                ch.addTokens (ob->getStringAttribute ("choices"), "/", {});
+                for (const auto& v : ch) if (v.getDoubleValue() > 0.0) s.onboard.choices.push_back (v.getDoubleValue());
+                s.onboard.rangeLo = ob->getDoubleAttribute ("rangeLo");
+                s.onboard.rangeHi = ob->getDoubleAttribute ("rangeHi");
+                s.onboard.bypassable = ob->getBoolAttribute ("bypassable", true);
+                s.onboard.measuredAtHz = ob->getDoubleAttribute ("measuredAtHz");
+                s.onboard.latencyMs = ob->getDoubleAttribute ("latencyMs", -1.0);
+                s.onboard.setHz = ob->getDoubleAttribute ("setHz");
+            }
+            s.minSafeHpHz = juce::jlimit (0.0, 2000.0, c->getDoubleAttribute ("minSafeHpHz"));
+            s.minSafeHpSlope = juce::jlimit (6, 48, c->getIntAttribute ("minSafeHpSlope", 24));
+            s.rmsVoltLimit = juce::jlimit (0.0, 1000.0, c->getDoubleAttribute ("rmsVoltLimit"));
             s.ampGain = c->getStringAttribute ("ampGain");
             s.limiter = c->getStringAttribute ("limiter");
             s.sheetEntered = c->getStringAttribute ("sheetEntered");
@@ -973,6 +1372,11 @@ struct SpeakerSystem
             a.xoOffsetMs = c->getDoubleAttribute ("xoOffsetMs");
             a.phaseValid = c->getBoolAttribute ("phaseValid");
             a.phaseDelayMs = c->getDoubleAttribute ("phaseDelayMs");
+            a.phaseInvert = c->getBoolAttribute ("phaseInvert", false);
+            a.refInvertAtMeasure = c->getBoolAttribute ("refInvertAtMeasure", false);
+            a.alignInvertAtMeasure = c->getBoolAttribute ("alignInvertAtMeasure", false);
+            a.refMemberUsed = c->getIntAttribute ("refMemberUsed", -1);
+            if (a.refMemberUsed >= (int) sources.size() || ! a.refSet) a.refMemberUsed = -1;
             a.refDelayAtMeasure = c->getDoubleAttribute ("refDelayAtMeasure");
             a.alignDelayAtMeasure = c->getDoubleAttribute ("alignDelayAtMeasure");
             a.checkFreq = c->getDoubleAttribute ("checkFreq");

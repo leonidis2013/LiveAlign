@@ -104,7 +104,9 @@ public:
             sp.marker = proc.plan.ensureMarker (reaimPoints[k]);
             sp.x = proc.plan.items[(size_t) sp.marker].x;
             sp.y = proc.plan.items[(size_t) sp.marker].y;
-            sp.state = k == now ? GuideSpot::Now : remeasured.contains (reaimPoints[k]) ? GuideSpot::Done : GuideSpot::ToDo;
+            // the pass measures every point with a mic in it, so those are "now" with the lead point
+            const bool inNow = now >= 0 && (k == now || (! remeasured.contains (reaimPoints[k]) && proc.micAtPoint (reaimPoints[k]) >= 0 && proc.micAtPoint (reaimPoints[k]) != micAt (reaimPoints[now])));
+            sp.state = inNow ? GuideSpot::Now : remeasured.contains (reaimPoints[k]) ? GuideSpot::Done : GuideSpot::ToDo;
             if (sp.state == GuideSpot::Now) { sp.mic = micAt (reaimPoints[k]); sp.speaker = reaimSpk; sp.how = "seated ear height, " + aimHowText (proc, sp.mic, RoomAim); }
             out.push_back (sp);
         }
@@ -125,26 +127,41 @@ public:
         const int mic = micAt (point);
         proc.setMicPosition (mic, point);
         const int spk = reaimSpk;
-        const bool ok = runner.start (proc.system.sources[(size_t) spk].output, mic, -1, [this, spk, point] (const MeasureRunner::Result& r)
+        // every ticked point with a mic in it is measured in the same pass
+        std::vector<int> mics { mic };
+        for (int m = 0; m < proc.tuningMicCount(); ++m)
+            if (m != mic && proc.mics.position[(size_t) m].isNotEmpty() && proc.level.points.contains (proc.mics.position[(size_t) m])) mics.push_back (m);
+        double lo, hi;
+        proc.system.playRange (spk, lo, hi);
+        const bool ok = runner.start (proc.system.sources[(size_t) spk].output, mics, -1, [this, spk] (const std::vector<MeasureRunner::Result>& rs)
         {
-            if (! r.ok) { status = r.error; repaint(); return; }
-            LevelReading rd;
-            rd.spk = spk;
-            rd.point = point;
-            rd.when = juce::Time::getCurrentTime().formatted ("%H:%M");
-            rd.tf = twelfthOctave (r.tf);
-            rd.hasArrival = r.hasArrival;
-            rd.arrivalMs = r.arrivalMs;
-            rd.delayAtMs = proc.system.sources[(size_t) spk].proc.delayMs;
-            rd.trimAtDb = proc.system.sources[(size_t) spk].trimDb;
-            rd.eqAtDb = LevelBalance::eqInRange (proc.system, spk);
-            proc.level.set (std::move (rd));   // Level balance sees the new aim too
+            if (rs.empty() || ! rs.front().ok) { status = rs.empty() ? juce::String ("No result.") : rs.front().error; repaint(); return; }
+            juce::StringArray got;
+            for (const auto& r : rs)
+            {
+                if (! r.ok || ! proc.level.points.contains (r.point)) continue;
+                LevelReading rd;
+                rd.spk = spk;
+                rd.point = r.point;
+                rd.mic = r.mic;
+                rd.when = juce::Time::getCurrentTime().formatted ("%H:%M");
+                rd.tf = twelfthOctave (r.tf);
+                rd.hasArrival = r.hasArrival;
+                rd.arrivalMs = r.arrivalMs;
+                rd.delayAtMs = proc.system.sources[(size_t) spk].proc.delayMs;
+                rd.trimAtDb = proc.system.sources[(size_t) spk].trimDb;
+                rd.eqAtDb = LevelBalance::eqInRange (proc.system, spk);
+                rd.genDb = r.genDb;
+                rd.splDbA = r.splDbA;
+                proc.level.set (std::move (rd));   // Level balance sees the new aim too
+                if (reaimPoints.contains (r.point)) remeasured.addIfNotAlreadyThere (r.point);
+                got.add (r.point + " " + juce::String (levelOf (spk, r.point), 1) + " dB");
+            }
             proc.level.applied = false;
-            remeasured.addIfNotAlreadyThere (point);
             ++serial;
-            status = proc.system.nameOf (spk) + " at " + point + ": " + juce::String (levelOf (spk, point), 1) + " dB.";
+            status = proc.system.nameOf (spk) + " at " + got.joinIntoString (", ") + ".";
             changed();
-        });
+        }, lo, hi);
         if (! ok) status = runner.lastError();
         return ok;
     }

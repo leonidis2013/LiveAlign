@@ -30,6 +30,8 @@ inline const std::vector<Term>& glossary()
         { "Clock sync", "Every digital device has a clock. Two linked digitally (a console's AES, ADAT or Dante feed into an interface) must run on one of them, or a sample slips every few seconds: a click at a steady interval. Lock one to the other (word clock, or the interface set to follow its digital input). An analog cable carries no clock, so it cannot happen there." },
         { "Coherence", "How much of what the mic hears is the signal you are playing (1) rather than noise or the room (0). Below about 0.6 a reading is not to be trusted, so it is greyed out." },
         { "Compression", "When a system is pushed, the amps or limiters stop the level rising as fast as the signal: 3 dB more in gives less than 3 dB more out. Gain and headroom looks for it." },
+        { "Built-in filter", "A filter inside a speaker (a powered sub's own low-pass, a column's own high-pass). Entered on Speakers (Built in): the crossover search models it with the processor's filters; when it cannot be bypassed the processor's matching filter is set OUT and the speaker's switch does the job." },
+        { "Safe high-pass", "The lowest high-pass a speaker should be run with, from its data sheet (Limits on Speakers). Below it the drivers waste their excursion on what they cannot play: the search keeps clear of it, and says what a lower crossover costs in maximum output." },
         { "Coverage", "How evenly a speaker reaches the seats it is meant for. The spec (plus or minus 3 dB by default) is how much the level may vary across its area; AVIXA A102.01 (Audio Coverage Uniformity) rates a system the same way." },
         { "Critical distance", "Where the direct sound from a speaker and the room's reverberant sound are equally loud. Beyond it the room dominates and EQ helps less. Depends on the speaker's directivity (Q) and the room." },
         { "Crossover", "Where the sub hands over to the tops: a low-pass on the sub and a high-pass on the tops, at the same frequency, so they add up to a flat response." },
@@ -71,7 +73,7 @@ inline const std::vector<Term>& glossary()
         { "Sweep", "A tone that glides from low to high. Sweeps give long, clean impulse responses for the room acoustics." },
         { "Target curve", "The tonal balance to tune toward: usually a gentle tilt with more low end, as people prefer for music and speech." },
         { "Time alignment", "Delaying the speaker that arrives first so two speakers arrive together where they overlap." },
-        { "Transfer function", "What the system does to the signal: the mic against the reference, level (magnitude) and phase per frequency. The main view for tuning (a dual-channel FFT, as in Smaart or SIM)." },
+        { "Transfer function", "What the system does to the signal: the mic against the reference, level (magnitude) and phase per frequency. The main view for tuning (a dual-channel FFT, as in the usual system analysers)." },
         { "Treble ratio", "The reverberation at 2 - 4 kHz against 500 Hz - 1 kHz. Low is a dull room, high a bright one." },
         { "Trim", "A small level change on an output (from Level balance), on top of its gain." },
         { "Ts", "Centre time (ISO 3382-1): the 'centre of gravity' of the impulse response (ms). Lower is clearer." },
@@ -91,7 +93,7 @@ inline juce::StringArray termsFor (int page)
         case Page::Speakers: return { "Group", "Directivity (Q)", "Polarity", "Critical distance" };
         case Page::Plan: return { "Coverage" };
         case Page::Response: return { "Transfer function", "Polarity", "Phase", "Coherence", "Calibration file" };
-        case Page::Crossover: return { "Crossover", "Phase", "Polarity", "Delay" };
+        case Page::Crossover: return { "Crossover", "Built-in filter", "Safe high-pass", "Phase", "Polarity", "Delay" };
         case Page::Level: return { "Level balance", "Trim" };
         case Page::Coverage: return { "Coverage", "Directivity (Q)" };
         case Page::Align: return { "Time alignment", "Set (Stereo)", "Delay", "Impulse response", "Speed of sound" };

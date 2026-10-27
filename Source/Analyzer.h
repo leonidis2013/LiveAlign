@@ -19,6 +19,7 @@
 #include "Analysis/SplMeter.h"
 #include "Analysis/DelayFinder.h"
 #include "Analysis/FreqTable.h"
+#include "Analysis/FeedbackDetector.h"
 
 namespace la
 {
@@ -100,6 +101,24 @@ struct DelayReport
     std::array<double, kMaxMics> ms {};
     std::array<bool, kMaxMics> inverted {};
     std::array<double, kMaxMics> confidenceDb {};
+    bool tracked = false;        // found by the delay tracking (applied only when it moved past the dead band)
+};
+
+// One interval of the show's sound level log, measured on the monitoring mic (slot 1) by the meter itself:
+// LAeq and LCeq over the interval, the Fast meter's maximum and the largest C-weighted peak. dB SPL when the mic is
+// calibrated, else dBFS.
+struct LogPoint
+{
+    double t = 0.0;              // when the interval started (seconds since 1970)
+    float la = -200.0f, lc = -200.0f, laMax = -200.0f, lcPeak = -200.0f;
+    bool isSpl = false;
+};
+
+// A ring the feedback watch caught in the monitoring mic's spectrum.
+struct FeedbackHit
+{
+    double t = 0.0;              // seconds since 1970
+    double freq = 0.0, prominenceDb = 0.0, cutDb = 0.0;
 };
 
 class Analyzer : private juce::Thread
@@ -142,6 +161,34 @@ public:
     // ---- message thread ----
     void requestLoopbackCheck() { loopbackRequested = true; }
     void requestNoiseMeasurement (double seconds) { noiseSeconds = juce::jlimit (1.0, 60.0, seconds); noiseRequested = true; }
+
+    // ---- the show's watchers (the processor drives them; they run whether or not a window is open) ----
+    // The sound level log: while on, a point every `intervalSec` of audio from the monitoring mic (slot 1), measured
+    // over the whole interval. The points wait here until the processor takes them.
+    void setLogging (bool on, double intervalSec) { logOn = on; logSec = juce::jlimit (1.0, 60.0, intervalSec); }
+    std::vector<LogPoint> takeLogPoints()
+    {
+        const std::lock_guard<std::mutex> lock (snapMutex);
+        std::vector<LogPoint> out;
+        out.swap (logPoints);
+        return out;
+    }
+    // The feedback watch: the newest spectrum of the shown mic goes through the ring detector on this thread. The
+    // sensitivity is the Settings value (0 low, 1 normal, 2 high). Reset: the rings it reported are forgotten, so a
+    // ring that comes back is reported again.
+    void setFeedbackWatch (bool on) { fbWatchOn = on; }
+    void setFeedbackSensitivity (int sense) { fbSense = juce::jlimit (0, 2, sense); }
+    void requestFeedbackReset() { fbResetRequested = true; }
+    std::vector<FeedbackHit> takeFeedbackHits()
+    {
+        const std::lock_guard<std::mutex> lock (snapMutex);
+        std::vector<FeedbackHit> out;
+        out.swap (fbHits);
+        return out;
+    }
+    // Delay tracking: find the delay again on the programme, and follow it only when it moved past the dead band
+    // (3 samples or 0.25 ms); a small move keeps the transfer function's average (see TransferEngine).
+    void requestTrackDelay() { trackRequested = true; }
 
     void setCalibration (int mic, const FreqTable& t, const juce::String& name)
     {
@@ -195,6 +242,7 @@ private:
         SplMeter spl, noiseMeter;
         std::vector<float> raw;
         FreqTable cal;
+        bool delayTracked = false;   // the next delay to apply came from the tracking: keep the average if it can
     };
 
     void run() override
@@ -259,7 +307,9 @@ private:
                 m.spl.prepare (sr);
                 m.noiseMeter.prepare (sr);
                 m.noiseRta.prepare (sr, rtaN, rtaN / 8);
-                m.noiseRta.setTimeConstant (1000.0);
+                // the noise floor's bands are a plain average over the whole capture: a time constant far longer than
+                // any capture leaves the frame count as the only weighting (1/frames)
+                m.noiseRta.setTimeConstant (1.0e9);
                 m.raw.assign ((size_t) rawLen, 0.0f);
             }
             rtaRef.prepare (sr, rtaN, rtaN / 8);
@@ -298,8 +348,24 @@ private:
             m.tf.setAverages (settings.averages.load());
             m.tf.setMultiWindow (settings.multiWindow.load());
             m.tf.setMagnitudeThreshold (settings.magThresholdDb.load());
-            m.tf.setDelaySamples ((int) std::lround (settings.micDelayMs[i].load() * 0.001 * sr));
+            const int d = (int) std::lround (settings.micDelayMs[i].load() * 0.001 * sr);
+            // a delay the tracking found keeps the average when it can; one set by hand (Find, a nudge) restarts it
+            if (m.delayTracked) { m.delayTracked = false; m.tf.setDelaySamplesTracked (d); }
+            else m.tf.setDelaySamples (d);
         }
+
+        const int sense = fbSense.load();
+        if (sense != appliedFbSense)
+        {
+            appliedFbSense = sense;
+            // Stricter than the feedback test: music and speech have peaks too. A ring stands out for seconds at one
+            // pitch, holding its level, with no overtones (a held note has them, a singer's vibrato moves, a note
+            // dies away). Low waits longer for a bigger peak, High takes a smaller, shorter one.
+            static const double prom[] = { 21.0, 18.0, 15.0 };
+            static const double secs[] = { 4.0, 3.0, 2.0 };
+            fbDetector.setOptions ({ 80.0, 12000.0, prom[sense], 12, 3, 1.0 / 12.0, secs[sense], 1.0 / 48.0, 6.0, true });
+        }
+        if (fbResetRequested.exchange (false)) fbDetector.reset();
     }
 
     std::vector<double> binGains (const FreqTable& c, int n) const
@@ -337,6 +403,31 @@ private:
             if (running) { c.tf.push (mic, ref, n); c.rta.push (mic, n); }
         }
         if (running) rtaRef.push (ref, n);
+
+        // the show log: a point per interval of audio from the monitoring mic (slot 1), timed by the audio itself
+        {
+            const bool on = logOn.load();
+            if (on != logWasOn)
+            {
+                logWasOn = on;
+                chains[0].spl.takeInterval();   // the first point starts now, whole
+            }
+            if (on && chains[0].spl.intervalSeconds() >= logSec.load())
+            {
+                const auto iv = chains[0].spl.takeInterval();
+                const float offset = offsetFor (0);
+                LogPoint p;
+                p.t = (double) juce::Time::currentTimeMillis() / 1000.0 - iv.seconds;
+                p.la = (float) iv.laeq + offset;
+                p.lc = (float) iv.lceq + offset;
+                p.laMax = (float) iv.lafMax + offset;
+                p.lcPeak = (float) iv.lcPeak + offset;
+                p.isSpl = settings.micSplCalibrated[0].load();
+                const std::lock_guard<std::mutex> lock (snapMutex);
+                if (logPoints.size() >= 4096) logPoints.erase (logPoints.begin());   // nobody is taking them: keep the memory bounded
+                logPoints.push_back (p);
+            }
+        }
 
         if (noiseActive)
         {
@@ -402,8 +493,8 @@ private:
 
         if (loopbackRequested.exchange (false))
         {
-            // The most recent ~1.4 s (the check runs the generator for about two seconds).
-            const int n = rawLen / 2;
+            // The most recent half second (the check plays pink noise for 0.6 s; the round trip may take up to 0.25 s).
+            const int n = juce::jmin (rawLen, (int) std::lround (0.5 * sr));
             const auto g = lastSamples (rawGen, n), r = lastSamples (rawRef, n);
             double eg = 0.0, er = 0.0;
             for (int i = 0; i < n; ++i) { eg += (double) g[(size_t) i] * g[(size_t) i]; er += (double) r[(size_t) i] * r[(size_t) i]; }
@@ -431,12 +522,17 @@ private:
         if (settings.requestResetLeq.exchange (false)) { for (auto& c : chains) c.spl.resetLeq(); dirty = true; }
         if (settings.requestClearPeak.exchange (false)) { for (auto& c : chains) c.rta.clearPeak(); dirty = true; }
 
-        // Find delay: every mic at once, each gets its own compensation.
-        if (settings.requestFindDelay.exchange (false))
+        // Find delay: every mic at once, each gets its own compensation. By hand (Find) the new delay is always
+        // applied and the average restarts; from the tracking it is applied only when it moved past the dead band,
+        // and then without restarting the average when the move is small.
+        const bool manual = settings.requestFindDelay.exchange (false);
+        const bool tracked = trackRequested.exchange (false);
+        if (manual || tracked)
         {
             const auto r = lastSamples (rawRef, rawLen);
             DelayReport rep;
             rep.micCount = count;
+            rep.tracked = tracked && ! manual;
             // the reference's spectrum once, every mic against it
             std::vector<std::vector<float>> micData;
             std::vector<const float*> micPtrs;
@@ -450,7 +546,18 @@ private:
                 rep.ms[(size_t) m] = res.samples * 1000.0 / sr;
                 rep.inverted[(size_t) m] = res.inverted;
                 rep.confidenceDb[(size_t) m] = res.peakToNoiseDb;
-                if (res.valid) settings.micDelayMs[m] = (float) juce::jlimit (0.0, 2000.0, rep.ms[(size_t) m]);
+                if (! res.valid) continue;
+                const float ms = (float) juce::jlimit (0.0, 2000.0, rep.ms[(size_t) m]);
+                if (rep.tracked)
+                {
+                    if (res.peakToNoiseDb < 10.0) continue;   // not clear enough to follow (the panel's own bar)
+                    // the same dead band as the engine's, in samples, so the setting and the engine stay together
+                    const int now = (int) std::lround (settings.micDelayMs[m].load() * 0.001 * sr);
+                    const int found = (int) std::lround (ms * 0.001 * sr);
+                    if (std::abs (found - now) <= TransferEngine::trackedDeadBand (sr)) continue;
+                    chains[(size_t) m].delayTracked = true;
+                }
+                settings.micDelayMs[m] = ms;
             }
             const std::lock_guard<std::mutex> lock (snapMutex);
             rep.serial = delayReport.serial + 1;
@@ -575,6 +682,25 @@ private:
             for (size_t i = 0; i < p.size(); ++i) s.wfRefLine[i] = (float) powerToDbfs (p[i]);
         }
 
+        // The feedback watch: each new spectrum frame of the shown mic through the ring detector (here, so it watches
+        // with the window closed; the detector allocates, which is fine on this thread).
+        if (fbWatchOn.load() && s.wfFrame != fbFrame && ! s.wfLine.empty())
+        {
+            fbFrame = s.wfFrame;
+            const auto rings = fbDetector.push (s.wfFreq, s.wfLine, la::clock::ms() / 1000.0);
+            if (! rings.empty())
+            {
+                const double t = (double) juce::Time::currentTimeMillis() / 1000.0;
+                const std::lock_guard<std::mutex> lock (snapMutex);
+                for (const auto& r : rings)
+                {
+                    if (fbHits.size() >= 256) fbHits.erase (fbHits.begin());
+                    fbHits.push_back ({ t, r.freq, r.prominenceDb, r.cutDb });
+                }
+            }
+        }
+        else if (! fbWatchOn.load() && fbFrame != 0) { fbFrame = 0; fbDetector.reset(); }   // off: start afresh when it is back on
+
         // Impulse response: show from -5 ms
         std::vector<float> ir;
         chains[(size_t) one].tf.impulse (ir);
@@ -682,6 +808,17 @@ private:
     std::atomic<double> noiseSeconds { 5.0 };
     bool noiseActive = false;
     double noiseDone = 0.0;
+
+    // the show's watchers
+    std::atomic<bool> logOn { false }, fbWatchOn { false }, fbResetRequested { false }, trackRequested { false };
+    std::atomic<double> logSec { 5.0 };
+    std::atomic<int> fbSense { 1 };
+    bool logWasOn = false;
+    int appliedFbSense = -1;
+    fb::Detector fbDetector;
+    juce::uint64 fbFrame = 0;
+    std::vector<LogPoint> logPoints;       // under snapMutex
+    std::vector<FeedbackHit> fbHits;       // under snapMutex
 
     mutable std::mutex calMutex;
     std::array<FreqTable, kMaxMics> cal;

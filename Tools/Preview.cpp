@@ -886,7 +886,7 @@ public:
                     }
                     la::LockerMic m;
                     m.id = "preview";
-                    m.model = "UMIK-1";
+                    m.model = "Measurement mic";
                     m.serial = "7012345";
                     m.cals.name[0] = "7012345.txt";
                     m.cals.table[0].freq = { 20, 1000, 20000 };
@@ -1243,7 +1243,7 @@ public:
 
         // mic locker: save mic 1, change it, assign the saved mic to mic 3, check it came across
         const auto lockerBackup = la::MicLocker::file().loadFileAsString();
-        // two calibration files picked up by name: miniDSP style "7012345.txt" (0 deg) and "7012345_90deg.txt"
+        // two calibration files picked up by name: "7012345.txt" (0 deg) and "7012345_90deg.txt"
         const auto f0 = dir.getChildFile ("7012345.txt"), f90 = dir.getChildFile ("7012345_90deg.txt");
         f0.replaceWithText ("\"Sens Factor =-1.5dB\"\n20 1.5\n1000 0\n10000 1.0\n20000 -2.0\n");
         f90.replaceWithText ("20 1.5\n1000 0\n10000 4.0\n20000 6.0\n");
@@ -1256,8 +1256,8 @@ public:
         proc.setAimOverride (-1);
         proc.setMicAim (0, 0);
         {
-            juce::StringArray names { "7012345_90deg.txt", "SoundID Reference 38Y362 30deg.txt", "UMIK-1 7012345.txt", "ECM8000 90.txt", "mic_3012345.txt",
-                                      "M30 cal 45 deg.frd", "x_180deg.txt", "UMIK_60.txt" };
+            juce::StringArray names { "7012345_90deg.txt", "Reference 38Y362 30deg.txt", "Model-1 7012345.txt", "M8000 90.txt", "mic_3012345.txt",
+                                      "M30 cal 45 deg.frd", "x_180deg.txt", "Mic_60.txt" };
             juce::String got;
             for (const auto& n : names) got << la::calAngleName (la::MicCalSet::angleFromName (n)) << " ";
             std::printf ("cal names -> angles: %s(want 90 30 0 90 0 45 180 60)\n", got.toRawUTF8());
@@ -1279,7 +1279,7 @@ public:
         f90.deleteFile();
         proc.settings.micSplCalibrated[0] = true;
         proc.settings.micSplOffset[0] = 111.25f;
-        const auto id = proc.saveMicToLocker (0, "UMIK-1 #7012345");
+        const auto id = proc.saveMicToLocker (0, "Model #7012345");
         proc.clearCalibration (2);
         proc.settings.micSplCalibrated[2] = false;
         proc.assignLockerMic (2, id);

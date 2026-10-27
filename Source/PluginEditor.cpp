@@ -358,10 +358,13 @@ LiveAlignEditor::LiveAlignEditor (LiveAlignProcessor& p)
     eventPanel.onMark = [this] { markPart(); };
     fbWatch.onWatchChanged = [this] (bool on)
     {
+        processor.feedbackWatching = on;
         // off: the marks go from the graphs (the list stays, for the record)
-        if (! on) { la::ui::feedbackMarks().clear(); liveFb.reset(); for (auto& pane : panes) pane->repaint(); }
+        if (! on) { la::ui::feedbackMarks().clear(); processor.resetFeedbackWatch(); for (auto& pane : panes) pane->repaint(); }
     };
-    fbWatch.onClear = [this] { la::ui::feedbackMarks().clear(); liveFb.reset(); for (auto& pane : panes) pane->repaint(); };
+    fbWatch.onClear = [this] { la::ui::feedbackMarks().clear(); processor.resetFeedbackWatch(); for (auto& pane : panes) pane->repaint(); };
+    processor.feedbackWatching = fbWatch.watching();
+    processor.delayTracking = delayPanel.tracking();
     splPanel.onCalibrate = [this] { openCalibration (processor.isMonitorMode() ? kMonitorMic : settings.focusMic(), &splPanel.calibrateButton()); };
     tracesPanel.onCapture = [this] { capture(); };
     tracesPanel.onImport = [this] { importTrace(); };
@@ -447,6 +450,7 @@ void LiveAlignEditor::offerRecovery()
 LiveAlignEditor::~LiveAlignEditor()
 {
     stopTimer();
+    processor.monitorPageShown = false;   // the watch, the log and the tracking carry on in the processor
     juce::Desktop::getInstance().removeGlobalMouseListener (&inputWatch);
     if (processor.isStandalone())   // a clean close: nothing to recover next time
     {
@@ -914,12 +918,7 @@ void LiveAlignEditor::applyPrefs()
     const auto& ap = la::AppPrefs::get();
     prefsSerial = ap.serial;
     processor.applyAppPrefs();
-    const int sense = juce::roundToInt (ap.value ("fbSense"));
-    // Low waits longer for a bigger peak, High takes a smaller, shorter one. At every setting a ring must hold one pitch
-    // and its level with no overtones, so held notes, vibrato and fading notes in the music are not taken for feedback.
-    static const double prom[] = { 21.0, 18.0, 15.0 };
-    static const double secs[] = { 4.0, 3.0, 2.0 };
-    liveFb.setOptions ({ 80.0, 12000.0, prom[juce::jlimit (0, 2, sense)], 12, 3, 1.0 / 12.0, secs[juce::jlimit (0, 2, sense)], 1.0 / 48.0, 6.0, true });
+    processor.analyzer.setFeedbackSensitivity (juce::roundToInt (ap.value ("fbSense")));   // the processor's timer does this too
     la::pdf::Document::useA4() = ap.value ("paperA4") > 0.5;
     generator.sync();
 }
@@ -1170,7 +1169,7 @@ std::vector<int> LiveAlignEditor::anglesFor (const juce::Array<juce::File>& file
     return a;
 }
 
-// angle -1: one or both files at once; each goes to 0 or 90 degrees from its name (e.g. miniDSP's "_90deg").
+// angle -1: one or both files at once; each goes to 0 or 90 degrees from its name (e.g. "_90deg").
 void LiveAlignEditor::loadCalFile (int mic, int angle)
 {
     const auto who = mic == kMonitorMic ? processor.monitorMic.name : processor.mics.nameOf (mic);
@@ -1306,6 +1305,7 @@ void LiveAlignEditor::importSpeaker (int source)
         juce::String note;
         if (! t.hasPhase()) { la::xo::addMinimumPhase (t); note = " (no phase in the file: minimum phase used)"; }
         auto& s = sys.sources[(size_t) source];
+        la::SpeakerSystem::applyFileExtras (s, t);   // its own filter and limits, when the file says
         s.response = std::move (t);
         s.imported = true;
         s.hasArrival = false;
@@ -1635,19 +1635,6 @@ void LiveAlignEditor::timerCallback()
             for (int i = 0; i < laidOutCount; ++i) panes[i]->update (snap);
             splPanel.update (snap);
             if (snap.serial % 8 == 0) updateTunedPanel();
-            // feedback watch: the newest spectrum of the monitoring mic
-            if (fbWatch.watching() && snap.wfFrame != liveFbFrame && ! snap.wfLine.empty())
-            {
-                liveFbFrame = snap.wfFrame;
-                for (const auto& r : liveFb.push (snap.wfFreq, snap.wfLine, juce::Time::getMillisecondCounterHiRes() / 1000.0))
-                {
-                    fbWatch.add ({ r.freq, r.prominenceDb, r.cutDb, juce::Time::getCurrentTime().formatted ("%H:%M:%S") });
-                    processor.splLog.addHit ((double) juce::Time::currentTimeMillis() / 1000.0, (float) r.freq, (float) r.cutDb);
-                    auto& marks = la::ui::feedbackMarks();
-                    marks.push_back (r.freq);
-                    if (marks.size() > 6) marks.erase (marks.begin());
-                }
-            }
         }
         else if (shownPage == (int) Page::Mics)
             micPage->setSnapshot (snap);
@@ -1661,30 +1648,17 @@ void LiveAlignEditor::timerCallback()
             monitorMicPage->setSnapshot (snap);
     }
 
-    // the sound level log of the event, about once a second while monitoring
-    if (processor.isMonitorMode() && snapSerial > 0)
-    {
-        const double now = (double) juce::Time::currentTimeMillis() / 1000.0;
-        if (now - lastLogSecond >= 1.0)
-        {
-            lastLogSecond = now;
-            const bool sensor = processor.climate.live();   // the room sensor's reading goes in the log (typed-in conditions do not change)
-            processor.splLog.add (now, snap.splAS, snap.splCS, snap.splAF, sensor ? processor.climate.tempC.load() : NAN,
-                                  sensor ? processor.climate.humidity.load() : NAN, snap.lcPeak);
-        }
-    }
+    // the show log, the feedback watch and the delay tracking run in the processor: the editor sets their toggles
+    // and shows the rings the watch caught
+    processor.monitorPageShown = monitoring;
+    processor.delayTracking = delayPanel.tracking();
+    showFeedbackHits();
 
     if (monitoring)
     {
         const int m = settings.focusMic();
         inputPanel.setLevels (processor.takeMicPeak (m), processor.micRmsDb (m), processor.takeRefPeak(), processor.refRmsDb());
         delayPanel.setReport (processor.analyzer.readDelayReport());
-        // delay tracking: find the delay on the programme every 5 seconds
-        if (delayPanel.tracking() && settings.refSource.load() >= 1 && la::clock::ms32() - lastTrackRequest > (juce::uint32) (1000.0 * la::AppPrefs::get().value ("trackSec")))
-        {
-            lastTrackRequest = la::clock::ms32();
-            settings.requestFindDelay = true;
-        }
         tracesPanel.refresh();
         if (tick % 15 == 0) { eventPanel.setLog (processor.splLog); updateConditionsPanel(); }
         if (tick % 3 == 0) updateLevelAlarm();
@@ -1819,6 +1793,23 @@ void LiveAlignEditor::showToast (const juce::String& text)
     toastText = text;
     toastUntil = la::clock::ms32() + 2600;
     repaint();
+}
+
+// The rings the feedback watch caught since the last look (they are already in the show log): the list, the marks on
+// the graphs and a note at the bottom.
+void LiveAlignEditor::showFeedbackHits()
+{
+    const auto hits = processor.takeFeedbackHits();
+    if (hits.empty()) return;
+    for (const auto& h : hits)
+    {
+        fbWatch.add ({ h.freq, h.prominenceDb, h.cutDb, juce::Time ((juce::int64) (h.t * 1000.0)).formatted ("%H:%M:%S") });
+        auto& marks = la::ui::feedbackMarks();
+        marks.push_back (h.freq);
+        if (marks.size() > 6) marks.erase (marks.begin());
+    }
+    if (shownPage == (int) Page::Monitor) for (auto& pane : panes) pane->repaint();
+    showToast ("Possible feedback at " + la::SplLog::freqText (hits.back().freq));
 }
 
 void LiveAlignEditor::openGuided (GuidedSource& source)

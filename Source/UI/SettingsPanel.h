@@ -350,7 +350,7 @@ private:
                      "Bigger resolves low frequencies better but reacts more slowly (at 48 kHz)");
                 row ("Windows", combo ({ "One FFT size", "Multi-time window (MTW)" }, settings.multiWindow.load() ? 1 : 0,
                                        [this] (int i) { settings.multiWindow = i == 1; }),
-                     "MTW: the size above in the lows, shorter windows in the highs (as Smaart): fine detail in the bass, and highs not smeared by the room");
+                     "MTW: the size above in the lows, shorter windows in the highs (as the usual analysers): fine detail in the bass, and highs not smeared by the room");
                 static const float thr[] = { 0.0f, -110.0f, -100.0f, -90.0f, -80.0f, -70.0f };
                 int ti = 3;
                 for (int i = 0; i < 6; ++i) if (std::abs (thr[i] - settings.magThresholdDb.load()) < 0.5f) ti = i;

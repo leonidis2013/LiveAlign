@@ -16,6 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Generic check (no brand or model names in the repo)
+        run: ./Tools/check_generic.sh
+
       - name: Measurement engine tests (with address and undefined-behaviour sanitizers)
         run: |
           g++ -std=c++17 -O1 -g -fsanitize=address,undefined -Wall -Wextra -ISource Tests/AnalysisTests.cpp -o analysis_tests

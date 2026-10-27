@@ -29,6 +29,33 @@ LiveAlignProcessor::LiveAlignProcessor() : AudioProcessor (defaultBuses())
     if (wrapperType == wrapperType_Standalone) loadListening();
     savedProjectText = createProjectXml()->toString();
     changedCheckedAt = 0;
+    startTimer (100);
+}
+
+// The show's watchers: the sound level log, the feedback watch and the delay tracking. The analysis thread measures
+// (whole intervals, the ring detector, the delay); here their results go into the show log and the tracking is asked
+// for, with or without a window.
+void LiveAlignProcessor::timerCallback()
+{
+    const auto& ap = la::AppPrefs::get();
+    analyzer.setLogging (monitorModeOn, splLog.interval);
+    analyzer.setFeedbackWatch (feedbackWatching.load() && (monitorModeOn || monitorPageShown.load()));
+    analyzer.setFeedbackSensitivity (juce::roundToInt (ap.value ("fbSense")));
+    const bool sensor = climate.live();   // the room sensor's reading goes in the log (typed-in conditions do not change)
+    for (const auto& p : analyzer.takeLogPoints())
+        splLog.addInterval (p.t, p.la, p.lc, p.laMax, sensor ? climate.tempC.load() : NAN, sensor ? climate.humidity.load() : NAN, p.lcPeak);
+    for (const auto& h : analyzer.takeFeedbackHits())
+    {
+        splLog.addHit (h.t, (float) h.freq, (float) h.cutDb);
+        if (newHits.size() >= 64) newHits.erase (newHits.begin());
+        newHits.push_back (h);
+    }
+    // delay tracking: find the delay on the programme every few seconds
+    if (delayTracking.load() && settings.refSource.load() >= 1 && la::clock::ms32() - lastTrackRequest > (juce::uint32) (1000.0 * ap.value ("trackSec")))
+    {
+        lastTrackRequest = la::clock::ms32();
+        analyzer.requestTrackDelay();
+    }
 }
 
 // This computer's preferences that live in the audio settings (the generator's ceiling and fade-in).
@@ -39,7 +66,7 @@ void LiveAlignProcessor::applyAppPrefs()
     settings.genFadeMs = (float) ap.value ("genFadeMs");
 }
 
-LiveAlignProcessor::~LiveAlignProcessor() = default;
+LiveAlignProcessor::~LiveAlignProcessor() { stopTimer(); }
 
 bool LiveAlignProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
@@ -969,6 +996,7 @@ void LiveAlignProcessor::resetVenue()
     history.entries.clear();
     venueName = "Untitled venue";
     venueNotes.clear();
+    loopbackOutput = 0;
     projectFile = juce::File();
     mics = {};
     for (auto& c : cals) c.clearAll();
@@ -1024,6 +1052,7 @@ std::unique_ptr<juce::XmlElement> LiveAlignProcessor::createProjectXml() const
     // read by the venue list on Home without opening the whole file
     venue->setAttribute ("sessions", (int) sessions.size());
     venue->setAttribute ("tuned", room.tuned);
+    venue->setAttribute ("loopbackOutput", loopbackOutput);
 
     auto* st = x->createNewChildElement ("Settings");
     settings.save (*st);
@@ -1098,6 +1127,7 @@ void LiveAlignProcessor::loadProjectXml (const juce::XmlElement& x)
     {
         venueName = venue->getStringAttribute ("name", "Untitled venue");
         venueNotes = venue->getStringAttribute ("notes");
+        loopbackOutput = juce::jlimit (0, kMaxOutputs, venue->getIntAttribute ("loopbackOutput", 0));
     }
     if (const auto* st = x.getChildByName ("Settings"))
     {
@@ -1229,7 +1259,7 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     const auto keepPositions = positions;
     const auto keepMonitorPoints = monitorPoints;
     const auto keepAim = positionAim;
-    const int keepRoomAim = roomAim, keepSpeakerAim = speakerAim;
+    const int keepRoomAim = roomAim, keepSpeakerAim = speakerAim, keepLoopback = loopbackOutput;
     const auto keepPlan = plan;
     auto keepMonitor = monitorMic;
     if (monitorModeOn) { keepMonitor.delayMs = settings.micDelayMs[0].load(); keepMonitor.splOffset = settings.micSplOffset[0].load(); }
@@ -1250,6 +1280,7 @@ void LiveAlignProcessor::newVenueFrom (const juce::String& name)
     positionAim = keepAim;
     roomAim = keepRoomAim;
     speakerAim = keepSpeakerAim;
+    loopbackOutput = keepLoopback;
     plan = keepPlan;
     for (auto& s : keepSystem.sources)
     {

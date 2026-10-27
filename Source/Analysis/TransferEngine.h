@@ -67,6 +67,25 @@ public:
     int getDelaySamples() const { return delay; }
     int maxDelaySamples() const { return std::max (0, (int) delayLine.size() - 2); }
 
+    // The delay as the tracking found it again on the programme. A change within the dead band (3 samples or
+    // 0.25 ms, whichever is more) is left alone, so the average is not disturbed for nothing. A small change (under
+    // 5 % of the window) is applied without restarting the average: the accumulated cross-spectrum is a product of
+    // the delayed reference's conjugate and the mic, so moving the reference by dt turns each bin by e^(j 2 pi f dt).
+    // Returns true when the delay changed.
+    bool setDelaySamplesTracked (int d)
+    {
+        d = std::clamp (d, 0, maxDelaySamples());
+        if (std::abs (d - delay) <= trackedDeadBand (sr)) return false;
+        const int change = d - delay;
+        if (std::abs (change) >= n / 20 || frameCount == 0) { setDelaySamples (d); return true; }
+        delay = d;
+        for (size_t k = 0; k < gxy.size(); ++k)
+            gxy[k] *= std::polar (1.0, 2.0 * kPi * (double) k * (double) change / (double) n);
+        return true;
+    }
+    // The dead band of the tracked delay, in samples: 3 samples or 0.25 ms, whichever is more.
+    static int trackedDeadBand (double sampleRate) { return std::max (3, (int) std::ceil (0.25e-3 * sampleRate)); }
+
     void push (const float* mic, const float* ref, int count)
     {
         for (int i = 0; i < count; ++i)
@@ -229,6 +248,9 @@ public:
     void reset() { for (auto& e : engines) e.reset(); }
     void setAverages (int frames) { if (frames != averages) { averages = std::max (1, frames); applyAverages(); } }
     void setDelaySamples (int d) { for (auto& e : engines) e.setDelaySamples (d); }
+    // As found by the delay tracking: a small move keeps the averages (see TransferEngine).
+    bool setDelaySamplesTracked (int d) { bool changed = false; for (auto& e : engines) changed = e.setDelaySamplesTracked (d) || changed; return changed; }
+    int getDelaySamples() const { return engines[0].getDelaySamples(); }
     void setMagnitudeThreshold (double db) { thresholdDb = db; for (auto& e : engines) e.setMagnitudeThreshold (db); }
     void push (const float* mic, const float* ref, int count)
     {

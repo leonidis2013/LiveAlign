@@ -104,7 +104,7 @@ struct MicCalSet
         return s.joinIntoString (", ");
     }
 
-    // Which angle a calibration file is for, from its name: miniDSP's "_90deg", "90 deg", "-90", "90°", Sonarworks'
+    // Which angle a calibration file is for, from its name, as the makers write it: "_90deg", "90 deg", "-90", "90°",
     // "30deg" ... A number counts only on its own (not part of a serial number). Nothing found: 0 degrees.
     static int angleFromName (const juce::String& fileName) { const int a = angleInName (fileName); return a >= 0 ? a : Cal0; }
 

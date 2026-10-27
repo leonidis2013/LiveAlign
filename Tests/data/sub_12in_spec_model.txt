@@ -1,5 +1,5 @@
-* Yamaha DXS12mkII sub - APPROXIMATE response modeled from spec sheet, NOT a measurement
-* Source spec: 42 Hz - 150 Hz at -10 dB (Yamaha data sheet). Passband normalized to 0 dB. Crossover/HPF switch and D-XSUB modes not applied.
+* A powered 12 inch sub - APPROXIMATE response modelled from a maker's spec sheet, NOT a measurement
+* Source spec: 42 Hz - 150 Hz at -10 dB. Passband normalised to 0 dB. Its own crossover / high-pass switch and bass modes not applied.
 * Model: 4th-order high-pass and 4th-order low-pass Butterworth (minimum phase) fitted to the -10 dB points.
 * Columns: frequency Hz, level dB, phase deg. No arrival time included - set the offset in LiveAlign.
 20.00 -35.32 -81.6

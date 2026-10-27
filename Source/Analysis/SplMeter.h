@@ -114,6 +114,7 @@ public:
         spec.reset();
         cFilter.reset();
         resetPeaks();
+        resetInterval();
     }
 
     void resetLeq()
@@ -135,6 +136,7 @@ public:
             const double z = std::abs ((double) x[i]);
             if (c > blockPk[0]) blockPk[0] = c;
             if (z > blockPk[1]) blockPk[1] = z;
+            if (c > ivPeakC) ivPeakC = c;
             if (++inBlock >= peakBlock)
             {
                 for (int k = 0; k < 2; ++k) { lastPk[k] = blockPk[k]; maxPk[k] = std::max (maxPk[k], blockPk[k]); blockPk[k] = 0.0; }
@@ -162,7 +164,33 @@ public:
     double peakDb (Weight w) const { const int k = w == Z ? 1 : 0; return peakToDb (std::max (blockPk[k], lastPk[k])); }
     double maxPeakDb (Weight w) const { const int k = w == Z ? 1 : 0; return peakToDb (std::max ({ maxPk[k], blockPk[k], lastPk[k] })); }
 
+    // ---- the logging interval (IEC 61672-1): LAeq and LCeq integrate the squared signal over the interval, LAFmax is
+    // the running maximum of the Fast meter and LCpeak the largest instantaneous value, every sample. Separate from
+    // the Leq since the reset above, so the log's points do not move when the user resets the meter.
+    struct Interval
+    {
+        double laeq = -200.0, lceq = -200.0, lafMax = -200.0, lcPeak = -200.0;   // dBFS (plus the calibration offset for dB SPL)
+        double seconds = 0.0;                                                     // audio in the interval
+    };
+    double intervalSeconds() const { return ivSeconds; }
+    // The interval's values, and the start of the next one.
+    Interval takeInterval()
+    {
+        Interval iv;
+        iv.seconds = ivSeconds;
+        if (ivSeconds > 0.0)
+        {
+            iv.laeq = powerToDbfs (ivEnergy[A] / ivSeconds);
+            iv.lceq = powerToDbfs (ivEnergy[C] / ivSeconds);
+            iv.lafMax = powerToDbfs (ivMaxFastA);
+            iv.lcPeak = peakToDb (ivPeakC);
+        }
+        resetInterval();
+        return iv;
+    }
+
 private:
+    void resetInterval() { for (int w = 0; w < 3; ++w) ivEnergy[w] = 0.0; ivSeconds = 0.0; ivMaxFastA = 0.0; ivPeakC = 0.0; }
     static double peakToDb (double pk) { return pk > 1e-10 ? 20.0 * std::log10 (pk) + 3.0103 : -200.0; }
     void resetPeaks() { for (int k = 0; k < 2; ++k) { blockPk[k] = lastPk[k] = maxPk[k] = 0.0; } inBlock = 0; }
 
@@ -184,9 +212,12 @@ private:
             fast[w] += aF * (sum - fast[w]);
             slow[w] += aS * (sum - slow[w]);
             energy[w] += sum * hopSec;
+            ivEnergy[w] += sum * hopSec;
             maxFast[w] = std::max (maxFast[w], fast[w]);
         }
+        ivMaxFastA = std::max (ivMaxFastA, fast[A]);
         seconds += hopSec;
+        ivSeconds += hopSec;
     }
 
     double sr = 48000.0;
@@ -197,5 +228,6 @@ private:
     CWeightFilter cFilter;
     double blockPk[2] {}, lastPk[2] {}, maxPk[2] {};   // C, Z
     int inBlock = 0, peakBlock = 48000;
+    double ivEnergy[3] {}, ivSeconds = 0.0, ivMaxFastA = 0.0, ivPeakC = 0.0;   // the logging interval
 };
 } // namespace la

@@ -346,9 +346,26 @@ public:
 
 private:
     enum class State { Ready, CountIn, Measuring, Done };
-    static constexpr double kCountIn = 3.0;
+    // The count-in gives whoever placed the mic time to stand clear: the full three seconds when a mic or a point
+    // changed since the measurement just finished (or that was a while ago); otherwise nobody moved, so under a second.
+    static constexpr double kLongCountIn = 3.0, kShortCountIn = 0.8, kRecentMs = 20000.0;
+    double kCountIn = kLongCountIn;
 
     double countInLeft() const { return juce::jmax (0.0, kCountIn - (la::clock::ms() - countInStart) / 1000.0); }
+
+    double countInFor() const
+    {
+        if (lastMeasured <= 0.0 || la::clock::ms() - lastMeasured > kRecentMs) return kLongCountIn;
+        for (const auto& sp : spots)
+        {
+            if (sp.state != GuideSpot::Now) continue;
+            bool same = false;
+            // the same mic on the same plan marker (a close-up spot has none: the same speaker then)
+            for (const auto& j : lastSpots) same = same || (j.mic == sp.mic && j.marker == sp.marker && (sp.marker >= 0 || j.speaker == sp.speaker));
+            if (! same) return kLongCountIn;
+        }
+        return kShortCountIn;
+    }
 
     bool problem() const
     {
@@ -493,6 +510,7 @@ private:
     {
         message.clear();
         state = State::CountIn;
+        kCountIn = countInFor();
         countInStart = la::clock::ms();
         refreshButtons();
         repaint();
@@ -523,6 +541,8 @@ private:
         {
             resultOk = source.guidedSerial() != serialAtStart;
             justDone = nowSpots;
+            lastSpots = nowSpots;
+            lastMeasured = la::clock::ms();
             state = State::Done;
             reload();
             if (onChanged) onChanged();
@@ -537,10 +557,10 @@ private:
     juce::ComboBox micPicker, aimPicker;
     juce::Rectangle<int> micLabel, aimLabel, keysLine;
     juce::Rectangle<int> card, header, instr, progressArea, dotsArea;
-    std::vector<GuideSpot> spots, nowSpots, justDone;
+    std::vector<GuideSpot> spots, nowSpots, justDone, lastSpots;
     State state = State::Ready;
     juce::String message;
-    double countInStart = 0.0, measureStart = 0.0;
+    double countInStart = 0.0, measureStart = 0.0, lastMeasured = 0.0;
     int serialAtStart = 0;
     bool resultOk = false;
 };

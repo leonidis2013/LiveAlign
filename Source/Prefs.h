@@ -55,6 +55,10 @@ inline const std::vector<PrefDef>& all()
         auto plainDb = [] (int dec) { return [dec] (double x) { return juce::String (x, dec) + " dB"; }; };
         auto onOff = [] (double x) { return juce::String (x > 0.5 ? "On" : "Off"); };
         // ---- tuning ----
+        v.push_back ({ "xoEvalOct", PrefCat::Tuning, "Crossover", "Judge the sum over", "How far each side of the crossover the summed response is checked against flat", 1.0,
+                       { 0.5, 1.0, 1.5, 2.0 }, [] (double x) { return (x == 1.0 ? juce::String ("1 octave") : juce::String (x, 1) + " octaves") + " each side"; } });
+        v.push_back ({ "xoGoal", PrefCat::Tuning, "Crossover", "Optimise for", "Smoothest sum takes the flattest result; Max headroom keeps the crossover up away from each speaker's limits; Balanced weighs both", 1.0,
+                       { 0.0, 1.0, 2.0 }, [] (double x) { return juce::String (x < 0.5 ? "Smoothest sum" : x < 1.5 ? "Balanced" : "Max headroom"); } });
         v.push_back ({ "eqTarget", PrefCat::Tuning, "Room EQ", "Target (new venues)", "The tonal balance a new venue's Room EQ starts with", 4.0,
                        range (0.0, (double) targets::count() - 1.0, 1.0), [] (double x) { return juce::String (targets::list()[(size_t) juce::jlimit (0, targets::count() - 1, (int) x)].name); }, false });
         v.push_back ({ "eqClose", PrefCat::Tuning, "Room EQ", "Close enough", "A check this close to the target (RMS) is ready to mark as tuned", 1.5,

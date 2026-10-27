@@ -250,6 +250,10 @@ inline juce::String verdict (const HeadroomRun& r, double target, double wanted,
 struct HeadroomData
 {
     std::vector<HeadroomRun> runs;   // the whole system first when there is one
+    // Thorough: every run starts well down (-30 dBFS; a speaker alone 18 dB under its stop) as the first versions did.
+    // Otherwise the whole system starts from the level the level balance readings predict for 12 dB under the
+    // target, and a speaker alone 9 dB under its stop: the same steps near the top, fewer at the bottom.
+    bool thorough = false;
 
     const HeadroomRun* find (int output) const { for (const auto& r : runs) if (r.output == output) return &r; return nullptr; }
     HeadroomRun& get (int output, const juce::String& name)
@@ -263,8 +267,9 @@ struct HeadroomData
 
     void save (juce::XmlElement& parent) const
     {
-        if (runs.empty()) return;
+        if (runs.empty() && ! thorough) return;
         auto* e = parent.createNewChildElement ("Headroom");
+        e->setAttribute ("thorough", thorough);
         for (const auto& r : runs)
         {
             auto* c = e->createNewChildElement ("Run");
@@ -285,6 +290,7 @@ struct HeadroomData
         *this = {};
         const auto* e = parent != nullptr ? parent->getChildByName ("Headroom") : nullptr;
         if (e == nullptr) return;
+        thorough = e->getBoolAttribute ("thorough");
         for (const auto* c : e->getChildWithTagNameIterator ("Run"))
         {
             HeadroomRun r;

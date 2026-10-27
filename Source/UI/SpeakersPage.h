@@ -429,7 +429,7 @@ public:
             g.drawText ("at " + (a.spot.isNotEmpty() ? a.spot : juce::String ("the mic position")), r, juce::Justification::topLeft, true);
             if (a.measured() && a.ref < (int) sys.sources.size())
             {
-                const double need = a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs);
+                const double need = a.neededMs (sys.refDelayNow (a));
                 g.setFont (font (10.5f, true));
                 g.setColour (need >= -0.005 ? p.good : p.warn);
                 g.drawText (need >= -0.005 ? "delay " + juce::String (need, 2) + " ms" : "delay the other " + juce::String (-need, 2) + " ms", r.withTrimmedRight (4.0f), juce::Justification::topRight, true);
@@ -656,6 +656,14 @@ public:
             s->coverV = id == 1 ? 0.0 : coverPatterns()[(size_t) (id - 2)].v;
             systemChanged (false);
         };
+        onboardButton.setTooltip ("A filter built into the speaker (a powered sub's own low-pass, a column's high-pass): its family, slope, the "
+                                  "settings it offers, whether it can be bypassed, what setting the imported curve was taken at, and its DSP latency. "
+                                  "The crossover search then models the whole chain and says what to set on the speaker and in the processor.");
+        onboardButton.onClick = [this] { editOnboard(); };
+        protectButton.setTooltip ("From the maker's data: the lowest high-pass the speaker should be run with, and its RMS voltage limit. "
+                                  "The crossover search keeps clear of the limit (Settings, Tuning: Optimise for), and the sheet works out the limiter.");
+        protectButton.onClick = [this] { editProtection(); };
+        for (auto* b : { &onboardButton, &protectButton }) addAndMakeVisible (*b);
         linkBox.setTooltip ("Its group: speakers in a group share the crossover, level, polarity and EQ (Main L, Main R and the centre; "
                             "every sub). Each is still measured and checked on its own, and keeps its own delay and trim. "
                             "\"Own settings\" takes it out of the group.");
@@ -764,6 +772,9 @@ public:
             addAndMakeVisible (b);
         }
         findButton.onClick = [this] { findBest(); };
+        procDetailsButton.setTooltip ("The processor's frequency range and steps, its delay per output, the limiter's units, and which outputs have no high-pass or low-pass");
+        procDetailsButton.onClick = [this] { editProcessorDetails(); };
+        addAndMakeVisible (procDetailsButton);
         for (auto* b : { &autoButton, &manualButton })
         {
             b->setRadioGroupId (8301);
@@ -866,6 +877,8 @@ public:
             a->alignSet = endIsSetId (id);
             a->hasAlign = a->hasRef = false;
             a->phaseValid = false;
+            a->phaseInvert = false;
+            a->refMemberUsed = -1;
             systemChanged (false);
         };
         alRefBox.onChange = [this]
@@ -877,6 +890,8 @@ public:
             a->refSet = endIsSetId (id);
             a->hasAlign = a->hasRef = false;
             a->phaseValid = false;
+            a->phaseInvert = false;
+            a->refMemberUsed = -1;
             systemChanged (false);
         };
         alSignalBox.addItemList ({ "Pink noise", "Sweep", "Music from the console" }, 1);
@@ -917,8 +932,13 @@ public:
         alMeasureButton.onClick = [this] { if (phase == Phase::Idle) alignmentAction(); else cancelMeasure ("Stopped."); };
         // the two impulse panes, with a Play button on each
         alImpulse.alignment = [this] { return currentAlignment(); };
-        alImpulse.endName = [this] (int which) { const auto* a = currentAlignment(); return a != nullptr ? sideName (*a, which) : juce::String(); };
-        alImpulse.neededMs = [this] { const auto* a = currentAlignment(); return a != nullptr ? a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs) : 0.0; };
+        alImpulse.endName = [this] (int which)
+        {
+            const auto* a = currentAlignment();
+            if (a == nullptr) return juce::String();
+            return which == 0 && a->refMemberUsed >= 0 ? refUsedName (*a) + " (the nearer side)" : sideName (*a, which);
+        };
+        alImpulse.neededMs = [this] { const auto* a = currentAlignment(); return a != nullptr ? a->neededMs (sys.refDelayNow (*a)) : 0.0; };
         addChildComponent (alImpulse);
         for (int w = 0; w < 2; ++w)
         {
@@ -1291,6 +1311,7 @@ public:
     {
         const auto* a = alignmentAt (arrivalAlignment);
         if (phase == Phase::Idle || ! arrivalMode || a == nullptr) return {};
+        if (! checkMode && arrivalMember >= 0) return { arrivalMember };   // one side of the reference set
         return checkMode ? bothMembers (*a) : sideMembers (*a, arrivalWhich);
     }
     void checkAlignment (int i) { selectAlignment (i); startCheck (i); }
@@ -1324,7 +1345,7 @@ public:
             if (! pr.positions.contains (spot)) pr.positions.add (spot);
             const int marker = pr.plan.ensureMarker (spot);
             const int now = stageNow();
-            const juce::String labels[] = { page->sideName (*a, 0) + " alone", page->sideName (*a, 1) + " alone", "Both together" };
+            const juce::String labels[] = { page->sideName (*a, 0) + (page->refOneByOne (*a) ? " one side at a time" : " alone"), page->sideName (*a, 1) + " alone", "Both together" };
             for (int k = 0; k < 3; ++k)
             {
                 GuideSpot sp;
@@ -1361,13 +1382,25 @@ public:
                                : "First: route the music only to " + page->sideName (*a, st, true) + " on the console.";
             if (st == 2)
             {
-                const double need = a->neededMs (page->sys.sources[(size_t) a->ref].proc.delayMs);
+                const double need = a->neededMs (page->sys.refDelayNow (*a));
                 const int side = need < -0.005 ? 0 : 1;
                 juce::String t = "First: enter " + juce::String (juce::jmax (0.0, std::abs (need)), 2) + " ms delay on "
                                  + page->sideName (*a, side) + " in the processor";
                 if (page->sideMembers (*a, side).size() > 1) t << " (on each of its speakers, keeping their own trims)";
+                int lowIdx = -1;
+                bool wantInvert = false;
+                if (page->lowInvertWanted (*a, lowIdx, wantInvert) && wantInvert) t << ", invert " << page->sys.endName (lowIdx, page->sys.inGroup (lowIdx));
                 if (const auto m = page->muteText (page->bothMembers (*a)); m.isNotEmpty()) t << ", and " << m.replace ("Mute", "mute");
                 else t << ", and unmute both.";
+                return t;
+            }
+            if (st == 0 && page->refOneByOne (*a))
+            {
+                const auto members = page->sideMembers (*a, 0);
+                juce::String t = "Each side of " + page->sideName (*a, 0) + " plays on its own in turn, and " + page->sideName (*a, 1)
+                                 + " is lined up to the louder side here, the nearer one. The mic stays at the same spot for both ends.";
+                if (! members.empty())
+                    if (const auto m = page->muteText ({ members.front() }); m.isNotEmpty()) return "First: " + m + " You are asked to swap the mutes for the next side.";
                 return t;
             }
             if (const auto m = page->muteText (page->sideMembers (*a, st)); m.isNotEmpty()) return "First: " + m;
@@ -1558,12 +1591,7 @@ public:
             else if (sys.lastResult.valid)
             {
                 const auto& r = sys.lastResult;
-                const auto& hiName = sys.groupName (sys.xoHigh), loName = sys.groupName (sys.xoLow);
-                t << "Best: " << xo::typeName (r.filter.type) << " " << r.filter.slope << " dB/oct at " << freqLabel (r.filter.freq) << " Hz; "
-                  << "delay the " << (r.delayLowMs >= 0 ? loName : hiName) << " " << juce::String (std::abs (r.delayLowMs), 2) << " ms"
-                  << (r.invertLow ? ", " + loName + " polarity inverted" : juce::String()) << ".\n"
-                  << (r.highUsableFrom <= r.lowUsableTo ? "They overlap from " + freqLabel (r.highUsableFrom) + " to " + freqLabel (r.lowUsableTo) + " Hz."
-                                                        : "A gap from " + freqLabel (r.lowUsableTo) + " to " + freqLabel (r.highUsableFrom) + " Hz.");
+                t << resultText (r);
                 if (! r.note.empty()) t << " " << juce::String (r.note);
                 if (sys.pairNearField()) t << "\nMeasured close up: the delay between them is set in Time alignment.";
                 c = p.text;
@@ -1587,8 +1615,7 @@ public:
                 const juce::Colour qc = q > 0.9 ? p.good : q > 0.75 ? p.warn : p.bad;
                 g.setColour (qc);
                 g.setFont (font (12.0f, true));
-                g.drawText ("Sum through the crossover: " + juce::String (juce::roundToInt (q * 100.0)) + "% in phase, within "
-                                + juce::String (liveDev, 1) + " dB of flat"
+                g.drawText ("Sum through the crossover: " + juce::String (juce::roundToInt (q * 100.0)) + "% in phase, " + shapeText (liveShape)
                                 + (liveReliable < 0.8 ? juce::String (" (") + juce::String (juce::roundToInt (liveReliable * 100.0)) + "% reliable)" : juce::String()),
                             liveLine, juce::Justification::centredLeft, true);
             }
@@ -1633,7 +1660,7 @@ public:
         {
             auto c = selCard.reduced (12, 0).withTrimmedTop (36);
             const bool edit = mode == 0;   // the speakers are edited on the Speakers page only
-            for (auto* comp : std::initializer_list<juce::Component*> { &nameEditor, &modelEditor, &roleBox, &channelBox, &outputBox, &countBox, &linkBox, &coverBox })
+            for (auto* comp : std::initializer_list<juce::Component*> { &nameEditor, &modelEditor, &roleBox, &channelBox, &outputBox, &countBox, &linkBox, &coverBox, &onboardButton, &protectButton })
                 comp->setVisible (edit);
             editSpeakerButton.setVisible (! edit);
             auto field = [&] (const juce::String& name, juce::Component& comp, int h = 28)
@@ -1658,6 +1685,14 @@ public:
                 linkBox.setBounds (row);
                 c.removeFromTop (8);
                 field ("Coverage", coverBox, 26);
+                {
+                    auto row = c.removeFromTop (26);
+                    labels.push_back ({ row.removeFromLeft (64), "Built in" });
+                    onboardButton.setBounds (row.removeFromLeft (row.getWidth() * 55 / 100));
+                    row.removeFromLeft (6);
+                    protectButton.setBounds (row);
+                    c.removeFromTop (8);
+                }
             }
             else
             {
@@ -1764,7 +1799,11 @@ public:
                     labels.push_back ({ rr.removeFromLeft (52), "Range" });
                     rangeBox.setBounds (rr);
                     c.removeFromTop (10);
-                    labels.push_back ({ c.removeFromTop (16), "Filters your processor has" });
+                    {
+                        auto hr = c.removeFromTop (22);
+                        procDetailsButton.setBounds (hr.removeFromRight (96).withHeight (20));
+                        labels.push_back ({ hr.withHeight (16), "Filters your processor has" });
+                    }
                     c.removeFromTop (4);
                     auto tr = c.removeFromTop (26);
                     const int tyw = (tr.getWidth() - 12) / 3;
@@ -1965,6 +2004,11 @@ private:
             coverBox.addItem ("Enter the angles...", 98);
             coverBox.setSelectedId (sel, juce::dontSendNotification);
         }
+        onboardButton.setButtonText (s->onboard.present ? juce::String (s->onboard.lowPass ? "Own LPF " : "Own HPF ") + (s->onboard.setHz > 0.0 ? juce::String (juce::roundToInt (s->onboard.setHz)) + " Hz" : juce::String ("(bypassed)"))
+                                                        : juce::String ("No own filter..."));
+        protectButton.setButtonText (s->minSafeHpHz > 0.0 || s->rmsVoltLimit > 0.0
+                                         ? (s->minSafeHpHz > 0.0 ? "HPF >= " + juce::String (juce::roundToInt (s->minSafeHpHz)) + " Hz" : juce::String()) + (s->rmsVoltLimit > 0.0 ? (s->minSafeHpHz > 0.0 ? ", " : "") + juce::String (juce::roundToInt (s->rmsVoltLimit)) + " V" : juce::String())
+                                         : juce::String ("Limits..."));
         linkBox.clear (juce::dontSendNotification);
         linkBox.addItem ("Own settings (no group)", 1);
         for (int i = 0; i < (int) sys.sources.size(); ++i)
@@ -2071,7 +2115,7 @@ private:
         auto* s = current();
         if (s == nullptr) return;
         angleWindow = std::make_unique<juce::AlertWindow> ("Coverage angles",
-            "From the data sheet: the horizontal and vertical coverage (to -6 dB), in degrees. A CBT-style column is about 150 x 20; "
+            "From the data sheet: the horizontal and vertical coverage (to -6 dB), in degrees. A wide column is about 150 x 20; "
             "a small point source 90 x 60.", juce::MessageBoxIconType::NoIcon, this);
         angleWindow->addTextEditor ("h", s->coverH > 0.0 ? juce::String (juce::roundToInt (s->coverH)) : juce::String ("90"), "Horizontal");
         angleWindow->addTextEditor ("v", s->coverV > 0.0 ? juce::String (juce::roundToInt (s->coverV)) : juce::String ("60"), "Vertical");
@@ -2096,6 +2140,156 @@ private:
         }), false);
     }
     std::unique_ptr<juce::AlertWindow> angleWindow;
+
+    // The speaker's own (built-in) filter, as the data sheet gives it.
+    void editOnboard()
+    {
+        auto* s = current();
+        if (s == nullptr) return;
+        auto& ob = s->onboard;
+        angleWindow = std::make_unique<juce::AlertWindow> ("Built-in filter",
+            "A filter inside the speaker (a powered sub's low-pass, a column's high-pass). Frequencies: fixed choices as \"80 / 100 / 120\", "
+            "or a range as \"60 - 200\". Leave the frequencies empty for no built-in filter.", juce::MessageBoxIconType::NoIcon, this);
+        angleWindow->addComboBox ("kind", { "High-pass", "Low-pass" }, "Type");
+        angleWindow->getComboBoxComponent ("kind")->setSelectedItemIndex (ob.lowPass ? 1 : 0, juce::dontSendNotification);
+        angleWindow->addComboBox ("family", { "Unknown", "Butterworth", "Linkwitz-Riley", "Bessel" }, "Family");
+        angleWindow->getComboBoxComponent ("family")->setSelectedItemIndex (juce::jlimit (0, 3, ob.type), juce::dontSendNotification);
+        angleWindow->addTextEditor ("slope", juce::String (ob.slope), "Slope (dB/oct)");
+        juce::String fr;
+        if (! ob.choices.empty()) { juce::StringArray c; for (double v : ob.choices) c.add (juce::String (juce::roundToInt (v))); fr = c.joinIntoString (" / "); }
+        else if (ob.rangeHi > ob.rangeLo) fr = juce::String (juce::roundToInt (ob.rangeLo)) + " - " + juce::String (juce::roundToInt (ob.rangeHi));
+        angleWindow->addTextEditor ("freqs", fr, "Frequencies (Hz)");
+        angleWindow->addComboBox ("bypass", { "Can be bypassed", "Always in" }, "Bypass");
+        angleWindow->getComboBoxComponent ("bypass")->setSelectedItemIndex (ob.bypassable ? 0 : 1, juce::dontSendNotification);
+        angleWindow->addTextEditor ("measured", ob.measuredAtHz > 0.0 ? juce::String (juce::roundToInt (ob.measuredAtHz)) : juce::String(), "Curve taken with it at (Hz)");
+        angleWindow->addTextEditor ("latency", ob.latencyMs >= 0.0 ? juce::String (ob.latencyMs, 2) : juce::String(), "DSP latency (ms, empty: unknown)");
+        angleWindow->addTextEditor ("set", ob.setHz > 0.0 ? juce::String (juce::roundToInt (ob.setHz)) : juce::String(), "Set now at (Hz, empty: bypassed)");
+        angleWindow->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        angleWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<SpeakersPage> safe (this);
+        const int index = selected;
+        angleWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe, index] (int result)
+        {
+            if (safe == nullptr || safe->angleWindow == nullptr) return;
+            auto& w = *safe->angleWindow;
+            if (result == 1 && index >= 0 && index < (int) safe->sys.sources.size())
+            {
+                auto& o = safe->sys.sources[(size_t) index].onboard;
+                SpeakerSource::Onboard n;
+                n.lowPass = w.getComboBoxComponent ("kind")->getSelectedItemIndex() == 1;
+                n.type = w.getComboBoxComponent ("family")->getSelectedItemIndex();
+                n.slope = juce::jlimit (6, 48, (w.getTextEditorContents ("slope").getIntValue() / 6) * 6);
+                const auto fr = w.getTextEditorContents ("freqs").trim();
+                if (fr.containsChar ('-') && ! fr.containsChar ('/'))
+                {
+                    n.rangeLo = fr.upToFirstOccurrenceOf ("-", false, false).getDoubleValue();
+                    n.rangeHi = fr.fromFirstOccurrenceOf ("-", false, false).getDoubleValue();
+                }
+                else
+                {
+                    juce::StringArray c;
+                    c.addTokens (fr, "/,; ", {});
+                    for (const auto& v : c) if (v.getDoubleValue() > 0.0) n.choices.push_back (v.getDoubleValue());
+                    std::sort (n.choices.begin(), n.choices.end());
+                }
+                n.bypassable = w.getComboBoxComponent ("bypass")->getSelectedItemIndex() == 0;
+                n.measuredAtHz = w.getTextEditorContents ("measured").getDoubleValue();
+                const auto lat = w.getTextEditorContents ("latency").trim();
+                n.latencyMs = lat.isEmpty() ? -1.0 : std::max (0.0, lat.getDoubleValue());
+                n.setHz = w.getTextEditorContents ("set").getDoubleValue();
+                n.present = ! n.choices.empty() || n.rangeHi > n.rangeLo;
+                if (n.present && n.setHz > 0.0) n.setHz = n.snap (n.setHz);
+                if (n.present && ! n.bypassable && n.setHz <= 0.0) n.setHz = n.snap (n.measuredAtHz > 0.0 ? n.measuredAtHz : 100.0);
+                o = n;
+            }
+            safe->angleWindow->setVisible (false);
+            safe->systemChanged (true);
+        }), false);
+    }
+
+    // Protection from the data sheet: the lowest safe high-pass and the voltage limit.
+    void editProtection()
+    {
+        auto* s = current();
+        if (s == nullptr) return;
+        angleWindow = std::make_unique<juce::AlertWindow> ("Limits from the data sheet",
+            "The lowest high-pass the speaker should be run with (its \"recommended high-pass\"), and its RMS voltage limit (from the "
+            "continuous power rating and impedance: V = sqrt (W x ohms)). Leave empty when not known.", juce::MessageBoxIconType::NoIcon, this);
+        angleWindow->addTextEditor ("hp", s->minSafeHpHz > 0.0 ? juce::String (juce::roundToInt (s->minSafeHpHz)) : juce::String(), "Minimum safe high-pass (Hz)");
+        angleWindow->addTextEditor ("slope", juce::String (s->minSafeHpSlope), "at (dB/oct)");
+        angleWindow->addTextEditor ("volts", s->rmsVoltLimit > 0.0 ? juce::String (s->rmsVoltLimit, 1) : juce::String(), "RMS voltage limit (V)");
+        angleWindow->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        angleWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<SpeakersPage> safe (this);
+        const int index = selected;
+        angleWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe, index] (int result)
+        {
+            if (safe == nullptr || safe->angleWindow == nullptr) return;
+            auto& w = *safe->angleWindow;
+            if (result == 1 && index >= 0 && index < (int) safe->sys.sources.size())
+            {
+                auto& src = safe->sys.sources[(size_t) index];
+                src.minSafeHpHz = std::max (0.0, w.getTextEditorContents ("hp").getDoubleValue());
+                src.minSafeHpSlope = juce::jlimit (6, 48, (w.getTextEditorContents ("slope").getIntValue() / 6) * 6);
+                src.rmsVoltLimit = std::max (0.0, w.getTextEditorContents ("volts").getDoubleValue());
+            }
+            safe->angleWindow->setVisible (false);
+            safe->systemChanged (false);
+        }), false);
+    }
+
+    // What the processor can do, as data: its filters' range and steps, the delay per output, the limiter's units,
+    // and which outputs have a high-pass and a low-pass at all.
+    void editProcessorDetails()
+    {
+        auto& c = sys.caps;
+        angleWindow = std::make_unique<juce::AlertWindow> ("Processor details",
+            "From its manual. No processor is named anywhere: only what it offers. Outputs without a filter: list them, e.g. \"HPF: 3 4\" "
+            "means outputs 3 and 4 have no high-pass.", juce::MessageBoxIconType::NoIcon, this);
+        angleWindow->addTextEditor ("lo", juce::String (juce::roundToInt (c.freqLo)), "Filter frequency from (Hz)");
+        angleWindow->addTextEditor ("hi", juce::String (juce::roundToInt (c.freqHi)), "to (Hz)");
+        angleWindow->addComboBox ("step", { "Free (any Hz)", "1 Hz steps", "Steps of 1/12 octave", "Steps of 1/24 octave", "Steps of 1/3 octave" }, "Frequency steps");
+        angleWindow->getComboBoxComponent ("step")->setSelectedItemIndex (c.freqStepHz > 0.0 ? 1 : std::abs (c.freqStepOct - 1.0 / 12) < 1e-4 ? 2 : std::abs (c.freqStepOct - 1.0 / 24) < 1e-4 ? 3 : std::abs (c.freqStepOct - 1.0 / 3) < 1e-4 ? 4 : 0, juce::dontSendNotification);
+        angleWindow->addTextEditor ("delay", c.delayMaxMs > 0.0 ? juce::String (c.delayMaxMs, 1) : juce::String(), "Delay per output, at most (ms; empty: no limit known)");
+        angleWindow->addComboBox ("lim", { "dBu", "dBFS", "Volts" }, "Limiter threshold in");
+        angleWindow->getComboBoxComponent ("lim")->setSelectedItemIndex (c.limiterUnit, juce::dontSendNotification);
+        angleWindow->addTextEditor ("fs", juce::String (c.fullScaleDbu, 1), "0 dBFS at the output is (dBu)");
+        juce::StringArray noHp, noLp;
+        for (int o = 0; o < SpeakerSystem::kMaxOutputs; ++o) { if (! sys.outputHasHp[(size_t) o]) noHp.add (juce::String (o + 1)); if (! sys.outputHasLp[(size_t) o]) noLp.add (juce::String (o + 1)); }
+        angleWindow->addTextEditor ("nohp", noHp.joinIntoString (" "), "Outputs with no high-pass");
+        angleWindow->addTextEditor ("nolp", noLp.joinIntoString (" "), "Outputs with no low-pass");
+        angleWindow->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        angleWindow->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<SpeakersPage> safe (this);
+        angleWindow->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int result)
+        {
+            if (safe == nullptr || safe->angleWindow == nullptr) return;
+            auto& w = *safe->angleWindow;
+            if (result == 1)
+            {
+                auto& cp = safe->sys.caps;
+                cp.freqLo = juce::jlimit (1.0, 20000.0, w.getTextEditorContents ("lo").getDoubleValue());
+                cp.freqHi = juce::jlimit (cp.freqLo, 40000.0, w.getTextEditorContents ("hi").getDoubleValue());
+                const int st = w.getComboBoxComponent ("step")->getSelectedItemIndex();
+                cp.freqStepHz = st == 1 ? 1.0 : 0.0;
+                cp.freqStepOct = st == 2 ? 1.0 / 12 : st == 3 ? 1.0 / 24 : st == 4 ? 1.0 / 3 : 0.0;
+                cp.delayMaxMs = std::max (0.0, w.getTextEditorContents ("delay").getDoubleValue());
+                cp.limiterUnit = w.getComboBoxComponent ("lim")->getSelectedItemIndex();
+                cp.fullScaleDbu = w.getTextEditorContents ("fs").getDoubleValue();
+                auto parse = [] (const juce::String& t, std::vector<bool>& has)
+                {
+                    has.assign (SpeakerSystem::kMaxOutputs, true);
+                    juce::StringArray a;
+                    a.addTokens (t, " ,;", {});
+                    for (const auto& v : a) { const int o = v.getIntValue(); if (o >= 1 && o <= SpeakerSystem::kMaxOutputs) has[(size_t) (o - 1)] = false; }
+                };
+                parse (w.getTextEditorContents ("nohp"), safe->sys.outputHasHp);
+                parse (w.getTextEditorContents ("nolp"), safe->sys.outputHasLp);
+            }
+            safe->angleWindow->setVisible (false);
+            safe->xoChanged();
+        }), false);
+    }
 
     // Something about the sources changed: rebuild what depends on them.
     void systemChanged (bool responses)
@@ -2204,6 +2398,83 @@ private:
         changedOutside();
     }
 
+    // "within 2.1 dB of flat (+2.1 dB at 82 Hz, -0.4 dB at 140 Hz)"
+    static juce::String shapeText (const xo::SumShape& sh)
+    {
+        if (! sh.valid) return "sum not known";
+        return "within " + juce::String (sh.maxDevDb, 1) + " dB of flat (" + signedText ((float) sh.peakDb, 1) + " dB at " + freqLabel (sh.peakHz) + " Hz, "
+               + signedText ((float) sh.dipDb, 1) + " dB at " + freqLabel (sh.dipHz) + " Hz)";
+    }
+
+    // The result in words: the setting, who gets the delay, the overlap (low to high), and what the sum does
+    // (a dip or a bump, from the computed sum itself, never from a guess).
+    juce::String resultText (const xo::Result& r) const
+    {
+        const auto& hiName = sys.groupName (sys.xoHigh), loName = sys.groupName (sys.xoLow);
+        juce::String t;
+        t << "Best: " << xo::typeName (r.filter.type) << " " << r.filter.slope << " dB/oct at " << freqLabel (r.fc > 0.0 ? r.fc : r.filter.freq) << " Hz";
+        if (r.lowFilter.active() && (r.lowFilter.type != r.filter.type || r.lowFilter.slope != r.filter.slope))
+            t << " (" << loName << ": " << xo::typeName (r.lowFilter.type) << " " << r.lowFilter.slope << " dB/oct)";
+        if (! r.lowFilter.active() && r.lowExtra.active()) t << " (" << loName << ": its own filter, processor low-pass OUT)";
+        t << "; ";
+        if (std::abs (r.delayLowMs) < 0.005) t << "no delay between them";
+        else t << "delay the " << (r.delayLowMs > 0 ? loName : hiName) << " " << juce::String (std::abs (r.delayLowMs), 2) << " ms";
+        if (r.invertLow) t << ", " << loName << " polarity inverted";
+        if (sys.sources[(size_t) sys.xoHigh].dspLatencyUnknown() || sys.sources[(size_t) sys.xoLow].dspLatencyUnknown())
+            t << " (model only: a speaker's DSP latency is unknown; measure it in Time alignment)";
+        if (sys.caps.delayMaxMs > 0.0 && std::abs (r.delayLowMs) > sys.caps.delayMaxMs + 1e-6)
+            t << " (more than the processor's " << juce::String (sys.caps.delayMaxMs, 1) << " ms per output: delay the " << (r.delayLowMs > 0 ? hiName : loName)
+              << " by the rest, or put the delay on the other output)";
+        t << ".\n";
+        if (r.tag != SpeakerSystem::TagPlain || r.lowExtra.active() || r.highExtra.active())
+            t << (r.tag == SpeakerSystem::TagStacked ? "Stacked (the processor's filter on top of the speaker's own): " : "") << sys.chainSettingsText (r) << "\n";
+        // protection: what a lower crossover costs the top in headroom (its power below the safe high-pass is wasted
+        // on excursion: roughly 3 dB of max output per halving of the frequency under it, at 24 dB/oct)
+        {
+            const auto& hiS = sys.sources[(size_t) sys.xoHigh];
+            const double fcHp = r.filter.active() ? r.filter.freq : r.highExtra.active() ? r.highExtra.freq : r.fc;
+            if (hiS.minSafeHpHz > 0.0 && fcHp < hiS.minSafeHpHz * 1.2)
+            {
+                const double costDb = 3.0 * std::max (0.0, std::log2 (hiS.minSafeHpHz / fcHp)) + (fcHp < hiS.minSafeHpHz ? 1.0 : 0.0);
+                t << freqLabel (fcHp) << " Hz is " << (fcHp < hiS.minSafeHpHz ? "under" : "close to") << " the " << hiName << "'s safe high-pass ("
+                  << freqLabel (hiS.minSafeHpHz) << " Hz, " << hiS.minSafeHpSlope << " dB/oct): it costs about " << juce::String (costDb, 1)
+                  << " dB of their maximum output compared with " << freqLabel (hiS.minSafeHpHz) << " Hz. ";
+            }
+        }
+        // the overlap, from the responses (low to high, always)
+        const auto grid = xo::analysisGrid();
+        const auto h = sys.groupResponse (sys.xoHigh, grid), l = sys.groupResponse (sys.xoLow, grid);
+        double from = 0.0, to = 0.0;
+        if (xo::overlapRange (h, l, r.gainLowDb, from, to)) t << "They overlap from " << freqLabel (from) << " to " << freqLabel (to) << " Hz (within 6 dB of each other).";
+        else t << "No overlap: nowhere do both play within 6 dB of each other.";
+        // the sum, from the result as it would be set
+        xo::Processing ph, pl;
+        ph.hp = r.filter;
+        pl.lp = r.lowFilter;
+        pl.gainDb = r.gainLowDb;
+        pl.invert = r.invertLow;
+        if (r.delayLowMs >= 0.0) pl.delayMs = r.delayLowMs; else ph.delayMs = -r.delayLowMs;
+        const auto sh = xo::sumShape (h, l, ph, pl, r.fc > 0.0 ? r.fc : r.filter.freq, proc.pref ("xoEvalOct"));
+        if (sh.valid)
+        {
+            t << " The sum is " << shapeText (sh);
+            if (sh.bump()) t << ": expect a bump";
+            else if (sh.dip()) t << ": expect a dip";
+            t << ".";
+            if (r.filter.type == xo::Butterworth && r.lowFilter.type == xo::Butterworth && sh.efficiency > 0.85 && sh.peakDb >= 1.0 && r.filter.slope % 12 == 0)
+            {
+                // two Butterworths in phase: each -3 dB at the crossover, so +3 dB together; the Linkwitz-Riley of the
+                // same order (each -6 dB) sums flat. Say what it would give.
+                xo::Processing ph2 = ph, pl2 = pl;
+                ph2.hp.type = pl2.lp.type = xo::LinkwitzRiley;
+                const auto lr = xo::sumShape (h, l, ph2, pl2, r.fc > 0.0 ? r.fc : r.filter.freq, proc.pref ("xoEvalOct"));
+                t << " Two Butterworths in phase add up to a bump at the crossover (each is -3 dB there). Linkwitz-Riley " << r.filter.slope << " dB/oct at the same "
+                  << freqLabel (r.fc > 0.0 ? r.fc : r.filter.freq) << " Hz would be " << shapeText (lr) << (sys.caps.types[xo::LinkwitzRiley] ? "." : " (not enabled for your processor).");
+            }
+        }
+        return t;
+    }
+
     void updateLive()
     {
         liveValid = false;
@@ -2215,10 +2486,10 @@ private:
         const auto& pl = sys.sources[(size_t) sys.xoLow].proc;
         if (! ph.hp.active()) return;
         double eff = 0.0;
-        double peak = 0.0;
-        xo::assess (h, l, ph, pl, ph.hp.freq, eff, settings.coherenceBlank.load(), &liveReliable, &peak);
+        xo::assess (h, l, ph, pl, ph.hp.freq, eff, settings.coherenceBlank.load(), &liveReliable, nullptr);
         liveEff = eff;
-        liveDev = peak;   // the largest step from flat through the crossover, as heard (not the optimiser's score)
+        liveShape = xo::sumShape (h, l, ph, pl, ph.hp.freq, proc.pref ("xoEvalOct"));   // as heard, not the optimiser's score
+        liveDev = liveShape.maxDevDb;
         liveValid = true;
         repaint();
     }
@@ -2255,6 +2526,16 @@ private:
         const auto caps = sys.caps;
         auto opt = sys.opt;
         opt.minCoherence = settings.coherenceBlank.load();
+        if (caps.delayMaxMs > 0.0) { opt.delayMinMs = std::max (opt.delayMinMs, -caps.delayMaxMs); opt.delayMaxMs = std::min (opt.delayMaxMs, caps.delayMaxMs); }
+        // the whole chain: the processor's filters where its outputs have them, the speakers' own filters where they
+        // are always in, protection and the headroom goal
+        {
+            const int goal = juce::roundToInt (proc.pref ("xoGoal"));
+            const SpeakerSystem chain = sys;   // a copy for the worker thread
+            opt.candidates = [chain, goal] (double fLo, double fHi) { return chain.chainCandidates (fLo, fHi, goal); };
+            std::string why;
+            if (chain.chainCandidates (opt.fMin, opt.fMax, goal, &why).empty()) { searching = false; findButton.setEnabled (true); status = juce::String (why); repaint(); return; }
+        }
         juce::Component::SafePointer<SpeakersPage> safe (this);
         auto flag = alive;
         std::thread ([safe, flag, h = std::move (h), l = std::move (l), caps, opt]
@@ -2277,7 +2558,10 @@ private:
             auto& hi = sys.sources[(size_t) sys.xoHigh].proc;
             auto& lo = sys.sources[(size_t) sys.xoLow].proc;
             hi.hp = r.filter;
-            lo.lp = r.filter;
+            lo.lp = r.lowFilter;
+            // the speakers' own switches, as the result needs them
+            if (r.lowExtra.active()) sys.sources[(size_t) sys.xoLow].onboard.setHz = r.lowExtra.freq;
+            if (r.highExtra.active()) sys.sources[(size_t) sys.xoHigh].onboard.setHz = r.highExtra.freq;
             hi.delayMs = r.delayLowMs < 0.0 ? -r.delayLowMs : 0.0;
             lo.delayMs = r.delayLowMs > 0.0 ? r.delayLowMs : 0.0;
             hi.invert = false;
@@ -2419,6 +2703,9 @@ private:
         arrivalMode = false;
         polarityMode = false;
         arrivalQueue.clear();
+        refPending.clear();
+        refCaptures.clear();
+        arrivalMember = -1;
         status = why;
         refreshMeasureButton();
         repaint();
@@ -2497,7 +2784,8 @@ private:
                             finishCheck();
                             return;
                         }
-                        (arrivalWhich == 0 ? a->refLevelDb : a->alignLevelDb) = snap->mics[(size_t) mic].rawZSlowDbfs;
+                        // the level in the band where they overlap comes from the transfer function, once averaged
+                        (arrivalWhich == 0 ? a->refLevelDb : a->alignLevelDb) = -200.0f;
                         (arrivalWhich == 0 ? a->refBandDb : a->alignBandDb) = bandLevel (mic, a->checkFreq);
                     }
                 delaySerial = proc.analyzer.readDelayReport().serial;
@@ -2522,13 +2810,28 @@ private:
                                    + ". Check that it is playing and the mic hears it, then measure again.");
                     return;
                 }
-                if (arrivalWhich == 0) { a->hasRef = true; a->refArrivalMs = rep.ms[(size_t) mic]; a->refDelayAtMeasure = sys.sources[(size_t) a->ref].proc.delayMs; }
-                else { a->hasAlign = true; a->alignArrivalMs = rep.ms[(size_t) mic]; a->alignDelayAtMeasure = sys.sources[(size_t) a->align].proc.delayMs; }
+                if (arrivalWhich == 0)
+                {
+                    // one side of a reference set: the end counts as measured once the nearer side is picked
+                    a->hasRef = arrivalMember < 0;
+                    a->refArrivalMs = rep.ms[(size_t) mic];
+                    a->refDelayAtMeasure = sys.sources[(size_t) (arrivalMember >= 0 ? arrivalMember : a->ref)].proc.delayMs;
+                    a->refInvertAtMeasure = sys.sources[(size_t) a->ref].proc.invert;
+                }
+                else
+                {
+                    a->hasAlign = true;
+                    a->alignArrivalMs = rep.ms[(size_t) mic];
+                    a->alignDelayAtMeasure = sys.sources[(size_t) a->align].proc.delayMs;
+                    a->alignInvertAtMeasure = sys.sources[(size_t) a->align].proc.invert;
+                }
                 {
                     // then its transfer function and impulse response, timed the same way for both (the first arrival
-                    // measured is time zero): the impulse responses show the offset, and a crossover pair matches its phase
-                    if (arrivalWhich == 0 || a->lockMs <= 0.0) a->lockMs = rep.ms[(size_t) mic];
-                    if (arrivalWhich == 0) a->alignTf = {};
+                    // measured is time zero; a set's sides share it): the impulse responses show the offset, and a
+                    // crossover pair matches its phase
+                    const bool firstOfRef = arrivalWhich == 0 && (arrivalMember < 0 || refCaptures.empty());
+                    if (firstOfRef || a->lockMs <= 0.0) a->lockMs = rep.ms[(size_t) mic];
+                    if (firstOfRef) a->alignTf = {};
                     settings.micDelayMs[mic] = (float) a->lockMs;
                     settings.requestResetAverages = true;
                     sawReset = false;
@@ -2926,7 +3229,7 @@ private:
         const bool xo = mode == 2 && sys.xoNeeded();
         for (auto* c : std::initializer_list<juce::Component*> { &highBox, &lowBox, &swapPairButton, &autoButton, &manualButton })
             c->setVisible (xo);
-        for (auto* c : std::initializer_list<juce::Component*> { &rangeBox, &findButton }) c->setVisible (xo && ! xoManual);
+        for (auto* c : std::initializer_list<juce::Component*> { &rangeBox, &findButton, &procDetailsButton }) c->setVisible (xo && ! xoManual);
         for (auto* c : std::initializer_list<juce::Component*> { &freqSlider, &typeBox, &slopeBox, &delaySlider, &gainSlider, &invertButton })
             c->setVisible (xo && xoManual);
         invertedSwapButton.setVisible (xo && sys.pairInverted());
@@ -2991,8 +3294,7 @@ private:
         for (const auto& a : sys.alignments)
         {
             if (! a.measured() || a.ref >= (int) sys.sources.size() || a.align >= (int) sys.sources.size()) return false;
-            const double need = a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs);
-            if (need < -0.005 || std::abs (sys.sources[(size_t) a.align].proc.delayMs - need) >= 0.01) return false;
+            if (! appliedNow (a)) return false;
         }
         return true;
     }
@@ -3027,8 +3329,7 @@ private:
         if (sys.alignments.empty()) return alignmentNeeded() ? "Stereo, sub and fills to line up" : "Optional";
         int done = 0;
         for (const auto& a : sys.alignments)
-            if (a.measured() && a.ref < (int) sys.sources.size() && a.align < (int) sys.sources.size()
-                && std::abs (sys.sources[(size_t) a.align].proc.delayMs - a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs)) < 0.01)
+            if (a.measured() && a.ref < (int) sys.sources.size() && a.align < (int) sys.sources.size() && appliedNow (a))
                 ++done;
         return juce::String (done) + " of " + juce::String ((int) sys.alignments.size()) + " applied";
     }
@@ -3287,9 +3588,34 @@ private:
         if (arrivalMode && arrivalAlignment >= 0 && arrivalAlignment < (int) sys.alignments.size())
         {
             const auto& a = sys.alignments[(size_t) arrivalAlignment];
+            if (! checkMode && arrivalMember >= 0) return nameOf (arrivalMember) + " on its own";
             return checkMode ? sideName (a, 0) + " and " + sideName (a, 1) : sideName (a, arrivalWhich, true);
         }
         return nameOf (measuring);
+    }
+    // A set as the reference end, not the crossover pair: its sides are measured one at a time, and the one to align
+    // follows the side nearer to it (the louder one in its band at the spot). The pair plays together, as in the show.
+    bool refOneByOne (const Alignment& a) const { return a.refSet && sideMembers (a, 0).size() > 1 && ! isXoPair (a); }
+    // The reference as used: "Stereo (L)" when one side was picked, else the end's name.
+    juce::String refUsedName (const Alignment& a) const
+    {
+        return a.refMemberUsed >= 0 && a.refMemberUsed < (int) sys.sources.size() ? nameOf (a.refMemberUsed) : sideName (a, 0);
+    }
+    // "Front fill to Stereo (L), the nearer side" when one side of the reference set was picked; empty otherwise.
+    juce::String nearerSideText (const Alignment& a) const
+    {
+        if (a.refMemberUsed < 0 || a.refMemberUsed >= (int) sys.sources.size()) return {};
+        return sideName (a, 1) + " to " + nameOf (a.refMemberUsed) + ", the nearer side";
+    }
+    // The frequency the two ends' levels are compared at: the crossover when a sub is involved, otherwise the middle
+    // of the band the one to align plays (where a fill or delay overlaps the main).
+    double levelFreqOf (const Alignment& a) const
+    {
+        const auto isSub = [this] (int i) { return i >= 0 && i < (int) sys.sources.size() && sys.sources[(size_t) i].role == (int) SpeakerRole::Sub; };
+        if (isXoPair (a) || isSub (a.ref) || isSub (a.align)) return sys.overlapFreq (sys.xoHigh, sys.xoLow);
+        double lo = 200.0, hi = 5000.0;
+        sys.playRange (a.align, lo, hi);
+        return juce::jlimit (100.0, 4000.0, std::sqrt (juce::jmax (20.0, lo) * juce::jmax (20.0, hi)));
     }
     // The frequency where the two ends overlap, for the check: the crossover for the crossover pair, else 500 Hz.
     double overlapOf (const Alignment& a) const { return isXoPair (a) ? sys.overlapFreq (sys.xoHigh, sys.xoLow) : 500.0; }
@@ -3446,11 +3772,14 @@ private:
         const bool ok = a != nullptr && a->measured() && endsValid (*a);
         alApplyButton.setEnabled (ok);
         if (! ok) { alApplyButton.setButtonText ("Apply delay"); return; }
-        const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
-        const bool applied = need >= -0.005 && std::abs (sys.sources[(size_t) a->align].proc.delayMs - need) < 0.01;
+        const double need = a->neededMs (sys.refDelayNow (*a));
+        const bool applied = appliedNow (*a);
+        int lowIdx = -1;
+        bool wantInvert = false;
+        const juce::String inv = lowInvertWanted (*a, lowIdx, wantInvert) && wantInvert ? juce::String (" + invert") : juce::String();
         alApplyButton.setEnabled (! applied);
-        alApplyButton.setButtonText (need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + sideName (*a, 0) : applied ? "Applied: " + juce::String (need, 2) + " ms on " + sideName (*a, 1)
-                                                                               : "Apply " + juce::String (need, 2) + " ms to " + sideName (*a, 1));
+        alApplyButton.setButtonText (need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + sideName (*a, 0) : applied ? "Applied: " + juce::String (need, 2) + " ms" + inv + " on " + sideName (*a, 1)
+                                                                               : "Apply " + juce::String (need, 2) + " ms" + inv + " to " + sideName (*a, 1));
     }
 
     // The delay goes on the align end. A set: every member moves by the same amount, so each keeps its own trim (its
@@ -3460,7 +3789,7 @@ private:
         proc.noteAsFound();
         auto* a = currentAlignment();
         if (a == nullptr || ! a->measured() || ! endsValid (*a)) return;
-        double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
+        double need = a->neededMs (sys.refDelayNow (*a));
         juce::String swapped;
         if (need < -0.005)
         {
@@ -3474,10 +3803,12 @@ private:
             std::swap (a->refIr, a->alignIr);
             std::swap (a->refIrZero, a->alignIrZero);
             std::swap (a->refDelayAtMeasure, a->alignDelayAtMeasure);
+            std::swap (a->refInvertAtMeasure, a->alignInvertAtMeasure);
+            a->refMemberUsed = -1;   // the set now gets the delay as a whole (its measured side's arrival stands for it)
             a->xoOffsetMs = -a->xoOffsetMs;
             if (a->phaseValid) a->phaseDelayMs = -a->phaseDelayMs;
             swapped = " (" + sideName (*a, 0) + " was the later one, so " + sideName (*a, 1) + " is delayed instead)";
-            need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
+            need = a->neededMs (sys.refDelayNow (*a));
         }
         if (need >= -0.005)
         {
@@ -3489,13 +3820,52 @@ private:
                 auto& d = sys.sources[(size_t) k].proc.delayMs;
                 d = k == a->align ? target : juce::jmax (0.0, d + shift);
             }
+            // the crossover pair: the polarity its phase match asked for goes on the low side (every speaker of its
+            // group, so a set's members all get it; syncLinks keeps them together after)
+            juce::String inverted;
+            int lowIdx = -1;
+            bool wantInvert = false;
+            if (lowInvertWanted (*a, lowIdx, wantInvert))
+            {
+                bool was = sys.sources[(size_t) lowIdx].proc.invert;
+                for (int k : sys.groupOf (lowIdx)) sys.sources[(size_t) k].proc.invert = wantInvert;
+                const auto lowName = sys.endName (lowIdx, sys.inGroup (lowIdx));
+                if (wantInvert) inverted = " and invert " + lowName;
+                else if (was) inverted = " and set " + lowName + " back to normal polarity";
+            }
             proc.noteTunedConditions();
+            const auto nearer = nearerSideText (*a);
             status = sideName (*a, 1) + " delay set to " + juce::String (target, 2) + " ms" + swapped
                      + (members.size() > 1 ? " (each of its speakers keeps its own trim)" : juce::String())
-                     + ". Enter it in the processor, then check them together.";
+                     + (nearer.isNotEmpty() ? " (" + nearer + ")" : juce::String())
+                     + inverted + ". Enter it in the processor, then check them together.";
             graph.rebuild();
         }
         systemChanged (false);
+    }
+
+    // The crossover pair, once its phase is matched: the polarity its low side needs now (relative to what each end
+    // had while measured, and allowing for the high side having been changed since). False: not the pair, or no match.
+    bool lowInvertWanted (const Alignment& a, int& lowIdx, bool& want) const
+    {
+        if (! isXoPair (a) || ! a.phaseValid) return false;
+        const bool lowIsAlign = sys.endHas (a.align, a.alignSet, sys.xoLow);
+        lowIdx = lowIsAlign ? a.align : a.ref;
+        const int highIdx = lowIsAlign ? a.ref : a.align;
+        const bool lowAtMeasure = lowIsAlign ? a.alignInvertAtMeasure : a.refInvertAtMeasure;
+        const bool highAtMeasure = lowIsAlign ? a.refInvertAtMeasure : a.alignInvertAtMeasure;
+        const bool highChanged = sys.sources[(size_t) highIdx].proc.invert != highAtMeasure;
+        want = (lowAtMeasure != a.phaseInvert) != highChanged;
+        return true;
+    }
+    // The pair's polarity is as the match asked (or there is nothing to ask).
+    bool lowInvertApplied (const Alignment& a) const
+    {
+        int lowIdx = -1;
+        bool want = false;
+        if (! lowInvertWanted (a, lowIdx, want)) return true;
+        for (int k : sys.groupOf (lowIdx)) if (sys.sources[(size_t) k].proc.invert != want) return false;
+        return true;
     }
 
     void layoutAlignment (juce::Rectangle<int> c)
@@ -3542,7 +3912,8 @@ private:
                               ? "Music from the console: send it to only what each step names (both sides of a set at once; mute the rest on the console), "
                                 "with the console's feed on the reference input. Put " + proc.mics.nameOf (sys.measureMic) + " where both ends cover the seats."
                               : "Put " + proc.mics.nameOf (sys.measureMic) + " where both ends cover the seats (FOH for Stereo and the sub, "
-                                "the front rows for a fill). A set plays all its speakers at once. Measure with the processor set as shown here.",
+                                "the front rows for a fill). A set plays all its speakers at once; as the reference for a fill or delay, one side at a "
+                                "time, so the fill follows the nearer side. Measure with the processor set as shown here.",
                           alHint, juce::Justification::topLeft, 3);
 
         const auto* a = currentAlignment();
@@ -3550,7 +3921,9 @@ private:
         if (a != nullptr)
         {
             const int stage = alignmentStage();
-            const juce::String names[] = { "Play " + sideName (*a, 0) + " on its own", "Mute it, play " + sideName (*a, 1) + " on its own",
+            const bool oneByOne = refOneByOne (*a);
+            const juce::String names[] = { oneByOne ? "Play each side of " + sideName (*a, 0) + " on its own" : "Play " + sideName (*a, 0) + " on its own",
+                                           "Mute it, play " + sideName (*a, 1) + " on its own",
                                            "Set the delay", "Unmute both and check" };
             auto r = alSteps;
             for (int i = 0; i < 4; ++i)
@@ -3582,20 +3955,40 @@ private:
             const int out = sys.sharedOutput (sideMembers (*a, st));
             const auto who = sideName (*a, st), other = sideName (*a, 1 - st);
             const bool set = sideMembers (*a, st).size() > 1;
-            if (st == 0)
-                t << "In your processor, unmute " << (set ? sideName (*a, st, true) : who) << " and mute every other speaker. Press Play " << who
-                  << ": LiveAlign plays pink noise and finds when it arrives at " << spotOf (*a) << ".";
+            const bool oneByOne = st == 0 && refOneByOne (*a);
+            if (oneByOne)
+            {
+                // each side alone in turn: a fill or delay follows the side nearer to it
+                const auto members = sideMembers (*a, 0);
+                bool ownOutputs = true;
+                for (int k : members) ownOutputs = ownOutputs && muteText ({ k }).isEmpty();
+                t << "In your processor, unmute " << sideName (*a, 0, true) << " and mute every other speaker. Press Play " << who
+                  << ": each side plays on its own in turn, and " << other << " is lined up to the louder side here, the nearer one.";
+                t << (ownOutputs ? "\nThe generator plays each side's output in turn." : "\nThe sides share an output: you are asked to swap the mutes between them.");
+            }
             else
-                t << "Now mute " << other << " and unmute " << (set ? sideName (*a, st, true) : who) << ". Press Play " << who << ".";
-            if (set) t << " Both sides play at once, as in the show.";
-            t << (out > 0 ? "\nThe generator plays output " + juce::String (out) + "." : "\nThe generator plays all outputs: the processor's mutes pick what plays.");
+            {
+                if (st == 0)
+                    t << "In your processor, unmute " << (set ? sideName (*a, st, true) : who) << " and mute every other speaker. Press Play " << who
+                      << ": LiveAlign plays pink noise and finds when it arrives at " << spotOf (*a) << ".";
+                else
+                    t << "Now mute " << other << " and unmute " << (set ? sideName (*a, st, true) : who) << ". Press Play " << who << ".";
+                if (set) t << " Both sides play at once, as in the show.";
+                t << (out > 0 ? "\nThe generator plays output " + juce::String (out) + "." : "\nThe generator plays all outputs: the processor's mutes pick what plays.");
+            }
             c = p.text;
         }
         else if (endsValid (*a) && a->measured() && alignmentStage() >= 3)
         {
-            const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
+            const double need = a->neededMs (sys.refDelayNow (*a));
             t << sideName (*a, 1) << " delay " << juce::String (need, 2) << " ms is set";
             if (sideMembers (*a, 1).size() > 1) t << " (on each of its speakers, each keeping its own trim)";
+            {
+                int lowIdx = -1;
+                bool wantInvert = false;
+                if (lowInvertWanted (*a, lowIdx, wantInvert) && wantInvert) t << ", with " << sys.endName (lowIdx, sys.inGroup (lowIdx)) << " inverted";
+            }
+            if (const auto nearer = nearerSideText (*a); nearer.isNotEmpty()) t << " (" << nearer << ")";
             t << ". Enter it in the processor if you have not, unmute both and press Check.";
             if (a->checked())
             {
@@ -3611,26 +4004,31 @@ private:
         else if (! a->measured()) { t = "Not measured at " + spotOf (*a) + " yet."; c = p.warn; }
         else
         {
-            const auto refName = sideName (*a, 0), alName = sideName (*a, 1);
+            const auto refName = refUsedName (*a), alName = sideName (*a, 1);
             const double diff = a->alignArrivalMs - a->refArrivalMs;
-            const double refDelay = sys.sources[(size_t) a->ref].proc.delayMs;
+            const double refDelay = sys.refDelayNow (*a);
             const double need = a->neededMs (refDelay);
+            if (const auto nearer = nearerSideText (*a); nearer.isNotEmpty())
+                t << nearer << " (the louder of " << sideName (*a, 0) << " in its band at " << spotOf (*a) << ").\n";
             t << alName << " arrives " << juce::String (std::abs (diff), 2) << " ms " << (diff < 0.0 ? "before " : "after ") << refName
               << " at " << spotOf (*a) << ".";
             if (refDelay > 0.0) t << " " << refName << " has " << juce::String (refDelay, 2) << " ms of its own delay.";
             if (need < -0.005)
-                t << "\n" << alName << " is already the later one: " << refName << " gets " << juce::String (-need, 2) << " ms instead.";
+                t << "\n" << alName << " is already the later one: " << sideName (*a, 0) << " gets " << juce::String (-need, 2) << " ms instead.";
             else
             {
                 t << "\nDelay " << alName << " " << juce::String (need, 2) << " ms";
                 if (a->precedenceMs > 0.0) t << " (" << juce::String (a->precedenceMs, 1) << " ms extra so " << refName << " leads)";
+                int lowIdx = -1;
+                bool wantInvert = false;
+                if (lowInvertWanted (*a, lowIdx, wantInvert) && wantInvert) t << " and invert " << sys.endName (lowIdx, sys.inGroup (lowIdx));
                 t << ".";
-                if (std::abs (sys.sources[(size_t) a->align].proc.delayMs - need) < 0.01) t << " Applied.";
+                if (appliedNow (*a)) t << " Applied.";
             }
             if (a->refLevelDb > -150.0f && a->alignLevelDb > -150.0f)
             {
                 const float d = a->alignLevelDb - a->refLevelDb;
-                t << "\nLevel here: " << alName << " " << signedText (d, 1) << " dB against " << refName;
+                t << "\nLevel here at " << freqLabel (levelFreqOf (*a)) << " Hz: " << alName << " " << signedText (d, 1) << " dB against " << refName;
                 const bool lr = ! a->refSet && ! a->alignSet && sys.sources[(size_t) a->align].role == (int) SpeakerRole::Main
                                 && sys.sources[(size_t) a->ref].role == (int) SpeakerRole::Main;
                 if (lr && std::abs (d) > 1.0f) t << " (a stereo pair should match within 1 dB)";
@@ -3654,9 +4052,13 @@ private:
             repaint();
             return;
         }
-        if (alSignal == 2 || muteText (sideMembers (*a, 0)).isNotEmpty() || muteText (sideMembers (*a, 1)).isNotEmpty())
+        const bool oneByOne = refOneByOne (*a);
+        bool mutesChange = alSignal == 2 || muteText (sideMembers (*a, 1)).isNotEmpty();
+        if (oneByOne) { for (int k : sideMembers (*a, 0)) mutesChange = mutesChange || muteText ({ k }).isNotEmpty(); }
+        else mutesChange = mutesChange || muteText (sideMembers (*a, 0)).isNotEmpty();
+        if (mutesChange)
         {
-            // the mutes change between the two: one at a time
+            // the mutes change between the captures: one at a time
             startArrivalOne (index, 0);
             return;
         }
@@ -3666,12 +4068,19 @@ private:
         a->lockMs = 0.0;
         a->sumBandDb = -200.0f;
         a->phaseValid = false;
+        a->refMemberUsed = -1;
         setXoOffset (*a);
         settings.captureAllIr = true;
         arrivalMode = true;
         checkMode = false;
         arrivalAlignment = index;
-        arrivalQueue = { { index, 0 }, { index, 1 } };
+        arrivalQueue.clear();
+        refCaptures.clear();
+        refPending.clear();
+        // the reference end: as set, or each side of the set on its own (the generator picks its output)
+        if (oneByOne) for (int k : sideMembers (*a, 0)) arrivalQueue.push_back ({ index, 0, k });
+        else arrivalQueue.push_back ({ index, 0, -1 });
+        arrivalQueue.push_back ({ index, 1, -1 });
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
         status.clear();
         nextArrival();
@@ -3682,17 +4091,19 @@ private:
         if (arrivalQueue.empty()) { cancelMeasure ("Nothing to measure."); return; }
         const auto next = arrivalQueue.front();
         arrivalQueue.erase (arrivalQueue.begin());
-        const auto* a = alignmentAt (next.first);
+        const auto* a = alignmentAt (next.alignment);
         if (a == nullptr) { cancelMeasure ("The alignment was removed."); return; }
         if (a->ref < 0 || a->ref >= (int) sys.sources.size() || a->align < 0 || a->align >= (int) sys.sources.size())
         {
             cancelMeasure ("This alignment points at a speaker that is no longer in the system: remove it and add it again.");
             return;
         }
-        arrivalWhich = next.second;
-        measuring = arrivalWhich == 0 ? a->ref : a->align;
-        // a set: every member plays, from their shared output or all outputs (the rest muted at the console)
-        settings.genOutput = sys.sharedOutput (sideMembers (*a, arrivalWhich));
+        arrivalWhich = next.which;
+        arrivalMember = next.which == 0 && next.member >= 0 && next.member < (int) sys.sources.size() ? next.member : -1;
+        measuring = arrivalMember >= 0 ? arrivalMember : arrivalWhich == 0 ? a->ref : a->align;
+        // a set: every member plays, from their shared output or all outputs (the rest muted at the console);
+        // one side of the reference set on its own: from its output
+        settings.genOutput = arrivalMember >= 0 ? sys.sharedOutput ({ arrivalMember }) : sys.sharedOutput (sideMembers (*a, arrivalWhich));
         startSignal();
         settings.running = true;
         phase = Phase::Settling;
@@ -3754,6 +4165,8 @@ private:
             t.extra.push_back (i < r.tfCoh.size() ? r.tfCoh[i] : 0.0);
         }
         (arrivalWhich == 0 ? a->refTf : a->alignTf) = std::move (t);
+        // the level where the two overlap, from the transfer function (the same generator level for both ends)
+        (arrivalWhich == 0 ? a->refLevelDb : a->alignLevelDb) = tfBand (arrivalWhich == 0 ? a->refTf : a->alignTf, levelFreqOf (*a));
         // the impulse response (every mic's is captured while an arrival is measured)
         {
             const auto& src = ! r.ir.empty() ? r.ir : (snap->shownMic == mic ? snap->ir : std::vector<float>());
@@ -3763,8 +4176,66 @@ private:
             a->irRate = snap->sampleRate;
         }
         for (int m = 0; m < kMaxMics; ++m) settings.micDelayMs[m] = savedDelays[(size_t) m];
+        if (arrivalWhich == 0 && arrivalMember >= 0)
+        {
+            // one side of the reference set: keep what it gave, the nearer side is picked once every side has played
+            RefCapture cap;
+            cap.member = arrivalMember;
+            cap.arrivalMs = a->refArrivalMs;
+            cap.delayAtMeasure = a->refDelayAtMeasure;
+            cap.invertAtMeasure = a->refInvertAtMeasure;
+            cap.levelDb = a->refLevelDb;
+            cap.bandDb = a->refBandDb;
+            cap.tf = a->refTf;
+            cap.ir = a->refIr;
+            cap.irZero = a->refIrZero;
+            refCaptures.erase (std::remove_if (refCaptures.begin(), refCaptures.end(), [&] (const RefCapture& c) { return c.member == cap.member; }), refCaptures.end());
+            refCaptures.push_back (std::move (cap));
+            if (arrivalQueue.empty() && ! refPending.empty())
+            {
+                // the next side needs the mutes swapped: stop, then ask and go on
+                const int index = arrivalAlignment;
+                settings.genOn = false;
+                settings.captureAllIr = false;
+                phase = Phase::Idle;
+                measuring = -1;
+                arrivalMode = false;
+                arrivalMember = -1;
+                refreshMeasureButton();
+                repaint();
+                nextRefMember (index);
+                return;
+            }
+        }
         if (! arrivalQueue.empty()) nextArrival();
         else finishArrival();
+    }
+
+    // Every side of the reference set has played: the one loudest in the align speaker's band at the spot is the
+    // reference (the nearer side), and its capture stands for the end.
+    void chooseRefMember (Alignment& a)
+    {
+        if (refCaptures.empty()) return;
+        const double f = levelFreqOf (a);
+        const RefCapture* best = nullptr;
+        float bestDb = -300.0f;
+        for (const auto& c : refCaptures)
+        {
+            const float db = tfBand (c.tf, f);
+            if (best == nullptr || db > bestDb) { best = &c; bestDb = db; }
+        }
+        a.refMemberUsed = best->member;
+        a.refArrivalMs = best->arrivalMs;
+        a.refDelayAtMeasure = best->delayAtMeasure;
+        a.refInvertAtMeasure = best->invertAtMeasure;
+        a.refLevelDb = best->levelDb;
+        a.refBandDb = best->bandDb;
+        a.refTf = best->tf;
+        a.refIr = best->ir;
+        a.refIrZero = best->irZero;
+        a.hasRef = true;
+        refCaptures.clear();
+        refPending.clear();
     }
 
     void finishArrival()
@@ -3777,17 +4248,33 @@ private:
         if (auto* a = alignmentAt (arrivalAlignment))
         {
             a->measuredOn = LiveAlignProcessor::today() + juce::Time::getCurrentTime().formatted (" %H:%M");
-            status = "Measured " + sideName (*a, arrivalWhich, true) + " at " + spotName() + ".";
-            // the crossover pair: the delay that makes them add up best through the crossover, from their phase
+            const bool sides = ! refCaptures.empty();
+            if (sides) chooseRefMember (*a);
+            if (sides && a->refMemberUsed >= 0)
+                status = "Measured " + sideName (*a, 0, true) + " one side at a time at " + spotName() + ": " + nearerSideText (*a) + ".";
+            else
+                status = "Measured " + sideName (*a, arrivalWhich, true) + " at " + spotName() + "."
+                         + (a->refMemberUsed >= 0 ? " " + nearerSideText (*a) + "." : juce::String());
+            // the crossover pair: the delay, and the polarity of the low side, that make them add up best through the crossover
             a->phaseValid = false;
+            a->phaseInvert = false;
             if (isXoPair (*a) && a->refTf.freq.size() > 8 && a->alignTf.freq.size() > 8)
             {
                 const double f = overlapOf (*a);
                 double d = 0.0;
-                if (Alignment::phaseMatch (a->refTf, a->alignTf, f / 2.0, f * 2.0, d)) { a->phaseValid = true; a->phaseDelayMs = d; }
-                if (a->phaseValid) status = "Measured both: matched their phase through the crossover (" + freqLabel (f) + " Hz).";
+                bool inv = false;
+                if (Alignment::phaseMatch (a->refTf, a->alignTf, f, d, inv)) { a->phaseValid = true; a->phaseDelayMs = d; a->phaseInvert = inv; }
+                if (a->phaseValid)
+                {
+                    int lowIdx = -1;
+                    bool want = false;
+                    const bool invertLow = lowInvertWanted (*a, lowIdx, want) && want;
+                    status = "Measured both: matched their phase through the crossover (" + freqLabel (f) + " Hz)"
+                             + (invertLow ? ", with " + sys.endName (lowIdx, sys.inGroup (lowIdx)) + " inverted" : juce::String()) + ".";
+                }
             }
         }
+        arrivalMember = -1;
         arrivalAlignment = -1;
         ++measureSerial;
         refreshMeasureButton();
@@ -3809,8 +4296,8 @@ private:
     bool appliedNow (const Alignment& a) const
     {
         if (a.ref >= (int) sys.sources.size() || a.align >= (int) sys.sources.size()) return false;
-        const double need = a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs);
-        return need >= -0.005 && std::abs (sys.sources[(size_t) a.align].proc.delayMs - need) < 0.01;
+        const double need = a.neededMs (sys.refDelayNow (a));
+        return need >= -0.005 && std::abs (sys.sources[(size_t) a.align].proc.delayMs - need) < 0.01 && lowInvertApplied (a);
     }
 
     juce::String alignmentActionText() const
@@ -3822,7 +4309,7 @@ private:
             case 1: return "Measure " + sideName (*a, 1);
             case 2:
             {
-                const double need = a->neededMs (sys.sources[(size_t) a->ref].proc.delayMs);
+                const double need = a->neededMs (sys.refDelayNow (*a));
                 return need < -0.005 ? "Apply " + juce::String (-need, 2) + " ms to " + sideName (*a, 0) : "Apply " + juce::String (need, 2) + " ms to " + sideName (*a, 1);
             }
             case 3: return alSignal == 2 ? juce::String ("Check: music on both") : juce::String ("Check: play both");
@@ -3886,6 +4373,21 @@ private:
             return;
         }
         if (! signalReady()) return;
+        if (which == 0 && refOneByOne (*a))
+        {
+            // the reference set, one side at a time
+            a->hasRef = false;
+            a->refIr.clear();
+            a->lockMs = 0.0;
+            a->sumBandDb = -200.0f;
+            a->phaseValid = false;
+            a->refMemberUsed = -1;
+            setXoOffset (*a);
+            refCaptures.clear();
+            refPending = sideMembers (*a, 0);
+            nextRefMember (index);
+            return;
+        }
         const auto who = sideMembers (*a, which);   // a set: all its speakers play at once
         if (alSignal != 2 && ! mutesConfirmed && muteText (who).isNotEmpty())
         {
@@ -3894,6 +4396,7 @@ private:
         }
         (which == 0 ? a->hasRef : a->hasAlign) = false;
         (which == 0 ? a->refIr : a->alignIr).clear();
+        if (which == 0) a->refMemberUsed = -1;
         a->sumBandDb = -200.0f;
         a->phaseValid = false;
         setXoOffset (*a);
@@ -3901,7 +4404,37 @@ private:
         arrivalMode = true;
         checkMode = false;
         arrivalAlignment = index;
-        arrivalQueue = { { index, which } };
+        arrivalQueue = { { index, which, -1 } };
+        for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
+        status.clear();
+        nextArrival();
+    }
+
+    // The next side of the reference set on its own (asking for the mutes when it shares an output); when every side
+    // has played, the nearer one is picked.
+    void nextRefMember (int index)
+    {
+        auto* a = alignmentAt (index);
+        if (a == nullptr || ! endsValid (*a)) { refPending.clear(); refCaptures.clear(); return; }
+        if (refPending.empty())
+        {
+            arrivalAlignment = index;
+            arrivalWhich = 0;
+            finishArrival();
+            return;
+        }
+        const int member = refPending.front();
+        if (alSignal != 2 && ! mutesConfirmed && muteText ({ member }).isNotEmpty())
+        {
+            withMutes ({ member }, [this, index] { nextRefMember (index); });
+            return;
+        }
+        refPending.erase (refPending.begin());
+        settings.captureAllIr = true;
+        arrivalMode = true;
+        checkMode = false;
+        arrivalAlignment = index;
+        arrivalQueue = { { index, 0, member } };
         for (int m = 0; m < kMaxMics; ++m) savedDelays[(size_t) m] = settings.micDelayMs[m].load();
         status.clear();
         nextArrival();
@@ -4066,15 +4599,19 @@ private:
         {
             if (! a.measured() || a.ref >= (int) sys.sources.size() || a.align >= (int) sys.sources.size()) continue;
             if (! head) { out << (forScreen ? "#TIME ALIGNMENT\n" : "\nTime alignment:\n"); head = true; }
-            const double need = a.neededMs (sys.sources[(size_t) a.ref].proc.delayMs);
-            out << sideName (a, 1) << " to " << sideName (a, 0) << " at " << spotOf (a) << ": ";
+            const double need = a.neededMs (sys.refDelayNow (a));
+            out << sideName (a, 1) << " to " << sideName (a, 0);
+            if (a.refMemberUsed >= 0) out << " (" << refUsedName (a) << ", the nearer side)";
+            out << " at " << spotOf (a) << ": ";
             if (need < -0.005) out << "delay " << sideName (a, 0) << " " << juce::String (-need, 2) << " ms instead, not applied yet";
             else
             {
                 out << "delay " << juce::String (need, 2) << " ms";
                 if (a.precedenceMs > 0.0) out << " (incl. " << juce::String (a.precedenceMs, 1) << " ms extra)";
-                const bool applied = std::abs (sys.sources[(size_t) a.align].proc.delayMs - need) < 0.01;
-                out << (applied ? ", applied" : ", not applied yet");
+                int lowIdx = -1;
+                bool wantInvert = false;
+                if (lowInvertWanted (a, lowIdx, wantInvert) && wantInvert) out << ", " << sys.endName (lowIdx, sys.inGroup (lowIdx)) << " inverted";
+                out << (appliedNow (a) ? ", applied" : ", not applied yet");
             }
             if (a.refLevelDb > -150.0f && a.alignLevelDb > -150.0f)
                 out << "; level " << signedText (a.alignLevelDb - a.refLevelDb, 1) << " dB";
@@ -4143,6 +4680,7 @@ private:
     juce::Slider offsetSlider, freqSlider, delaySlider, gainSlider;
     juce::ToggleButton processedToggle { "With processing" };
     juce::TextButton typeButtons[3], slopeButtons[kSlopeButtons];
+    juce::TextButton onboardButton { "No own filter..." }, protectButton { "Limits..." }, procDetailsButton { "Details..." };
     juce::TextButton findButton { "Find best crossover" }, invertButton { "Low normal" };
     juce::TextButton autoButton { "Automatic" }, manualButton { "By hand" }, removeXoButton { "Remove these crossover filters" },
         topHpButton { "Add a protective high-pass to the tops" };
@@ -4174,8 +4712,25 @@ private:
     int qualityTick = 0;
     std::vector<double> reliability;
     int alSelected = 0, arrivalAlignment = -1, arrivalWhich = 0;
+    int arrivalMember = -1;   // the one member of the reference set playing now (one side at a time), -1 = the whole end
     bool arrivalMode = false;
-    std::vector<std::pair<int, int>> arrivalQueue;   // (alignment, 0 = reference speaker / 1 = aligned speaker)
+    // One capture to make: which end (0 the reference, 1 the one to align), and for a reference set measured one
+    // side at a time, the member that plays alone (-1: the end as set).
+    struct ArrivalStep { int alignment = -1, which = 0, member = -1; };
+    std::vector<ArrivalStep> arrivalQueue;
+    // A reference set measured one side at a time: what each side gave, until the nearer one is picked.
+    struct RefCapture
+    {
+        int member = -1;
+        double arrivalMs = 0.0, delayAtMeasure = 0.0;
+        bool invertAtMeasure = false;
+        float levelDb = -200.0f, bandDb = -200.0f;
+        FreqTable tf;
+        std::vector<float> ir;
+        int irZero = 0;
+    };
+    std::vector<RefCapture> refCaptures;
+    std::vector<int> refPending;   // the members still to play, when they go one at a time with the mutes swapped between
 
     juce::Rectangle<int> systemCard, selCard, summaryCard, selInfo, measureInfo, xoInfo, liveLine, summaryArea, statusLine;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
@@ -4192,6 +4747,7 @@ private:
     std::array<float, kMaxMics> savedDelays {};
     bool searching = false, liveValid = false, sawReset = false;
     double liveEff = 0.0, liveDev = 0.0, liveReliable = 1.0;
+    xo::SumShape liveShape;
     juce::String status;
     juce::String groupNote;   // which groups the last crossover search averaged
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);

@@ -34,7 +34,12 @@ public:
         micBox.setTooltip ("The mic at FOH: calibrated, so the levels are in dBA");
         micBox.onChange = [this] { fohMic = juce::jmax (0, micBox.getSelectedId() - 1); };
         venueButton.onClick = [this] { if (onOpenVenue) onOpenVenue(); };
-        for (auto* c : std::initializer_list<juce::Component*> { &runButton, &eachButton, &micBox, &venueButton }) addAndMakeVisible (*c);
+        thoroughToggle.setButtonText ("Thorough: start every run well down");
+        thoroughToggle.setTooltip ("Each run starts at -30 dBFS (a speaker alone 18 dB under its stop) and climbs from there. Off: the whole system starts "
+                                   "where the level balance readings predict 12 dB under the show level, a speaker alone 9 dB under its stop. The steps "
+                                   "near the top are the same either way. Kept with the venue.");
+        thoroughToggle.onClick = [this] { proc.headroom.thorough = thoroughToggle.getToggleState(); if (onChanged) onChanged(); };
+        for (auto* c : std::initializer_list<juce::Component*> { &runButton, &eachButton, &micBox, &venueButton, &thoroughToggle }) addAndMakeVisible (*c);
         lookAndFeelChanged();
         refresh();
         startTimerHz (15);
@@ -77,6 +82,7 @@ public:
         }
         if (! running() && fohMic < 0) fohMic = juce::jmax (0, foh);
         micBox.setSelectedId (juce::jlimit (0, juce::jmax (0, proc.settings.micCount.load() - 1), fohMic) + 1, juce::dontSendNotification);
+        thoroughToggle.setToggleState (proc.headroom.thorough, juce::dontSendNotification);
         // the amp gain and limiter of each output, for the processor sheet
         editors.clear();
         for (int i = 0; i < (int) proc.system.sources.size(); ++i)
@@ -198,7 +204,9 @@ public:
             runButton.setBounds (c.removeFromTop (32));
             c.removeFromTop (6);
             eachButton.setBounds (c.removeFromTop (28));
-            c.removeFromTop (8);
+            c.removeFromTop (4);
+            thoroughToggle.setBounds (c.removeFromTop (22));
+            c.removeFromTop (4);
             runInfo = c;
         }
         resultArea = resultCard.reduced (12, 0).withTrimmedTop (38).withTrimmedBottom (10);
@@ -234,6 +242,7 @@ private:
     juce::String phaseLine() const
     {
         juce::String t = "Running " + runName + ": " + juce::String (juce::roundToInt (genNow)) + " dBFS";
+        if (predictedStart && runOutput == 0 && proc.headroom.find (0) != nullptr && proc.headroom.find (0)->steps.empty()) t << " (started where the level balance predicts 12 dB under the show level)";
         if (const auto* run = proc.headroom.find (runOutput); run != nullptr && ! run->steps.empty() && std::isfinite (run->steps.back().splDb))
             t << ", last step " << juce::String (run->steps.back().splDb, 1) << (splKnown() ? " dBA" : " dBFS(A)");
         return t + (phase == Phase::Settle ? "  (settling)" : "  (measuring)");
@@ -290,7 +299,21 @@ private:
         // where to stop: the whole system at the show level plus headroom; a speaker alone at the drive that got
         // the whole system there, plus headroom
         const double ceiling = juce::jmin (0.0, (double) proc.settings.genMaxDb.load());
-        if (runOutput == 0) { stopGen = ceiling; stopSpl = proc.pref ("targetDbA") + proc.pref ("headroomDb"); genNow = -30.0; }
+        const bool thorough = proc.headroom.thorough;
+        if (runOutput == 0)
+        {
+            stopGen = ceiling;
+            stopSpl = proc.pref ("targetDbA") + proc.pref ("headroomDb");
+            genNow = -30.0;
+            // where the level balance readings at FOH (each speaker alone at a known generator level) say the whole
+            // system gives 12 dB under the show level: the climb starts there instead of far below
+            predictedStart = false;
+            if (! thorough && splKnown() && ! proc.level.points.isEmpty())
+            {
+                const double g = proc.level.predictGenDb (proc.system, proc.level.points[0], proc.pref ("targetDbA") - 12.0);
+                if (std::isfinite (g)) { genNow = juce::jlimit (-60.0, ceiling - 3.0, std::floor (g)); predictedStart = true; }
+            }
+        }
         else
         {
             const auto* whole = proc.headroom.find (0);
@@ -298,7 +321,7 @@ private:
             for (const auto& s : whole->steps) if (std::isfinite (s.splDb) && s.splDb >= proc.pref ("targetDbA")) { drive = s.genDb; break; }
             stopGen = juce::jmin (ceiling, drive + proc.pref ("headroomDb"));
             stopSpl = 1e9;
-            genNow = juce::jmin (-30.0, stopGen - 18.0);
+            genNow = thorough ? juce::jmin (-30.0, stopGen - 18.0) : stopGen - 9.0;
         }
         // the coherence where this output plays (a sub's is only good low down)
         cohLo = 200.0; cohHi = 5000.0;
@@ -348,7 +371,9 @@ private:
         const double el = la::clock::ms() - phaseStart;
         if (phase == Phase::Settle)
         {
-            if (el > 2000.0)
+            // half a second for the generator's fade and the room to fill: each step then resets the Leq and reads
+            // three seconds of it, so the slow meter's lag never comes into it
+            if (el > 500.0)
             {
                 // the level from here on: the A-weighted Leq over the averaging time (a slow meter would still carry the step before)
                 phase = Phase::Average;
@@ -489,7 +514,7 @@ private:
         {
             g.setColour (p.textDim);
             g.setFont (font (13.0f));
-            g.drawFittedText ("Each step plays 5 s of pink noise and reads the level at FOH (LAeq for the whole system, LCeq for a speaker alone, per IEC 61672-1). A clean system rises 3 dB for every 3 dB of generator; "
+            g.drawFittedText ("Each step plays pink noise for three and a half seconds and reads the level at FOH (LAeq for the whole system, LCeq for a speaker alone, per IEC 61672-1). A clean system rises 3 dB for every 3 dB of generator; "
                               "a step that rises less is compressing.", plot.reduced (40), juce::Justification::centred, 3);
         }
     }
@@ -508,7 +533,9 @@ private:
     LiveAlignProcessor& proc;
     const Snapshot* snap = nullptr;
     juce::TextButton runButton, eachButton, venueButton;
+    juce::ToggleButton thoroughToggle;
     juce::ComboBox micBox;
+    bool predictedStart = false;
     std::vector<Ed> editors;
     std::vector<std::pair<juce::Rectangle<int>, juce::String>> gainLabels;
     juce::Rectangle<int> chartCard, chartArea, runCard, runInfo, resultCard, resultArea, gainCard, gainHead;

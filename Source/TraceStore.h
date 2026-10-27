@@ -74,7 +74,7 @@ inline Trace difference (const Trace& a, const Trace& b)
     return t;
 }
 
-// The average of several traces of one kind: the levels in dB (as Smaart's trace averages), the phase as directions.
+// The average of several traces of one kind: the levels in dB (as the usual analysers' trace averages), the phase as directions.
 inline Trace average (const std::vector<const Trace*>& in)
 {
     Trace t;

@@ -26,6 +26,9 @@ struct LevelReading
     double arrivalMs = 0.0, delayAtMs = 0.0, trimAtDb = 0.0;
     double eqAtDb = 0.0;       // the speaker's EQ through its range then (the room EQ entered later changes its level)
     bool recheck = false;      // measured again after the trims went in
+    int mic = 0;               // the mic it was measured with
+    double genDb = NAN;        // the generator's level then (dBFS), and the A-weighted level it gave at the mic (dBA,
+    double splDbA = NAN;       // when the mic was SPL-calibrated): Gain and headroom starts from what these predict
 
     double band (double lo, double hi) const { return SpeakerSystem::bandLevel (tf, lo, hi); }
 };
@@ -209,6 +212,27 @@ struct LevelBalance
         return out;
     }
 
+    // From each speaker alone at `point` (its A-weighted level at a known generator level, allowing for the trim and
+    // the EQ entered since): the generator level at which the whole system would give `wantDbA` there, the speakers
+    // summed by power. NAN unless every speaker on an output has such a reading (a missing one would make the guess
+    // too loud).
+    double predictGenDb (const SpeakerSystem& sys, const juce::String& point, double wantDbA) const
+    {
+        double sum = 0.0;
+        int n = 0;
+        for (int k = 0; k < (int) sys.sources.size(); ++k)
+        {
+            const auto& s = sys.sources[(size_t) k];
+            if (s.output <= 0) continue;
+            const auto* r = latest (k, point);
+            if (r == nullptr || ! std::isfinite (r->splDbA) || ! std::isfinite (r->genDb)) return NAN;
+            const double atFullScale = r->splDbA - r->genDb + (s.trimDb - r->trimAtDb) + (eqInRange (sys, k) - r->eqAtDb);
+            sum += std::pow (10.0, atFullScale / 10.0);
+            ++n;
+        }
+        return n > 0 ? wantDbA - 10.0 * std::log10 (sum) : NAN;
+    }
+
     // Cabinets on one output, from their close-up captures: within 1.5 dB of the first (a note: they share a level).
     static std::vector<LevelTrim> cabinetNotes (const SpeakerSystem& sys)
     {
@@ -249,6 +273,9 @@ struct LevelBalance
             c->setAttribute ("trimAtDb", r.trimAtDb);
             c->setAttribute ("eqAtDb", r.eqAtDb);
             c->setAttribute ("recheck", r.recheck);
+            c->setAttribute ("mic", r.mic);
+            if (std::isfinite (r.genDb)) c->setAttribute ("genDb", r.genDb);
+            if (std::isfinite (r.splDbA)) c->setAttribute ("splDbA", r.splDbA);
             juce::String text;
             for (size_t i = 0; i < r.tf.freq.size(); ++i) text << juce::String (r.tf.freq[i], 2) << ' ' << juce::String (r.tf.db[i], 2) << '\n';
             c->addTextElement (text);
@@ -276,6 +303,9 @@ struct LevelBalance
             r.trimAtDb = c->getDoubleAttribute ("trimAtDb");
             r.eqAtDb = c->getDoubleAttribute ("eqAtDb");
             r.recheck = c->getBoolAttribute ("recheck");
+            r.mic = c->getIntAttribute ("mic", 0);
+            r.genDb = c->hasAttribute ("genDb") ? c->getDoubleAttribute ("genDb") : NAN;
+            r.splDbA = c->hasAttribute ("splDbA") ? c->getDoubleAttribute ("splDbA") : NAN;
             juce::StringArray lines;
             lines.addLines (c->getAllSubText());
             for (const auto& line : lines)

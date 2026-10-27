@@ -204,7 +204,6 @@ public:
     la::ui::GuidedOverlay* guided() { return guidedOverlay.get(); }   // for the preview
 private:
     static constexpr int kMonitorMic = -2;   // the monitoring mic, for the calibration pop-ups
-    double lastLogSecond = 0.0;
 
     // Monitoring page
     std::unique_ptr<la::ui::MeasurePane> panes[3];
@@ -220,11 +219,9 @@ private:
     std::unique_ptr<la::ui::ListenStrip> listenStrip;   // the listening level, above Settings on every page
     void updateConditionsPanel();
     void updateTunedPanel();
-    // stricter than the feedback test: music and speech have peaks too. A ring stands 18 dB out for 3 s at one pitch,
-    // holding its level, with no overtones (a held note has them, a singer's vibrato moves, a note dies away)
-    la::fb::Detector liveFb { { 80.0, 12000.0, 18.0, 12, 3, 1.0 / 12.0, 3.0, 1.0 / 48.0, 6.0, true } };
-    juce::uint64 liveFbFrame = 0;
-    juce::uint32 lastTrackRequest = 0;
+    // The show log, the feedback watch and the delay tracking run in the processor (with the window closed too); the
+    // editor sets their toggles and shows the rings the watch caught.
+    void showFeedbackHits();
     juce::ComboBox micPicker;
 
     la::ui::GeneratorStrip generator;

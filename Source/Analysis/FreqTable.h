@@ -1,6 +1,6 @@
 #pragma once
-// Text tables of frequency / dB / phase: microphone calibration files (miniDSP UMIK, Dayton, REW style),
-// FRD files, and CSV / TXT exports from REW, Smaart, Open Sound Meter and others.
+// Text tables of frequency / dB / phase: microphone calibration files (the usual makers' formats, with or without a
+// sensitivity header), FRD files, and CSV / TXT exports from the usual analysers.
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -155,7 +155,7 @@ inline FreqTable parseFreqTable (const std::string& text)
     return t;
 }
 
-// FRD text: "freq dB phase" per line, readable by REW, VituixCAD, XSim and most crossover tools.
+// FRD text: "freq dB phase" per line, readable by most measurement, simulation and crossover tools.
 inline std::string writeFrd (const FreqTable& t, const std::vector<std::string>& headerLines, bool includeExtra)
 {
     std::ostringstream out;

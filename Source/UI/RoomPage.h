@@ -366,6 +366,16 @@ public:
             changed();
         };
         addAndMakeVisible (tunedButton);
+        fullCheckButton.setTooltip ("The check so far looked at the centre and the point furthest from the target: measure the rest of the ticked points too");
+        fullCheckButton.onClick = [this]
+        {
+            if (phase != Phase::Idle || room.checkRound == 0) return;
+            quickCheck.clear();
+            setMeasuringAfter (true);
+            refresh();
+            requestMeasure();
+        };
+        addChildComponent (fullCheckButton);
 
         lookAndFeelChanged();
         refresh();
@@ -483,6 +493,7 @@ public:
         room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [&] (const RoomMeasurement& m) { return m.position == point && m.after == after; }),
                          room.meas.end());
         room.skipped.removeString (point);
+        if (after && ! quickCheck.isEmpty()) quickCheck.addIfNotAlreadyThere (point);
         if (proc.micAtPoint (point) < 0) proc.linkMicToPoint (point, 0);
         setMeasuringAfter (after);
         status = "Measuring " + point + " again (the listening check found a problem there).";
@@ -510,7 +521,7 @@ public:
         {
             const auto& pos = proc.mics.position[(size_t) m];
             unplaced = unplaced || pos.isEmpty();
-            atNew = atNew || (pos.isNotEmpty() && ! room.skipped.contains (pos) && ! room.hasAt (pos, measuringAfter));
+            atNew = atNew || (pos.isNotEmpty() && planned (pos, measuringAfter) && ! room.hasAt (pos, measuringAfter));
         }
         if ((unplaced || ! atNew) && plannedLeft (measuringAfter) > 0) planNextRound (false);
 
@@ -520,7 +531,7 @@ public:
         auto isTop = [this] (int i) { return proc.system.sources[(size_t) i].role != (int) SpeakerRole::Sub; };
         for (const auto& pos : proc.positions)
         {
-            if (room.skipped.contains (pos)) continue;
+            if (! planned (pos, measuringAfter)) continue;
             GuideSpot sp;
             sp.label = pos;
             sp.marker = proc.plan.ensureMarker (pos);
@@ -553,11 +564,12 @@ public:
         for (int m = 0; m < settings.micCount.load(); ++m)
         {
             const auto& pos = proc.mics.position[(size_t) m];
-            if (pos.isEmpty() || room.skipped.contains (pos) || room.hasAt (pos, measuringAfter)) idle.add (proc.mics.nameOf (m));
+            if (pos.isEmpty() || ! planned (pos, measuringAfter) || room.hasAt (pos, measuringAfter)) idle.add (proc.mics.nameOf (m));
         }
         juce::String t = (playOutput == 0 ? juce::String ("First: unmute every speaker of the system. ") : juce::String())
                          + "Mics at seated ear height, about 4 ft (1.2 m). Pink noise plays from " + outputBox.getText().toLowerCase()
                          + ". Drag the pulsing point if it is not where the mic really is.";
+        if (measuringAfter && ! quickCheck.isEmpty()) t << " A quick check first: " << quickCheck.joinIntoString (" and ") << "; every point only if one of them still misses.";
         if (! idle.isEmpty() && idle.size() < settings.micCount.load())
             t << " " << idle.joinIntoString (", ") << (idle.size() == 1 ? " sits this one out." : " sit this one out.");
         return t;
@@ -781,13 +793,15 @@ public:
                 const double spread = room.levelSpread (false);
                 if (std::isfinite (spread) && room.count (false) > 1) t << "\nLevel across positions: " << juce::String (spread, 1) << " dB.";
                 const double v0 = seatVariance (room, false);
-                if (std::isfinite (v0)) t << "\nSeat to seat: " << juce::String (v0, 1) << " dB as found" << (room.count (true) > 1 ? ", " + juce::String (seatVariance (room, true), 1) + " dB now" : juce::String())
+                // the seat-to-seat figure of a check only once every point is in it (two points say little)
+                if (std::isfinite (v0)) t << "\nSeat to seat: " << juce::String (v0, 1) << " dB as found" << (room.count (true) > 1 && fullCheckDone() ? ", " + juce::String (seatVariance (room, true), 1) + " dB now" : juce::String())
                                          << " (the tonal difference between points; under 2 dB is very even).";
             }
             if (room.count (true) > 0)
             {
                 room.deviation (room.average (true), lo, hi, ra, ma);
-                t << "\nCheck " << room.checkRound << ": " << juce::String (ra, 1) << " dB RMS (worst " << juce::String (ma, 1) << " dB)"
+                t << "\nCheck " << room.checkRound << (fullCheckDone() ? juce::String() : " (" + juce::String (room.count (true)) + (room.count (true) == 1 ? " point" : " points") + " so far)")
+                  << ": " << juce::String (ra, 1) << " dB RMS (worst " << juce::String (ma, 1) << " dB)"
                   << (ra <= proc.pref ("eqClose") ? (proc.listening.done ? ": close enough, mark the room as tuned." : ": close enough. Now the listening check, then mark it as tuned.")
                                                   : ": refine the EQ, or mark it as tuned if it sounds right.");
             }
@@ -888,6 +902,8 @@ public:
         {
             auto c = step3.reduced (12, 0).withTrimmedTop (40);
             tunedButton.setBounds (c.removeFromBottom (36).withSizeKeepingCentre (c.getWidth(), 30));
+            fullCheckButton.setVisible (room.checkRound > 0 && room.count (true) > 0 && ! fullCheckDone());
+            if (fullCheckButton.isVisible()) fullCheckButton.setBounds (c.removeFromBottom (32).withSizeKeepingCentre (c.getWidth(), 26));
             checkInfo = c;
         }
     }
@@ -915,7 +931,12 @@ public:
 
 private:
     enum class Phase { Idle, Settling, FindingTime, Averaging };
-    static constexpr double kSettleSeconds = 3.0;
+    // The finder reads the last ~2.7 s of raw audio, so a fresh arrival needs this much noise first. When every mic
+    // stands where it stood for the last pass from the same output (the check after the EQ, or a measurement done
+    // again), its arrival is known to the sample: the averaging starts after a short settle timed to it, and the
+    // finder confirms it once the buffer is all noise (a changed arrival restarts that mic's average).
+    static constexpr double kSettleSeconds = 3.0, kShortSettleSeconds = 1.5;
+    struct Arrival { int mic = -1; double ms = 0.0; };
 
     void drawStep (juce::Graphics& g, juce::Rectangle<int> area, int num, const juce::String& title, bool done) const
     {
@@ -1053,19 +1074,82 @@ private:
         room.meas.erase (std::remove_if (room.meas.begin(), room.meas.end(), [] (const RoomMeasurement& m) { return m.after; }), room.meas.end());
         ++room.checkRound;
         room.tuned = false;
+        planQuickCheck();
         status = "Noted as entered on " + room.eqGroupName (proc.system) + " (" + juce::String ((int) entered.size()) + " bands in all). Now measure check "
-                 + juce::String (room.checkRound) + " at the same positions.";
+                 + juce::String (room.checkRound)
+                 + (quickCheck.isEmpty() ? juce::String (" at the same positions.")
+                                         : " at " + quickCheck.joinIntoString (" and ") + " first (the centre, and the point furthest from the target as found); every point only if one of them still misses.");
         setMeasuringAfter (true);
         movePrompt.clear();
         refresh();
         changed();
     }
 
+    // A position in the measuring plan of a round: ticked, and for a quick check one of the points it looks at.
+    bool planned (const juce::String& pos, bool after) const
+    {
+        return ! room.skipped.contains (pos) && (! after || quickCheck.isEmpty() || quickCheck.contains (pos));
+    }
+
     int plannedLeft (bool after) const
     {
         int n = 0;
-        for (const auto& pos : proc.positions) n += ! room.skipped.contains (pos) && ! room.hasAt (pos, after) ? 1 : 0;
+        for (const auto& pos : proc.positions) n += planned (pos, after) && ! room.hasAt (pos, after) ? 1 : 0;
         return n;
+    }
+
+    // The check has been measured at every ticked point (not only the quick check's two).
+    bool fullCheckDone() const
+    {
+        if (room.checkRound == 0) return false;
+        for (const auto& pos : proc.positions) if (! room.skipped.contains (pos) && ! room.hasAt (pos, true)) return false;
+        return true;
+    }
+
+    // The centre point (the level balance's first, or FOH).
+    juce::String centrePoint() const
+    {
+        if (! proc.level.points.isEmpty() && proc.positions.contains (proc.level.points[0]) && ! room.skipped.contains (proc.level.points[0])) return proc.level.points[0];
+        if (proc.positions.contains ("FOH") && ! room.skipped.contains ("FOH")) return "FOH";
+        for (const auto& pos : proc.positions) if (! room.skipped.contains (pos)) return pos;
+        return {};
+    }
+
+    // One position's measurement against the target: RMS in the EQ range (NAN when it is not measured).
+    double deviationAt (const juce::String& pos, bool after) const
+    {
+        const RoomMeasurement* m = nullptr;
+        for (const auto& x : room.meas) if (x.position == pos && x.after == after) m = &x;
+        if (m == nullptr || m->tf.freq.size() < 4) return NAN;
+        const auto g = RoomTuning::grid();
+        std::vector<double> raw (g.size(), NAN);
+        for (size_t i = 0; i < g.size(); ++i) if (g[i] >= m->tf.freq.front() && g[i] <= m->tf.freq.back()) raw[i] = m->tf.dbAt (g[i]);
+        double lo, hi, rms, mx;
+        eqRange (lo, hi);
+        room.deviation (raw, lo, hi, rms, mx);
+        return rms;
+    }
+
+    // The quick check after the EQ went in: the centre and the point that was furthest from the target as found.
+    // Every point is measured only if one of those still misses the target by more than "close enough".
+    void planQuickCheck()
+    {
+        quickCheck.clear();
+        const auto centre = centrePoint();
+        if (centre.isNotEmpty()) quickCheck.add (centre);
+        juce::String worst;
+        double worstDev = -1.0;
+        for (const auto& pos : proc.positions)
+        {
+            if (room.skipped.contains (pos) || pos == centre) continue;
+            const double d = deviationAt (pos, false);
+            if (std::isfinite (d) && d > worstDev) { worstDev = d; worst = pos; }
+        }
+        if (worst.isNotEmpty()) quickCheck.add (worst);
+        // nothing to save when the plan is that small anyway
+        int ticked = 0;
+        for (const auto& pos : proc.positions) ticked += room.skipped.contains (pos) ? 0 : 1;
+        if (ticked <= quickCheck.size()) quickCheck.clear();
     }
 
     // The next round: each mic to a planned position not measured yet in this round (before or after EQ), in order.
@@ -1074,7 +1158,7 @@ private:
     {
         juce::StringArray todo;
         for (const auto& pos : proc.positions)
-            if (! room.skipped.contains (pos) && ! room.hasAt (pos, measuringAfter)) todo.add (pos);
+            if (planned (pos, measuringAfter) && ! room.hasAt (pos, measuringAfter)) todo.add (pos);
         const int n = settings.micCount.load();
         if (todo.isEmpty())
         {
@@ -1108,9 +1192,14 @@ private:
     void startMeasure()
     {
         if (settings.refSource.load() == 0) { status = "Set a reference on Mic setup to measure."; repaint(); return; }
-        bool unplaced = false;
-        for (int m = 0; m < settings.micCount.load(); ++m) unplaced = unplaced || proc.mics.position[(size_t) m].isEmpty();
-        if (unplaced) planNextRound (false);   // put them at the first planned positions
+        bool unplaced = false, anyPlanned = false;
+        for (int m = 0; m < settings.micCount.load(); ++m)
+        {
+            const auto& pos = proc.mics.position[(size_t) m];
+            unplaced = unplaced || pos.isEmpty();
+            anyPlanned = anyPlanned || (pos.isNotEmpty() && planned (pos, measuringAfter) && ! room.hasAt (pos, measuringAfter));
+        }
+        if ((unplaced || ! anyPlanned) && plannedLeft (measuringAfter) > 0) planNextRound (false);   // put them at the next planned positions
         for (int m = 0; m < settings.micCount.load(); ++m)
             if (proc.mics.position[(size_t) m].isEmpty()) { status = "Say where " + proc.mics.nameOf (m) + " is first."; repaint(); return; }
         movePrompt.clear();
@@ -1130,7 +1219,12 @@ private:
         settings.running = true;
         phase = Phase::Settling;
         phaseStart = la::clock::ms();
-        settleUntil = proc.analyzer.samplesWritten() + (juce::uint64) (kSettleSeconds * rate());
+        startedAt = proc.analyzer.samplesWritten();
+        knownDelays = delaysKnown();
+        settleSeconds = knownDelays ? kShortSettleSeconds : kSettleSeconds;
+        settleUntil = startedAt + (juce::uint64) (settleSeconds * rate());
+        confirmPending = confirmRequested = false;
+        lastMag.clear();
         progress = 0.0f;
         status.clear();
         refreshMeasureButton();
@@ -1168,39 +1262,151 @@ private:
         if (phase == Phase::Settling)
         {
             const auto done = proc.analyzer.samplesAnalysed();
-            progress = 0.2f * (float) juce::jlimit (0.0, 1.0, 1.0 - ((double) settleUntil - (double) done) / (kSettleSeconds * rate()));
+            progress = 0.2f * (float) juce::jlimit (0.0, 1.0, 1.0 - ((double) settleUntil - (double) done) / (settleSeconds * rate()));
             if (done >= settleUntil)
             {
-                delaySerial = proc.analyzer.readDelayReport().serial;
-                settings.requestFindDelay = true;
-                phase = Phase::FindingTime;
-                phaseStart = la::clock::ms();
+                if (knownDelays)
+                {
+                    // timed to the arrivals found last time; the finder confirms them once the buffer is all noise
+                    for (int m = 0; m < settings.micCount.load(); ++m)
+                        if (auto it = lastArrival.find (proc.mics.position[(size_t) m]); it != lastArrival.end() && it->second.mic == m)
+                            settings.micDelayMs[m] = (float) it->second.ms;
+                    confirmPending = true;
+                    confirmRequested = false;
+                    confirmAt = startedAt + (juce::uint64) (kSettleSeconds * rate());
+                    beginAveraging();
+                }
+                else
+                {
+                    delaySerial = proc.analyzer.readDelayReport().serial;
+                    settings.requestFindDelay = true;
+                    phase = Phase::FindingTime;
+                    phaseStart = la::clock::ms();
+                }
             }
         }
         else if (phase == Phase::FindingTime)
         {
             progress = 0.2f + (float) juce::jmin (1.0, elapsed / 2000.0) * 0.1f;
-            if (proc.analyzer.readDelayReport().serial != delaySerial)
+            const auto rep = proc.analyzer.readDelayReport();
+            if (rep.serial != delaySerial)
             {
-                settings.requestResetAverages = true;
-                sawReset = false;
-                phase = Phase::Averaging;
-                phaseStart = la::clock::ms();
+                rememberArrivals (rep);
+                beginAveraging();
             }
             else if (elapsed > 10000.0) { cancel ("The timing search did not answer. Check the audio device."); return; }
         }
         else if (phase == Phase::Averaging)
         {
             const int want = juce::jmax (4, settings.averages.load());
+            if (confirmPending)
+            {
+                if (! confirmRequested && proc.analyzer.samplesAnalysed() >= confirmAt)
+                {
+                    delaySerial = proc.analyzer.readDelayReport().serial;
+                    settings.requestFindDelay = true;
+                    confirmRequested = true;
+                    confirmAsked = la::clock::ms();
+                }
+                else if (confirmRequested)
+                {
+                    const auto rep = proc.analyzer.readDelayReport();
+                    if (rep.serial != delaySerial)
+                    {
+                        // a mic whose arrival moved by a sample or more had its average restarted by the analysis:
+                        // wait for the fresh frames
+                        bool moved = false;
+                        for (int m = 0; m < settings.micCount.load() && m < rep.micCount; ++m)
+                        {
+                            const auto it = lastArrival.find (proc.mics.position[(size_t) m]);
+                            if (! rep.valid[(size_t) m] || it == lastArrival.end() || it->second.mic != m) continue;
+                            if (std::lround (rep.ms[(size_t) m] * 0.001 * rate()) != std::lround (it->second.ms * 0.001 * rate())) moved = true;
+                        }
+                        rememberArrivals (rep);
+                        if (moved) { settings.requestResetAverages = true; sawReset = false; lastMag.clear(); phaseStart = la::clock::ms(); }
+                        confirmPending = false;
+                    }
+                    else if (la::clock::ms() - confirmAsked > 10000.0) { cancel ("The timing search did not answer. Check the audio device."); return; }
+                }
+            }
             int frames = 1 << 30;
             for (int m = 0; m < settings.micCount.load(); ++m)
+            {
+                if (measuredAtStart.contains (proc.mics.position[(size_t) m])) continue;   // sits this one out
                 frames = juce::jmin (frames, snap != nullptr && m < (int) snap->mics.size() ? snap->mics[(size_t) m].tfFrames : 0);
+            }
+            if (frames == (1 << 30)) frames = 0;
             if (! sawReset && frames < want) sawReset = true;
             progress = 0.3f + 0.7f * (sawReset ? juce::jlimit (0.0f, 1.0f, (float) frames / (float) want) : 0.0f);
-            if (sawReset && frames >= want && elapsed > 1500.0) capture();
+            // stop early once the result has settled at every mic; otherwise go on to the averages asked for, and
+            // past them (up to twice) while it is still moving
+            const bool settled = sawReset && frames >= 4 && converged();
+            const bool enough = sawReset && (settled || frames >= 2 * want);
+            if (! confirmPending && enough && la::clock::ms() - phaseStart > 1500.0) capture();
             else if (elapsed > 30000.0) { if (sawReset && frames > 0) capture(); else cancel ("No transfer function: check the reference."); return; }
         }
         repaint (step1);
+    }
+
+    void beginAveraging()
+    {
+        settings.requestResetAverages = true;
+        sawReset = false;
+        lastMag.clear();
+        phase = Phase::Averaging;
+        phaseStart = la::clock::ms();
+    }
+
+    // What the finder found: each mic's arrival at the position it stands at, for the next pass from this output.
+    void rememberArrivals (const DelayReport& rep)
+    {
+        lastArrival.clear();
+        lastOutput = playOutput;
+        for (int m = 0; m < settings.micCount.load() && m < rep.micCount; ++m)
+            if (rep.valid[(size_t) m] && proc.mics.position[(size_t) m].isNotEmpty()) lastArrival[proc.mics.position[(size_t) m]] = { m, rep.ms[(size_t) m] };
+    }
+
+    // Every mic measuring this pass stands where the last pass from this output found its arrival.
+    bool delaysKnown() const
+    {
+        if (lastOutput != playOutput || lastArrival.empty()) return false;
+        for (int m = 0; m < settings.micCount.load(); ++m)
+        {
+            const auto& pos = proc.mics.position[(size_t) m];
+            if (measuredAtStart.contains (pos)) continue;
+            const auto it = lastArrival.find (pos);
+            if (it == lastArrival.end() || it->second.mic != m) return false;
+        }
+        return true;
+    }
+
+    // The result has settled at every mic measuring: from 60 Hz to 12 kHz nine banded points in ten have coherence
+    // 0.9 or better, and the magnitude moved under 0.3 dB RMS since the frame before (judged on new frames only).
+    bool converged()
+    {
+        if (snap == nullptr) return false;
+        bool all = true;
+        for (int m = 0; m < settings.micCount.load() && m < (int) snap->mics.size(); ++m)
+        {
+            if (measuredAtStart.contains (proc.mics.position[(size_t) m])) continue;
+            const auto& mr = snap->mics[(size_t) m];
+            auto& prev = lastMag[m];
+            if (mr.tfFrames <= prev.frames) { all = all && prev.settled; continue; }
+            int n = 0, good = 0, nd = 0;
+            double ss = 0.0;
+            for (size_t i = 0; i < snap->tfFreq.size() && i < mr.tfMag.size(); ++i)
+            {
+                if (snap->tfFreq[i] < 60.0 || snap->tfFreq[i] > 12000.0 || ! std::isfinite (mr.tfMag[i])) continue;
+                ++n;
+                if (i < mr.tfCoh.size() && mr.tfCoh[i] >= 0.9f) ++good;
+                if (i < prev.mag.size() && std::isfinite (prev.mag[i])) { const double d = mr.tfMag[i] - prev.mag[i]; ss += d * d; ++nd; }
+            }
+            prev.settled = n > 0 && good >= (n * 9 + 9) / 10 && nd > 0 && std::sqrt (ss / nd) < 0.3;
+            prev.frames = mr.tfFrames;
+            prev.mag = mr.tfMag;
+            all = all && prev.settled;
+        }
+        return all;
     }
 
     void capture()
@@ -1259,10 +1465,40 @@ private:
                 }
             }
             planNextRound (false);
-            if (movePrompt.isEmpty()) status << " Every planned position is measured.";
+            if (movePrompt.isEmpty())
+            {
+                if (measuringAfter && ! quickCheck.isEmpty() && plannedLeft (true) == 0) judgeQuickCheck();
+                else status << " Every planned position is measured.";
+            }
         }
         refreshMeasureButton();
         changed();
+    }
+
+    // The quick check is measured: within "close enough" at both points, the check is done (every point is one
+    // click away); otherwise the rest of the points are measured too.
+    void judgeQuickCheck()
+    {
+        const double close = proc.pref ("eqClose");
+        juce::StringArray parts;
+        bool miss = false;
+        for (const auto& pos : quickCheck)
+        {
+            const double d = deviationAt (pos, true);
+            if (! std::isfinite (d)) continue;
+            parts.add (pos + " " + juce::String (d, 1) + " dB RMS");
+            miss = miss || d > close;
+        }
+        if (miss)
+        {
+            quickCheck.clear();
+            status << " " << parts.joinIntoString (", ") << ": more than " << juce::String (close, 1) << " dB from the target, so every point is checked next.";
+            planNextRound (false);
+        }
+        else
+        {
+            status << " " << parts.joinIntoString (", ") << ": within " << juce::String (close, 1) << " dB of the target at both. Check every point if you want the full picture.";
+        }
     }
 
     LiveAlignProcessor& proc;
@@ -1277,19 +1513,23 @@ private:
     juce::TextButton targetLink;
     juce::TextButton phaseButtons[2], measureButton { "Measure" }, suggestButton { "Suggest EQ" }, applyButton { "I've entered this EQ" };
     juce::ToggleButton allowToggle;
-    juce::TextButton tunedButton { "Mark the room as tuned" };
+    juce::TextButton tunedButton { "Mark the room as tuned" }, fullCheckButton { "Check every point" };
 
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> labels;
     juce::Rectangle<int> posCard, posList, micHint, step1, step2, step3, measureInfo, rangeInfo, bandsArea, checkInfo;
 
     juce::String selectedPos, status, movePrompt;
     juce::StringArray measuredAtStart;
+    juce::StringArray quickCheck;      // the check round's points for now (empty: every ticked point)
     juce::Rectangle<int> promptArea;
-    int playOutput = 0, measureSerial = 0;
-    bool measuringAfter = false, sawReset = false;
+    int playOutput = 0, measureSerial = 0, lastOutput = -1;
+    bool measuringAfter = false, sawReset = false, knownDelays = false, confirmPending = false, confirmRequested = false;
     Phase phase = Phase::Idle;
-    double phaseStart = 0.0;
+    double phaseStart = 0.0, settleSeconds = kSettleSeconds, confirmAsked = 0.0;
     float progress = 0.0f;
-    juce::uint64 delaySerial = 0, settleUntil = 0;
+    juce::uint64 delaySerial = 0, settleUntil = 0, startedAt = 0, confirmAt = 0;
+    std::map<juce::String, Arrival> lastArrival;   // each position's arrival from the last pass (and the mic that found it)
+    struct MagSeen { int frames = 0; bool settled = false; std::vector<float> mag; };
+    std::map<int, MagSeen> lastMag;
 };
 } // namespace la::ui

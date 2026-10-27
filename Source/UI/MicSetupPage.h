@@ -290,7 +290,7 @@ public:
                   { 3, "Mics connected", "Every mic in the table is live on its own input." },
                   { 4, "Calibration files", "Each mic's own response is removed using its calibration file." },
                   { 5, "Sound level", "Each mic calibrated with an acoustic calibrator, or confirmed for this session." },
-                  { 6, "Loopback check", "Pink noise for 2 seconds from the generator: round trip, polarity and level." },
+                  { 6, "Loopback check", "A short burst of pink noise on the loopback's output only: round trip, polarity and level." },
                   { 7, "Room noise floor", "5 seconds of background noise on every mic, with the PA silent." } }
     {
         preflightButton.onClick = [this] { if (preflight == 0) startPreflight(); else stopPreflight ("Stopped."); };
@@ -337,7 +337,10 @@ public:
 
         loopButton.onClick = [this] { startLoopbackCheck(); };
         skipLoopButton.onClick = [this] { checks.loopbackSkipped = skipLoopButton.getToggleState(); changed(); };
+        loopOutBox.setTooltip ("The interface output the loopback cable comes from: the check plays pink noise on that output only, not on the PA");
+        loopOutBox.onChange = [this] { proc.loopbackOutput = juce::jmax (0, loopOutBox.getSelectedId() - 1); checks.loopbackDone = false; changed(); };
         cards[5].addAndMakeVisible (loopButton);
+        cards[5].addAndMakeVisible (loopOutBox);
         cards[5].addAndMakeVisible (skipLoopButton);
 
         noiseButton.onClick = [this] { startNoise(); };
@@ -402,6 +405,12 @@ public:
         if (settings.refSource.load() <= nIn + 1) refBox.setSelectedItemIndex (settings.refSource.load(), juce::dontSendNotification);
         else refBox.setSelectedId (0, juce::dontSendNotification);
         refBox.setTextWhenNothingSelected ("Input " + juce::String (settings.refSource.load() - 1) + " (not on this interface)");
+        // the loopback's output: id 1 = the last output (the default), id n + 1 = output n
+        const int nOut = juce::jmax (1, proc.numOutputs());
+        loopOutBox.clear (juce::dontSendNotification);
+        loopOutBox.addItem ("Last output (" + juce::String (nOut) + ")", 1);
+        for (int o = 1; o <= nOut; ++o) loopOutBox.addItem ("Output " + juce::String (o), o + 1);
+        loopOutBox.setSelectedId (proc.loopbackOutput > 0 && proc.loopbackOutput <= nOut ? proc.loopbackOutput + 1 : 1, juce::dontSendNotification);
         noCalButton.setToggleState (proc.mics.noCalibrator, juce::dontSendNotification);
         bool allNoFile = true;
         for (int m = 0; m < settings.micCount.load(); ++m) allNoFile = allNoFile && proc.mics.noCalFile[(size_t) m];
@@ -668,7 +677,7 @@ private:
             case 1: put (refBox, 300); break;
             case 3: put (noFilesToggle, 220); break;
             case 4: put (noCalButton, 240); break;
-            case 5: put (loopButton, 130); put (skipLoopButton, 120); break;
+            case 5: put (loopButton, 130); put (loopOutBox, 150); put (skipLoopButton, 120); break;
             case 6: put (noiseButton, 170); break;
             default: break;
         }
@@ -821,9 +830,10 @@ private:
 
     void startLoopbackCheck()
     {
-        saved = { settings.genOn.load(), settings.genType.load(), settings.genLevelDb.load() };
+        saved = { settings.genOn.load(), settings.genType.load(), settings.genLevelDb.load(), settings.genOutput.load() };
         settings.genType = 0;
         settings.genLevelDb = -20.0f;
+        settings.genOutput = proc.loopbackOutputResolved();   // only the output the loopback cable is on, not the PA
         settings.genOn = true;
         loopPhase = 1;
         loopStart = la::clock::ms32();
@@ -836,7 +846,7 @@ private:
     {
         if (loopPhase == 0) return;
         const auto now = la::clock::ms32();
-        if (loopPhase == 1 && now - loopStart > 2000)
+        if (loopPhase == 1 && now - loopStart > 600)   // 0.6 s of pink noise; the last half second is compared
         {
             proc.analyzer.requestLoopbackCheck();
             loopPhase = 2;
@@ -844,11 +854,12 @@ private:
         else if (loopPhase == 2)
         {
             const auto rep = proc.analyzer.readLoopbackReport();
-            if (rep.serial != loopSerial || now - loopStart > 6000)
+            if (rep.serial != loopSerial || now - loopStart > 4000)
             {
                 settings.genOn = saved.on;
                 settings.genType = saved.type;
                 settings.genLevelDb = saved.level;
+                settings.genOutput = saved.output;
                 loopPhase = 0;
                 if (rep.serial != loopSerial && rep.valid)
                 {
@@ -953,7 +964,7 @@ private:
     }
     juce::String preflightText() const
     {
-        if (preflight == 1) return "Pre-flight 1 of 3: the loopback check (pink noise for 2 seconds)...";
+        if (preflight == 1) return "Pre-flight 1 of 3: the loopback check (a short burst of pink noise)...";
         if (preflight == 2) return "Pre-flight 2 of 3: the room noise (5 seconds, keep the room quiet)...";
         if (preflightMsg.isNotEmpty()) return preflightMsg;
         return "Each session: the loopback, the room noise and the level re-check in one run.";
@@ -982,7 +993,8 @@ private:
     juce::ToggleButton noFilesToggle { "No calibration files" }, noCalButton { "No calibrator (dBFS)" }, skipLoopButton { "Skip" };
     juce::ComboBox refBox;
 
-    struct SavedGen { bool on = false; int type = 0; float level = -20.0f; } saved;
+    struct SavedGen { bool on = false; int type = 0; float level = -20.0f; int output = 0; } saved;
+    juce::ComboBox loopOutBox;   // the output the loopback cable is on (venue)
     int loopPhase = 0, nIns = 0, tick = 0;
     juce::uint32 loopStart = 0;
     juce::uint64 loopSerial = 0, noiseSerial = 0;

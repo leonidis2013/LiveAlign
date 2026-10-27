@@ -95,10 +95,33 @@ public:
     bool busy() const { return runner.busy(); }
     juce::String statusText() const { return status; }
 
-    // ---- guided: each speaker alone at each point ----
+    // ---- guided: each speaker alone, every placed mic at once ----
+    // A task is one speaker at one point, but a pass measures the speaker at every ticked point that has a mic in
+    // it, so with the mics spread over the points the rounds are per speaker, not per point. A point with no mic
+    // gets the roaming mic (mic 1) on its own, as before.
     juce::String guidedTitle() const override { return recheckRun ? "Level balance: check" : "Level balance"; }
 
     struct Task { int point, spk; int id() const { return point * 100 + spk; } };
+
+    // The ticked points with a mic in them now (mic, point), the lead point's mic first.
+    std::vector<std::pair<int, juce::String>> passMics (const juce::String& lead) const
+    {
+        std::vector<std::pair<int, juce::String>> out;
+        const int leadMic = micAt (lead);
+        out.push_back ({ leadMic, lead });
+        for (int m = 0; m < proc.tuningMicCount(); ++m)
+        {
+            const auto& pos = proc.mics.position[(size_t) m];
+            if (m != leadMic && pos.isNotEmpty() && lv.points.contains (pos)) out.push_back ({ m, pos });
+        }
+        return out;
+    }
+    bool inPass (const Task& t, const Task& now) const
+    {
+        if (t.spk != now.spk) return false;
+        for (const auto& [m, p] : passMics (lv.points[now.point])) if (p == lv.points[t.point]) return true;
+        return false;
+    }
     std::vector<Task> tasks() const
     {
         std::vector<Task> out;
@@ -139,7 +162,9 @@ public:
             sp.marker = proc.plan.ensureMarker (point);
             sp.x = proc.plan.items[(size_t) sp.marker].x;
             sp.y = proc.plan.items[(size_t) sp.marker].y;
-            sp.state = k == now ? GuideSpot::Now : taskDone (t) ? GuideSpot::Done : GuideSpot::ToDo;
+            // the pass measures every point with a mic in it: those are "now" too
+            const bool inNow = now >= 0 && (k == now || (! taskDone (t) && inPass (t, ts[(size_t) now])));
+            sp.state = inNow ? GuideSpot::Now : taskDone (t) ? GuideSpot::Done : GuideSpot::ToDo;
             if (sp.state == GuideSpot::Now)
             {
                 sp.mic = micAt (point);
@@ -158,7 +183,9 @@ public:
         if (k < 0) return "Every speaker is measured at every point.";
         const auto& t = ts[(size_t) k];
         if (const auto m = proc.system.muteText ({ t.spk }); m.isNotEmpty()) return "First: " + m;
-        return "Only " + proc.system.nameOf (t.spk) + " plays, with its processing in place (filters, polarity, level).";
+        const auto pm = passMics (lv.points[t.point]);
+        return "Only " + proc.system.nameOf (t.spk) + " plays, with its processing in place (filters, polarity, level)."
+               + (pm.size() > 1 ? " Measured at " + juce::String ((int) pm.size()) + " points at once (every ticked point with a mic in it)." : juce::String());
     }
     bool guidedStart() override
     {
@@ -171,28 +198,49 @@ public:
         proc.setMicPosition (mic, point);
         nowTask = t;
         const bool again = recheckRun;
-        const bool ok = runner.start (proc.system.sources[(size_t) t.spk].output, mic, -1, [this, t, point, again] (const MeasureRunner::Result& r)
+        const auto& src = proc.system.sources[(size_t) t.spk];
+        const auto pm = passMics (point);
+        std::vector<int> mics;
+        for (const auto& [m, p] : pm)
         {
-            if (! r.ok) { status = r.error; repaint(); return; }
-            LevelReading rd;
-            rd.spk = t.spk;
-            rd.point = point;
-            rd.when = juce::Time::getCurrentTime().formatted ("%H:%M");
-            rd.tf = twelfthOctave (r.tf);
-            rd.hasArrival = r.hasArrival;
-            rd.arrivalMs = r.arrivalMs;
-            rd.delayAtMs = proc.system.sources[(size_t) t.spk].proc.delayMs;
-            rd.trimAtDb = proc.system.sources[(size_t) t.spk].trimDb;
-            rd.eqAtDb = LevelBalance::eqInRange (proc.system, t.spk);
-            rd.recheck = again;
-            lv.set (std::move (rd));
+            mics.push_back (m);
+            // the check after the trims: the arrival is known from the as-found reading, so the averaging starts early
+            if (const auto* was = lv.find (t.spk, p, false); again && was != nullptr && was->hasArrival)
+                runner.hintDelay (m, src.output, p, was->arrivalMs - was->delayAtMs + src.proc.delayMs);
+        }
+        double lo, hi;
+        proc.system.playRange (t.spk, lo, hi);
+        const bool ok = runner.start (src.output, mics, -1, [this, t, again] (const std::vector<MeasureRunner::Result>& rs)
+        {
+            if (rs.empty() || ! rs.front().ok) { status = rs.empty() ? juce::String ("No result.") : rs.front().error; repaint(); return; }
+            juce::StringArray got;
+            double lo2, hi2;
+            proc.system.playRange (t.spk, lo2, hi2);
+            for (const auto& r : rs)
+            {
+                if (! r.ok || ! lv.points.contains (r.point)) continue;
+                LevelReading rd;
+                rd.spk = t.spk;
+                rd.point = r.point;
+                rd.mic = r.mic;
+                rd.when = juce::Time::getCurrentTime().formatted ("%H:%M");
+                rd.tf = twelfthOctave (r.tf);
+                rd.hasArrival = r.hasArrival;
+                rd.arrivalMs = r.arrivalMs;
+                rd.delayAtMs = proc.system.sources[(size_t) t.spk].proc.delayMs;
+                rd.trimAtDb = proc.system.sources[(size_t) t.spk].trimDb;
+                rd.eqAtDb = LevelBalance::eqInRange (proc.system, t.spk);
+                rd.genDb = r.genDb;
+                rd.splDbA = r.splDbA;
+                rd.recheck = again;
+                lv.set (std::move (rd));
+                got.add (r.point + " " + juce::String (lv.find (t.spk, r.point, again)->band (lo2, hi2), 1) + " dB");
+            }
             redo = -1;
             ++serial;
-            double lo, hi;
-            proc.system.playRange (t.spk, lo, hi);
-            status = proc.system.nameOf (t.spk) + " at " + point + ": " + juce::String (lv.find (t.spk, point, again)->band (lo, hi), 1) + " dB.";
+            status = proc.system.nameOf (t.spk) + " at " + got.joinIntoString (", ") + ".";
             changed();
-        });
+        }, lo, hi);
         if (! ok) status = runner.lastError();
         return ok;
     }
